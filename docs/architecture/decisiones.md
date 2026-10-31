@@ -144,3 +144,42 @@ Eventos: `RECEIPTS_UPLOADED`, `RECEIPT_REMOVED`, `RECIPIENTS_REFRESHED`, `EXECUT
 `CONTRACT_SOURCE` (`http`/`fake`), `TAYRONA_API_URL`, `SAP_API_URL`, `CONTRACT_API_TIMEOUT_MS` (5000); secretos `TAYRONA_API_TOKEN`, `SAP_API_TOKEN`.
 `EMAIL_PROVIDER` (`zeptomail`/`fake`), `ZEPTOMAIL_BASE_URL` (`https://cpaas.zoho.com/v1.1`), `ZEPTOMAIL_FROM_ADDRESS`, `ZEPTOMAIL_FROM_NAME`, `ZEPTOMAIL_BOUNCE_ADDRESS`, `ZEPTOMAIL_TIMEOUT_MS` (30000); secreto `ZEPTOMAIL_API_KEY`.
 `NONPROD_REDIRECT_TO`: buzón de prueba, **obligatorio** para usar ZeptoMail fuera de producción y **prohibido** en producción; el asunto muestra el destinatario original. En producción, los simulados están prohibidos.
+
+## Paso 9: documentación de Zoho y simulador (2026-10-31)
+
+Lectura de las páginas de `docs/context/19-references.md` (logs, autenticación, webhooks, supresiones, *Processed Emails*, códigos de error).
+
+### Lo que sí está documentado
+
+| Tema | Documentado |
+|---|---|
+| Lista de logs | `GET /v1.1/email` con filtros `client_reference`, `request_id`, `to`, `recipient`, `is_hb`, `is_sb`, `is_delivered`, `is_mailfailure`, `offset`, `limit`, `date_from`/`date_to`. Respuesta `{ data: [{ email_reference, sent_time, subject, from, to, request_id, mailagent_key, status }], status: "success" }`. **La lista no trae `client_reference`** |
+| Detalle de un correo | `GET /v1.1/email/email-reference/{email_reference}`: el mismo objeto más `client_reference`, `opened_time`, `clicked_time` |
+| No encontrado | `{ error: { code: "EL_404", message: "Email log not found" }, status: "failure" }`: **400** en la lista y **404** en el detalle |
+| Credenciales de logs | OAuth 2.0, `Authorization: Zoho-oauthtoken <token>`, alcance `Zeptomail.email.READ` (o `.ALL`); el token de acceso dura 1 hora; sin token válido, `401` |
+| Webhooks | `POST` con el evento JSON como **único parámetro de formulario**. `producer-signature: ts=<epoch ms>;s=<base64 codificado en URL>;s-algorithm=HmacSHA256`; HMAC-SHA256 con la *Authentication Key* del Agent sobre el **valor decodificado** del parámetro (`ts` no se firma). Encabezado de autorización propio opcional. `webhook_request_id` único por transacción. Objetos `softbounce`, `hardbounce`, `fbl_complaint` (con `fblFrom` = destinatario que se quejó) |
+| Supresión automática | Quejas (*feedback loop*) y buzón, dominio o usuario inexistente |
+
+### Supuestos (no documentados; implementados en el simulador y por validar con la cuenta real, §12.7)
+
+| Tema | Supuesto |
+|---|---|
+| Un registro de log por destinatario | `to` y `bcc` tienen cada uno su `email_reference` |
+| Valores de `status` del API | Solo `delivered` aparece documentado. Se suponen las etiquetas de la consola en minúscula: `queued`, `processed`, `delivered`, `soft bounce`, `hard bounce`, `process failed`. El adaptador normaliza (sin espacios, guiones ni mayúsculas) y un valor desconocido **no resuelve** nada |
+| Coincidencia de `client_reference` | Desconocida (exacta o parcial): el adaptador confirma cada resultado con el detalle, que sí trae `client_reference`. El simulador tiene modo `partial` para probarlo |
+| Retraso de aparición en los logs | Desconocido: el simulador lo simula con `logDelayMs` |
+| JSON del webhook | No hay ejemplo completo publicado. Se produce el árbol documentado con `event_name`, `event_message`, `event_data` y `details` como arreglos; destinatario del rebote en `bounced_recipient` y de la entrega en `delivered_to`; objeto de entrega `email_delivered`. El adaptador debe tolerar arreglos u objetos y el evento crudo se guarda siempre |
+| Formato del cuerpo | `Content-Type: application/x-www-form-urlencoded`, parámetro `data` (configurable); el adaptador toma lo que haya después del primer `=` |
+| Clave HMAC | La *Authentication Key* como bytes UTF-8 |
+| Política de reintentos de los webhooks | No documentada: ningún supuesto; la conciliación cubre los eventos perdidos |
+| Servidor OAuth | No documentado en las páginas de CPaaS: `https://accounts.zoho.com/oauth/v2/token` con `grant_type=refresh_token` (configurable por centro de datos) |
+
+### Hallazgo que choca con lo acordado
+
+**No existe una API de supresiones documentada.** La página de autenticación nombra "Suppressions" entre las APIs con OAuth, pero no hay ruta, cuerpo, respuesta ni alcance; la supresión solo se gestiona desde la consola. §10.3 exige que la liberación se confirme con ZeptoMail antes de quitar la dirección de la lista local. Ver la propuesta al usuario (pendiente de aprobación).
+
+### Simulador (`mocks/zeptomail-api.ts`)
+
+- Logs (`GET /v1.1/email`, `GET /v1.1/email/email-reference/{ref}`) con token OAuth, `EL_404` documentado, retraso y coincidencia parcial configurables.
+- Webhooks firmados hacia `MOCK_WEBHOOK_URL`, con el encabezado de autorización propio; `emit(clientReference, event)` en pruebas y `POST /__mock/events` en desarrollo.
+- Escenarios de entrega en la parte local del destinatario: `softbounce`, `softhard`, `softdelivered`, `hardbounce`, `complaint`, `processfailed`, `nowebhook` (webhook perdido), `nolog`. El escenario `timeout` sí acepta el correo (respuesta perdida): aparece en los logs.

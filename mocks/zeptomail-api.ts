@@ -14,9 +14,48 @@
  * Forced scenarios: put `+zm-<scenario>` in the recipient's local part, e.g. `admin+zm-LE_102@altos.com`:
  *   timeout · reset · 429 · 500 · 503 · empty200 · LE_101 · LE_102 · SERR_156 · SERR_157 · SM_111 · SM_128 · SM_133 · SMI_115 · AE_101 · SM_113
  *
- * Run: node mocks/zeptomail-api.ts  (PORT, MOCK_API_KEY, MOCK_VERIFIED_DOMAINS=anutibara.com)
+ * Logs API (https://www.zoho.com/cpaas/help/api/get-email-logs.html and get-specific-email-log.html, read 2026-10-31):
+ *
+ *   GET /v1.1/email?client_reference=…            Authorization: Zoho-oauthtoken <token>
+ *   GET /v1.1/email/email-reference/{reference}
+ *   200 → { "data": [{ email_reference, sent_time, subject, from, to, request_id, mailagent_key, status }], "status": "success" }
+ *         (the list does not carry client_reference; the specific-email response does, plus opened_time/clicked_time)
+ *   400 (list) / 404 (specific) → { "error": { "code": "EL_404", "message": "Email log not found" }, "status": "failure" }
+ *   401 → wrong or missing OAuth token
+ *
+ * Webhooks (https://www.zoho.com/cpaas/help/webhooks.html): POST to the configured URL, the event JSON as the single
+ * form-encoded parameter of the body, `producer-signature: ts=<epoch ms>;s=<url-encoded base64 HMAC>;s-algorithm=HmacSHA256`,
+ * HMAC-SHA256 with the Agent's Authentication Key over the decoded parameter value (ts is not signed), plus the optional
+ * custom authorization header configured on the webhook.
+ *
+ * NOT documented by Zoho, so assumed here (docs/architecture/decisiones.md, step 9 assumptions):
+ *   - one log entry per recipient (to and bcc), each with its own email_reference;
+ *   - the API status strings: `queued`, `processed`, `delivered`, `soft bounce`, `hard bounce`, `process failed`
+ *     (only `delivered` appears in the documentation; the rest are the console labels in lower case);
+ *   - the webhook JSON: no full example is published. The documented field tree is produced with `event_name`,
+ *     `event_message` and `event_data` as arrays, `details` as an array; the recipient of a bounce in `bounced_recipient`,
+ *     of a delivery in `delivered_to`; the delivery object `email_delivered`. `softbounce`, `hardbounce`, `fbl_complaint`
+ *     and the complaint's `fblFrom` are documented;
+ *   - the form parameter name (`MOCK_WEBHOOK_PARAM`, default `data`) and `Content-Type: application/x-www-form-urlencoded`;
+ *   - the Authentication Key used as UTF-8 bytes.
+ *   `clientReferenceMatch: 'partial'` simulates a substring filter (match type undocumented, §12.7) and `logDelayMs`
+ *   the delay before an email shows up in the logs (undocumented, §12.7).
+ *
+ * Delivery scenarios (recipient local part, e.g. `admin+zm-hardbounce@altos.com`), with `autoEvents` on:
+ *   (none) delivered · softbounce (stays) · softhard (soft, then hard) · softdelivered · hardbounce · complaint (delivered,
+ *   then complaint) · processfailed (accepted but never processed; no webhook) · nowebhook (delivered, webhook lost)
+ *   · nolog (accepted, never visible in the logs)
+ * The archive copy (bcc) is always delivered, unless its own local part carries a scenario.
+ * The `timeout` scenario answers late but does accept the email: it shows up in the logs (lost response, §9.2).
+ *
+ * Control endpoint for manual tests: POST /__mock/events { "client_reference", "recipient"?: "to" | "bcc", "event" }
+ *   with event delivered · softbounce · hardbounce · complaint · processfailed.
+ *
+ * Run: node mocks/zeptomail-api.ts  (PORT, MOCK_API_KEY, MOCK_OAUTH_TOKEN, MOCK_VERIFIED_DOMAINS=anutibara.com,
+ *   MOCK_WEBHOOK_URL, MOCK_WEBHOOK_KEY, MOCK_WEBHOOK_AUTH_NAME, MOCK_WEBHOOK_AUTH_VALUE, MOCK_WEBHOOK_PARAM,
+ *   MOCK_EVENT_DELAY_MS=2000, MOCK_LOG_DELAY_MS=0)
  */
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -29,6 +68,55 @@ export interface ZeptoMailMockOptions {
   readonly timeoutMs?: number;
   /** Retry-After (seconds) of the `429` scenario; default 30. */
   readonly retryAfterSeconds?: number;
+  /** OAuth access token accepted by the logs API; default `dev-oauth-token`. */
+  readonly oauthToken?: string;
+  readonly mailagentKey?: string;
+  /** Milliseconds before an accepted email shows up in the logs; default 0. */
+  readonly logDelayMs?: number;
+  /** How the logs API matches `client_reference`; default `exact`. */
+  readonly clientReferenceMatch?: 'exact' | 'partial';
+  readonly webhook?: WebhookTarget;
+  /** Emit the delivery scenario's events by itself after each accepted email. Off by default (tests call `emit`). */
+  readonly autoEvents?: { readonly delayMs: number };
+  /** Current time; default the system clock. */
+  readonly now?: () => Date;
+}
+
+export interface WebhookTarget {
+  readonly url: string;
+  /** Agent Authentication Key (HMAC). */
+  readonly authenticationKey: string;
+  /** Optional custom header configured on the webhook. */
+  readonly authorization?: { readonly name: string; readonly value: string };
+  /** Name of the single form-encoded parameter (undocumented); default `data`. */
+  readonly parameterName?: string;
+}
+
+/** Console status of a recipient, lower case (assumption: only `delivered` is documented as an API value). */
+export type LogStatus = 'queued' | 'processed' | 'delivered' | 'soft bounce' | 'hard bounce' | 'process failed';
+
+export type MockDeliveryEvent = 'delivered' | 'softbounce' | 'hardbounce' | 'complaint' | 'processfailed';
+
+/** One recipient of an accepted email, as the logs API shows it. */
+export interface MockDelivery {
+  readonly emailReference: string;
+  readonly requestId: string;
+  readonly clientReference?: string;
+  readonly recipient: string;
+  readonly kind: 'to' | 'bcc';
+  status: LogStatus;
+  readonly sentAt: Date;
+  /** False for the `nolog` scenario. */
+  readonly logged: boolean;
+}
+
+export interface SentWebhook {
+  readonly webhookRequestId: string;
+  readonly payload: Record<string, unknown>;
+  readonly headers: Record<string, string>;
+  readonly body: string;
+  /** HTTP status answered by the endpoint, or the network error. */
+  readonly response: number | string;
 }
 
 export interface AcceptedEmail {
@@ -96,10 +184,52 @@ interface SendBody {
   readonly attachments?: ReadonlyArray<{ readonly name?: unknown; readonly mime_type?: unknown; readonly content?: unknown }>;
 }
 
-export function createZeptoMailMock(options: ZeptoMailMockOptions): FastifyInstance & { readonly accepted: AcceptedEmail[] } {
+export interface ZeptoMailMock extends FastifyInstance {
+  readonly accepted: AcceptedEmail[];
+  readonly deliveries: MockDelivery[];
+  readonly webhooks: SentWebhook[];
+  /**
+   * Applies a delivery event to one recipient of a send (by client reference; `to` by default) and, unless
+   * `webhook: false`, posts the signed webhook. Returns the webhook sent, if any.
+   */
+  emit(clientReference: string, event: MockDeliveryEvent, options?: { readonly recipient?: 'to' | 'bcc'; readonly webhook?: boolean }): Promise<SentWebhook | undefined>;
+  /** Waits for the scheduled automatic events (autoEvents) to be posted. */
+  settle(): Promise<void>;
+}
+
+/** Status a recipient reaches with each event; the console never moves a final status back (assumption). */
+const STATUS_AFTER: Readonly<Record<MockDeliveryEvent, LogStatus>> = {
+  delivered: 'delivered',
+  softbounce: 'soft bounce',
+  hardbounce: 'hard bounce',
+  // a complaint does not change the log status (assumption): the email was delivered
+  complaint: 'delivered',
+  processfailed: 'process failed',
+};
+
+const FINAL_STATUSES: ReadonlySet<LogStatus> = new Set(['delivered', 'hard bounce', 'process failed']);
+
+const DELIVERY_SCENARIOS: Readonly<Record<string, readonly MockDeliveryEvent[]>> = {
+  softbounce: ['softbounce'],
+  softhard: ['softbounce', 'hardbounce'],
+  softdelivered: ['softbounce', 'delivered'],
+  hardbounce: ['hardbounce'],
+  complaint: ['delivered', 'complaint'],
+  processfailed: ['processfailed'],
+  nowebhook: ['delivered'],
+  nolog: [],
+};
+
+export function createZeptoMailMock(options: ZeptoMailMockOptions): ZeptoMailMock {
   const app = Fastify({ logger: false, bodyLimit: 30 * 1024 * 1024 });
   const accepted: AcceptedEmail[] = [];
+  const deliveries: MockDelivery[] = [];
+  const webhooks: SentWebhook[] = [];
+  const pending = new Set<Promise<unknown>>();
   const format = options.errorFormat ?? 'details';
+  const now = options.now ?? (() => new Date());
+  const oauthToken = options.oauthToken ?? 'dev-oauth-token';
+  const mailagentKey = options.mailagentKey ?? 'mock-agent';
 
   const fail = (reply: FastifyReply, code: string, target?: string, targetValue?: string) => {
     const message = MESSAGES[code] ?? 'error';
@@ -133,7 +263,7 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): FastifyInsta
 
     const to = (body.to ?? []).map((r) => String(r.email_address?.address ?? ''));
     const bcc = (body.bcc ?? []).map((r) => String(r.email_address?.address ?? ''));
-    const scenario = /\+zm-([A-Za-z0-9_]+)@/.exec(to[0] ?? '')?.[1];
+    const scenario = scenarioOf(to[0] ?? '');
     switch (scenario) {
       case 'timeout':
         await delay(options.timeoutMs ?? 60_000);
@@ -151,6 +281,7 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): FastifyInsta
       case undefined:
         break;
       default:
+        if (scenario in DELIVERY_SCENARIOS) break;
         return fail(reply, scenario, scenario === 'SM_113' ? 'to' : undefined, scenario === 'SM_113' ? to[0] : undefined);
     }
 
@@ -178,9 +309,37 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): FastifyInsta
     if (attachments.length > 60) return fail(reply, 'SM_127', 'attachments');
 
     const requestId = randomUUID().replaceAll('-', '');
+    const clientReference = typeof body.client_reference === 'string' ? body.client_reference : undefined;
+    const sentAt = now();
+    const recipients = [...to.map((r) => ({ recipient: r, kind: 'to' as const })), ...bcc.map((r) => ({ recipient: r, kind: 'bcc' as const }))];
+    for (const { recipient, kind } of recipients) {
+      const own = scenarioOf(recipient);
+      const delivery: MockDelivery = {
+        emailReference: randomUUID().replaceAll('-', ''),
+        requestId,
+        clientReference,
+        recipient,
+        kind,
+        status: 'processed',
+        sentAt,
+        logged: own !== 'nolog',
+      };
+      deliveries.push(delivery);
+      if (options.autoEvents && clientReference !== undefined) {
+        const events = DELIVERY_SCENARIOS[own ?? ''] ?? ['delivered'];
+        const work = (async () => {
+          for (const event of events) {
+            await delay(options.autoEvents?.delayMs ?? 0);
+            await apply(delivery, event, own !== 'nowebhook' && event !== 'processfailed');
+          }
+        })().catch(() => undefined);
+        pending.add(work);
+        void work.finally(() => pending.delete(work));
+      }
+    }
     accepted.push({
       requestId,
-      clientReference: typeof body.client_reference === 'string' ? body.client_reference : undefined,
+      clientReference,
       from,
       to,
       bcc,
@@ -196,7 +355,165 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): FastifyInsta
     });
   });
 
-  return Object.assign(app, { accepted });
+  /** Logs API: OAuth token required (Zoho-oauthtoken, as in the documented samples). */
+  const authorised = (authorization: string | undefined) => authorization === `Zoho-oauthtoken ${oauthToken}`;
+  const notFound = (reply: FastifyReply, status: 400 | 404) =>
+    reply.code(status).send({ error: { code: 'EL_404', message: 'Email log not found' }, status: 'failure' });
+  const visible = (d: MockDelivery) => d.logged && now().getTime() - d.sentAt.getTime() >= (options.logDelayMs ?? 0);
+  const fromOf = (d: MockDelivery) => accepted.find((a) => a.requestId === d.requestId);
+  const logEntry = (d: MockDelivery) => ({
+    email_reference: d.emailReference,
+    sent_time: d.sentAt.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    subject: fromOf(d)?.subject ?? '',
+    from: fromOf(d)?.from ?? '',
+    to: d.recipient,
+    request_id: d.requestId,
+    mailagent_key: mailagentKey,
+    status: d.status,
+  });
+
+  app.get('/v1.1/email', async (request, reply) => {
+    if (!authorised(request.headers.authorization)) return reply.code(401).send();
+    const query = request.query as Record<string, string | undefined>;
+    const reference = query.client_reference;
+    const flag = (name: string) => (query[name] === undefined ? undefined : query[name] === 'true');
+    const matches = deliveries.filter((d) => {
+      if (!visible(d)) return false;
+      if (reference !== undefined) {
+        const own = d.clientReference ?? '';
+        if (options.clientReferenceMatch === 'partial' ? !own.includes(reference) : own !== reference) return false;
+      }
+      if (query.request_id !== undefined && d.requestId !== query.request_id) return false;
+      if (query.to !== undefined && (d.kind !== 'to' || d.recipient !== query.to)) return false;
+      if (query.recipient !== undefined && d.recipient !== query.recipient) return false;
+      if (flag('is_hb') !== undefined && (d.status === 'hard bounce') !== flag('is_hb')) return false;
+      if (flag('is_sb') !== undefined && (d.status === 'soft bounce') !== flag('is_sb')) return false;
+      if (flag('is_delivered') !== undefined && (d.status === 'delivered') !== flag('is_delivered')) return false;
+      if (flag('is_mailfailure') !== undefined && (d.status === 'process failed') !== flag('is_mailfailure')) return false;
+      return true;
+    });
+    const offset = Number(query.offset ?? '0');
+    const page = matches.slice(offset, offset + Number(query.limit ?? '25'));
+    if (page.length === 0) return notFound(reply, 400);
+    return { data: page.map(logEntry), status: 'success' };
+  });
+
+  app.get('/v1.1/email/email-reference/:reference', async (request, reply) => {
+    if (!authorised(request.headers.authorization)) return reply.code(401).send();
+    const { reference } = request.params as { reference: string };
+    const d = deliveries.find((x) => x.emailReference === reference && visible(x));
+    if (!d) return notFound(reply, 404);
+    return { data: { ...logEntry(d), client_reference: d.clientReference ?? '' }, status: 'success' };
+  });
+
+  app.post('/__mock/events', async (request, reply) => {
+    const body = (parseJson(String(request.body)) ?? {}) as { client_reference?: string; recipient?: 'to' | 'bcc'; event?: MockDeliveryEvent };
+    if (!body.client_reference || !body.event || !(body.event in STATUS_AFTER)) return reply.code(400).send({ message: 'client_reference and event are required' });
+    const sent = await emit(body.client_reference, body.event, { recipient: body.recipient });
+    return { status: deliveryOf(body.client_reference, body.recipient ?? 'to')?.status, webhook: sent?.response ?? null };
+  });
+
+  const deliveryOf = (clientReference: string, kind: 'to' | 'bcc') => deliveries.find((d) => d.clientReference === clientReference && d.kind === kind);
+
+  async function apply(delivery: MockDelivery, event: MockDeliveryEvent, sendWebhook: boolean): Promise<SentWebhook | undefined> {
+    // final statuses do not move back (assumption)
+    if (!FINAL_STATUSES.has(delivery.status)) delivery.status = STATUS_AFTER[event];
+    if (!sendWebhook || event === 'processfailed' || !options.webhook) return undefined;
+    return postWebhook(options.webhook, webhookPayload(delivery, event));
+  }
+
+  async function emit(
+    clientReference: string,
+    event: MockDeliveryEvent,
+    emitOptions: { readonly recipient?: 'to' | 'bcc'; readonly webhook?: boolean } = {},
+  ): Promise<SentWebhook | undefined> {
+    const delivery = deliveryOf(clientReference, emitOptions.recipient ?? 'to');
+    if (!delivery) throw new Error(`No ${emitOptions.recipient ?? 'to'} recipient sent with client reference ${clientReference}`);
+    return apply(delivery, event, emitOptions.webhook ?? true);
+  }
+
+  function webhookPayload(delivery: MockDelivery, event: Exclude<MockDeliveryEvent, 'processfailed'>): Record<string, unknown> {
+    const email = fromOf(delivery);
+    const at = now().toISOString();
+    const object = event === 'complaint' ? 'fbl_complaint' : event === 'delivered' ? 'email_delivered' : event;
+    const details =
+      event === 'complaint'
+        ? { fblFrom: delivery.recipient, returnPath: email?.from ?? '', ip: '203.0.113.10', from: email?.from ?? '', to: delivery.recipient, time: at }
+        : event === 'delivered'
+          ? { delivered_to: delivery.recipient, time: at }
+          : {
+              bounced_recipient: delivery.recipient,
+              reason: event === 'hardbounce' ? 'Mailbox does not exist' : 'Mailbox full',
+              diagnostic_message: event === 'hardbounce' ? '550 5.1.1 User unknown' : '452 4.2.2 Mailbox full',
+              time: at,
+            };
+    return {
+      event_name: [object],
+      event_message: [
+        {
+          email_info: {
+            email_reference: delivery.emailReference,
+            client_reference: delivery.clientReference ?? '',
+            is_smtp_trigger: false,
+            subject: email?.subject ?? '',
+            bounce_address: '',
+            from: { address: email?.from ?? '', name: '' },
+            to: (email?.to ?? []).map((address) => ({ email_address: { address, name: '' } })),
+            ...(email && email.bcc.length > 0 ? { bcc: email.bcc.map((address) => ({ email_address: { address, name: '' } })) } : {}),
+            processed_time: delivery.sentAt.toISOString(),
+            object: 'email',
+          },
+          event_data: [{ details: [details], object }],
+          request_id: delivery.requestId,
+        },
+      ],
+      mailagent_key: mailagentKey,
+      webhook_request_id: randomUUID().replaceAll('-', ''),
+    };
+  }
+
+  async function postWebhook(target: WebhookTarget, payload: Record<string, unknown>): Promise<SentWebhook> {
+    const json = JSON.stringify(payload);
+    const body = `${target.parameterName ?? 'data'}=${encodeURIComponent(json)}`;
+    const headers: Record<string, string> = {
+      'content-type': 'application/x-www-form-urlencoded',
+      'producer-signature': signWebhook(json, target.authenticationKey, now().getTime()),
+      ...(target.authorization ? { [target.authorization.name.toLowerCase()]: target.authorization.value } : {}),
+    };
+    let response: number | string;
+    try {
+      response = (await fetch(target.url, { method: 'POST', headers, body, signal: AbortSignal.timeout(10_000) })).status;
+    } catch (error) {
+      response = String((error as { cause?: { code?: string } }).cause?.code ?? error);
+    }
+    const sent: SentWebhook = { webhookRequestId: String(payload.webhook_request_id), payload, headers, body, response };
+    webhooks.push(sent);
+    return sent;
+  }
+
+  const settle = async () => {
+    while (pending.size > 0) await Promise.all([...pending]);
+  };
+
+  return Object.assign(app, { accepted, deliveries, webhooks, emit, settle });
+}
+
+/** `producer-signature` value: base64 HMAC-SHA256 of the decoded parameter, URL-encoded as in the documented sample. */
+export function signWebhook(decodedParameter: string, authenticationKey: string, ts: number): string {
+  const s = createHmac('sha256', Buffer.from(authenticationKey, 'utf8')).update(decodedParameter, 'utf8').digest('base64');
+  return `ts=${ts};s=${encodeURIComponent(s)};s-algorithm=HmacSHA256`;
+}
+
+function scenarioOf(address: string): string | undefined {
+  return /\+zm-([A-Za-z0-9_]+)@/.exec(address)?.[1];
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -204,6 +521,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     apiKey: process.env.MOCK_API_KEY ?? 'dev-key',
     verifiedDomains: (process.env.MOCK_VERIFIED_DOMAINS ?? 'anutibara.com').split(','),
     errorFormat: process.env.MOCK_ERROR_FORMAT === 'documented' ? 'documented' : 'details',
+    oauthToken: process.env.MOCK_OAUTH_TOKEN ?? 'dev-oauth-token',
+    logDelayMs: Number(process.env.MOCK_LOG_DELAY_MS ?? '0'),
+    ...(process.env.MOCK_WEBHOOK_URL
+      ? {
+          webhook: {
+            url: process.env.MOCK_WEBHOOK_URL,
+            authenticationKey: process.env.MOCK_WEBHOOK_KEY ?? 'dev-webhook-key',
+            ...(process.env.MOCK_WEBHOOK_AUTH_NAME
+              ? { authorization: { name: process.env.MOCK_WEBHOOK_AUTH_NAME, value: process.env.MOCK_WEBHOOK_AUTH_VALUE ?? '' } }
+              : {}),
+            parameterName: process.env.MOCK_WEBHOOK_PARAM ?? 'data',
+          },
+        }
+      : {}),
+    autoEvents: { delayMs: Number(process.env.MOCK_EVENT_DELAY_MS ?? '2000') },
   });
   const port = Number(process.env.PORT ?? '4002');
   await app.listen({ port, host: '127.0.0.1' });
