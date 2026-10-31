@@ -74,6 +74,17 @@ function toReceipt(r: Row): Receipt {
   };
 }
 
+function toAlert(r: Row): Alert {
+  return {
+    alertId: r.alert_id as string,
+    type: r.type as AlertType,
+    subject: r.subject as string,
+    detail: r.detail as string,
+    raisedAt: r.raised_at as Date,
+    ...(r.acknowledged_at ? { acknowledgedAt: r.acknowledged_at as Date, acknowledgedBy: r.acknowledged_by as string } : {}),
+  };
+}
+
 interface StoredConflictingName {
   readonly fileName: string;
   readonly period: string;
@@ -443,14 +454,27 @@ function stores(db: Queryable): BulkMailerStores {
         a.alertId, a.type, a.subject, a.detail, a.raisedAt,
       ]);
     },
-    async list() {
-      return (await rows(db, 'SELECT * FROM alerts ORDER BY seq')).map((r): Alert => ({
-        alertId: r.alert_id as string,
-        type: r.type as AlertType,
-        subject: r.subject as string,
-        detail: r.detail as string,
-        raisedAt: r.raised_at as Date,
-      }));
+    async get(alertId) {
+      const r = await firstRow(db, 'SELECT * FROM alerts WHERE alert_id = $1', [alertId]);
+      return r && toAlert(r);
+    },
+    async list(filter = {}) {
+      const found = await rows(
+        db,
+        `SELECT * FROM alerts
+         WHERE ($1::boolean IS NOT TRUE OR acknowledged_at IS NULL) AND ($2::text IS NULL OR type = $2) AND ($3::text IS NULL OR subject = $3)
+         ORDER BY seq ${filter.newestFirst ? 'DESC' : 'ASC'} LIMIT $4`,
+        [filter.pending ?? null, filter.type ?? null, filter.subject ?? null, filter.limit ?? null],
+      );
+      return found.map(toAlert);
+    },
+    async acknowledge(alertId, by, at) {
+      const updated = await rows(
+        db,
+        'UPDATE alerts SET acknowledged_at = $3, acknowledged_by = $2 WHERE alert_id = $1 AND acknowledged_at IS NULL RETURNING alert_id',
+        [alertId, by, at],
+      );
+      return updated.length > 0;
     },
   };
 

@@ -268,7 +268,7 @@ export class SweepUnconfirmed {
 }
 
 async function alertOnce(tx: BulkMailerStores, newId: () => string, now: Date, subject: string, detail: string): Promise<boolean> {
-  if ((await tx.alerts.list()).some((a) => a.type === 'WEBHOOKS_NOT_RECEIVED' && a.subject === subject)) return false;
+  if ((await tx.alerts.list({ type: 'WEBHOOKS_NOT_RECEIVED', subject, limit: 1 })).length > 0) return false;
   await raiseAlert(tx, newId, {
     alertId: newId(),
     type: 'WEBHOOKS_NOT_RECEIVED',

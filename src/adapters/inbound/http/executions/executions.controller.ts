@@ -68,11 +68,6 @@ export class ExecutionsController {
     return result.value;
   }
 
-  @Get('alerts')
-  alerts() {
-    return this.adapters.repository.alerts.list();
-  }
-
   /**
    * Server-sent events of an execution. Resumes after `Last-Event-ID` (D11). Closes when the execution finishes
    * or when the access token expires (D12): the client renews the token and reconnects from the last id.

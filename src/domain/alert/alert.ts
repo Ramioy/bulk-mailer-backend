@@ -34,4 +34,18 @@ export interface Alert {
   readonly subject: string;
   readonly detail: string;
   readonly raisedAt: Date;
+  /** D46: the operator saw it and dealt with it; it stays in the history. */
+  readonly acknowledgedAt?: Date;
+  readonly acknowledgedBy?: string;
+}
+
+/** D46: which alerts to list. Without filters, every alert, oldest first. */
+export interface AlertFilter {
+  /** Only the alerts nobody acknowledged yet. */
+  readonly pending?: boolean;
+  readonly type?: AlertType;
+  readonly subject?: string;
+  /** Newest first (and `limit` keeps the newest). */
+  readonly newestFirst?: boolean;
+  readonly limit?: number;
 }

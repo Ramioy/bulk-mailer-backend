@@ -1,4 +1,4 @@
-import type { Alert } from '../domain/alert/alert';
+import type { Alert, AlertFilter } from '../domain/alert/alert';
 import type { AuditEntry } from '../domain/audit/audit';
 import type { Batch, Execution } from '../domain/batch/batch';
 import type { Manifest } from '../domain/batch/manifest';
@@ -127,7 +127,11 @@ export interface WebhookInbox {
 
 export interface AlertStore {
   insert(alert: Alert): Promise<void>;
-  list(): Promise<Alert[]>;
+  get(alertId: string): Promise<Alert | undefined>;
+  /** Filtered in the store (SQL in PostgreSQL), so deduplication does not read the whole history (D46). */
+  list(filter?: AlertFilter): Promise<Alert[]>;
+  /** False when the alert does not exist or was already acknowledged. */
+  acknowledge(alertId: string, by: string, at: Date): Promise<boolean>;
 }
 
 export interface AuditLog {

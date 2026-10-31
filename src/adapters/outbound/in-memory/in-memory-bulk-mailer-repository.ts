@@ -220,7 +220,21 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     insert: async (alert) => {
       this.state.alerts.push(alert);
     },
-    list: async () => [...this.state.alerts],
+    get: async (alertId) => this.state.alerts.find((a) => a.alertId === alertId),
+    list: async (filter = {}) => {
+      const found = this.state.alerts.filter(
+        (a) =>
+          (!filter.pending || !a.acknowledgedAt) && (!filter.type || a.type === filter.type) && (filter.subject === undefined || a.subject === filter.subject),
+      );
+      const ordered = filter.newestFirst ? found.reverse() : found;
+      return filter.limit === undefined ? ordered : ordered.slice(0, filter.limit);
+    },
+    acknowledge: async (alertId, by, at) => {
+      const index = this.state.alerts.findIndex((a) => a.alertId === alertId && !a.acknowledgedAt);
+      if (index < 0) return false;
+      this.state.alerts[index] = { ...(this.state.alerts[index] as Alert), acknowledgedAt: at, acknowledgedBy: by };
+      return true;
+    },
   };
 
   readonly audit: BulkMailerStores['audit'] = {

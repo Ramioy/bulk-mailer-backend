@@ -58,6 +58,8 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   NAME_NOT_IN_CONFLICT: UnprocessableEntityException,
   CHOSEN_NAME_INVALID: UnprocessableEntityException,
   OUTBOX_EVENT_NOT_DEAD: NotFoundException,
+  ALERT_NOT_FOUND: NotFoundException,
+  ALERT_ALREADY_ACKNOWLEDGED: ConflictException,
 };
 
 /** Typed use-case errors → HTTP status with `{ error, ...details }` body. */

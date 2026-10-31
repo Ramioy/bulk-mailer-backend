@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 
 import { AdminController } from './adapters/inbound/http/admin/admin.controller';
 import { OutboxController } from './adapters/inbound/http/outbox/outbox.controller';
+import { AlertsController } from './adapters/inbound/http/alerts/alerts.controller';
 import { AuthController } from './adapters/inbound/http/auth/auth.controller';
 import { BearerAuthGuard } from './adapters/inbound/http/auth/bearer-auth.guard';
 import { DeliveryController } from './adapters/inbound/http/delivery/delivery.controller';
@@ -159,7 +160,7 @@ export class AppModule {
     const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock, { newId: adapters.newId, logger: new Logger('OutboxRelay') });
     return {
       module: AppModule,
-      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController, OutboxController],
+      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController, OutboxController, AlertsController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: ADAPTERS, useValue: adapters },

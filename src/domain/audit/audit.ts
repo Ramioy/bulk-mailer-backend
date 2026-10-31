@@ -22,6 +22,8 @@ export const AuditAction = {
   ARCHIVE_COPY_CHANGED: 'ARCHIVE_COPY_CHANGED',
   /** D39: the operator asked the relay to try a dead outbox event again. */
   OUTBOX_EVENT_RETRIED: 'OUTBOX_EVENT_RETRIED',
+  /** D46: the operator acknowledged an alert. */
+  ALERT_ACKNOWLEDGED: 'ALERT_ACKNOWLEDGED',
 } as const;
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];
 

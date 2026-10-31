@@ -223,7 +223,7 @@ async function detectDuplicateSend(
   const index = attempts.findIndex((a) => a.attemptId === older.attemptId);
   if (index < 0 || attempts[index + 1]?.kind !== 'BATCH') return;
   const latest = attempts.at(-1) as Attempt;
-  const raised = (await tx.alerts.list()).some((a) => a.type === 'DUPLICATE_SEND_DETECTED' && a.subject === receipt.sha256 && a.detail.includes(older.attemptId));
+  const raised = (await tx.alerts.list({ type: 'DUPLICATE_SEND_DETECTED', subject: receipt.sha256 })).some((a) => a.detail.includes(older.attemptId));
   if (raised) return;
   await raiseAlert(tx, newId, {
     alertId: newId(),

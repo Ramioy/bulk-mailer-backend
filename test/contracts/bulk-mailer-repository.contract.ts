@@ -223,6 +223,26 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
     });
 
     describe('alerts, audit, concepts and settings', () => {
+      it('D46: filters alerts by pending, type and subject, newest first with a limit, and acknowledges once', async () => {
+        const at = (s: number) => new Date(T0.getTime() + s * 1000);
+        await repo.alerts.insert({ alertId: 'a1', type: 'HARD_BOUNCE', subject: 'r1', detail: 'one', raisedAt: at(1) });
+        await repo.alerts.insert({ alertId: 'a2', type: 'BATCH_STOPPED', subject: 'e1', detail: 'two', raisedAt: at(2) });
+        await repo.alerts.insert({ alertId: 'a3', type: 'HARD_BOUNCE', subject: 'r2', detail: 'three', raisedAt: at(3) });
+        expect((await repo.alerts.list()).map((a) => a.alertId)).toEqual(['a1', 'a2', 'a3']);
+        expect((await repo.alerts.list({ newestFirst: true, limit: 2 })).map((a) => a.alertId)).toEqual(['a3', 'a2']);
+        expect((await repo.alerts.list({ type: 'HARD_BOUNCE' })).map((a) => a.alertId)).toEqual(['a1', 'a3']);
+        expect((await repo.alerts.list({ type: 'HARD_BOUNCE', subject: 'r2' })).map((a) => a.alertId)).toEqual(['a3']);
+        expect(await repo.alerts.list({ subject: 'nope' })).toEqual([]);
+
+        expect(await repo.alerts.acknowledge('a1', 'operador', at(10))).toBe(true);
+        expect(await repo.alerts.acknowledge('a1', 'otro', at(11))).toBe(false);
+        expect(await repo.alerts.acknowledge('nope', 'operador', at(11))).toBe(false);
+        expect(await repo.alerts.get('a1')).toEqual({ alertId: 'a1', type: 'HARD_BOUNCE', subject: 'r1', detail: 'one', raisedAt: at(1), acknowledgedAt: at(10), acknowledgedBy: 'operador' });
+        expect(await repo.alerts.get('nope')).toBeUndefined();
+        expect((await repo.alerts.list({ pending: true })).map((a) => a.alertId)).toEqual(['a2', 'a3']);
+        expect((await repo.alerts.list({ pending: true, type: 'HARD_BOUNCE', newestFirst: true })).map((a) => a.alertId)).toEqual(['a3']);
+      });
+
       it('keeps alerts and audit entries in order', async () => {
         await repo.alerts.insert({ alertId: 'al1', type: 'BATCH_STOPPED', subject: 'e1', detail: 'd', raisedAt: T0 });
         expect(await repo.alerts.list()).toHaveLength(1);

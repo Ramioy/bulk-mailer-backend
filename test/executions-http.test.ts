@@ -223,6 +223,34 @@ describe('executions over HTTP', () => {
     expect(restarted.statusCode).toBe(202);
   });
 
+  it('D46: lists alerts newest first with filters, and acknowledges one once (audited)', async () => {
+    const { accessToken } = await signIn();
+    ctx.email.respondWith({ kind: 'ACCOUNT_ERROR', detail: 'LE_102' });
+    await uploadAndSend(accessToken, 1);
+    await ctx.runner.drain();
+    await ctx.repository.alerts.insert({ alertId: 'later', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: ctx.clock.now() });
+    const call = (method: 'GET' | 'POST', url: string, payload?: object) =>
+      ctx.app.inject({ method, url, headers: { authorization: `Bearer ${accessToken}` }, ...(payload ? { payload } : {}) });
+
+    expect((await call('GET', '/alerts')).json().map((a: { type: string }) => a.type)).toEqual(['HARD_BOUNCE', 'BATCH_STOPPED']);
+    expect((await call('GET', '/alerts?type=BATCH_STOPPED')).json()).toHaveLength(1);
+    expect((await call('GET', '/alerts?limit=1')).json().map((a: { alertId: string }) => a.alertId)).toEqual(['later']);
+    expect((await call('GET', '/alerts?subject=r1')).json()).toHaveLength(1);
+    expect((await call('GET', '/alerts?type=NOPE')).statusCode).toBe(400);
+    expect((await call('GET', '/alerts?limit=0')).statusCode).toBe(400);
+
+    expect((await ctx.app.inject({ method: 'POST', url: '/alerts/later/acknowledge' })).statusCode).toBe(401);
+    const acknowledged = await call('POST', '/alerts/later/acknowledge', { note: 'mailbox fixed' });
+    expect(acknowledged.statusCode).toBe(200);
+    expect(acknowledged.json()).toMatchObject({ alertId: 'later', acknowledgedBy: 'operador' });
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'ALERT_ACKNOWLEDGED', subject: 'later', note: 'mailbox fixed' });
+    const again = await call('POST', '/alerts/later/acknowledge');
+    expect([again.statusCode, again.json()]).toEqual([409, { error: 'ALERT_ALREADY_ACKNOWLEDGED' }]);
+    const unknown = await call('POST', '/alerts/nope/acknowledge');
+    expect([unknown.statusCode, unknown.json()]).toEqual([404, { error: 'ALERT_NOT_FOUND' }]);
+    expect((await call('GET', '/alerts?pending=true')).json().map((a: { type: string }) => a.type)).toEqual(['BATCH_STOPPED']);
+  });
+
   it('lists alerts', async () => {
     const { accessToken } = await signIn();
     ctx.email.respondWith({ kind: 'ACCOUNT_ERROR', detail: 'LE_102' });
