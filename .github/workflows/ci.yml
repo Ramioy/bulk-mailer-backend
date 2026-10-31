@@ -8,6 +8,20 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: bulk_mailer_test
+          POSTGRES_USER: bulk_mailer
+          POSTGRES_PASSWORD: bulk_mailer_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bulk_mailer -d bulk_mailer_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://bulk_mailer:bulk_mailer_ci@localhost:5432/bulk_mailer_test
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4

@@ -16,10 +16,10 @@ simulados, y al final los sistemas externos, que dependen de terceros.
 
 | # | Componente | Contenido | Listo cuando… | Estado |
 |---|---|---|---|---|
-| 3 | Persistencia | Migraciones PostgreSQL, `BulkMailerRepository`, UNIQUE (`sha256`, `attemptId`, `webhook_request_id`), auditoría solo-inserción también por permisos de BD | Pruebas de integración contra PostgreSQL en Docker | ⏳ |
+| 3 | Persistencia | Migraciones PostgreSQL, `BulkMailerRepository`, UNIQUE (`sha256`, `attemptId`, `webhook_request_id`), auditoría solo-inserción también por permisos de BD | Pruebas de integración contra PostgreSQL en Docker | ✅ |
 | 4 | Autenticación | `LocalJwtAuthenticator`, Argon2, comando de hash, renovación, protección de endpoints | Ningún endpoint sin token, salvo inicio de sesión | ⏳ |
 | 5 | Carga | `LocalVolumeFileStore`, `BasicPdfInspector`, `UploadReceipts`, `RemoveReceipt`, `GetBatchSummary`, *Refresh recipients*, endpoints REST | Lote real subido; resumen con válidos, inválidos y repetidos descartados | ⏳ |
-| 6 | Envío | `JobQueue` (tabla + `SKIP LOCKED`), proceso en segundo plano, `ExecuteBatch` con bloqueo global, recuperación tras caída, SSE, `PurgeBatchFiles` | Lote completo con `FakeEmailProvider`, incluidas pausas, detención tras 3 incidencias y caída simulada | ⏳ |
+| 6 | Envío | `JobQueue` (tabla + `SKIP LOCKED`, ya implementada en el paso 3), `EventBus` como *outbox* en PostgreSQL, proceso en segundo plano, `ExecuteBatch` con bloqueo global, recuperación tras caída, SSE, `PurgeBatchFiles` | Lote completo con `FakeEmailProvider`, incluidas pausas, detención tras 3 incidencias y caída simulada | ⏳ |
 
 ## Etapa 3 — Sistemas externos
 

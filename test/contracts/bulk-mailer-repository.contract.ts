@@ -71,6 +71,8 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
 
     describe('attempts', () => {
       it('inserts once per attempt id and lists by receipt in order', async () => {
+        await repo.receipts.save(aReceipt());
+        await repo.executions.tryStart(anExecution({ executionId: 'exec-1' }));
         await repo.attempts.insert(anAttempt({ attemptId: 'a2', startedAt: new Date(T0.getTime() + 1000) }));
         await repo.attempts.insert(anAttempt({ attemptId: 'a1' }));
         await expect(repo.attempts.insert(anAttempt({ attemptId: 'a1' }))).rejects.toBeInstanceOf(DuplicateAttemptError);
@@ -133,7 +135,7 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
       it('keeps every change when the work succeeds', async () => {
         await repo.transaction(async (tx) => {
           await tx.receipts.save(aReceipt());
-          await tx.attempts.insert(anAttempt());
+          await tx.attempts.insert(anAttempt({ executionId: undefined }));
         });
         expect(await repo.receipts.get(hashOf('a'))).toBeDefined();
         expect(await repo.attempts.get('attempt-1')).toBeDefined();
@@ -144,7 +146,7 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         await expect(
           repo.transaction(async (tx) => {
             await tx.receipts.save(aReceipt({ state: 'SENDING' }));
-            await tx.attempts.insert(anAttempt());
+            await tx.attempts.insert(anAttempt({ executionId: undefined }));
             throw new Error('boom');
           }),
         ).rejects.toThrow('boom');

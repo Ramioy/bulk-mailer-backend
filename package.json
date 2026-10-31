@@ -18,19 +18,24 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:up": "docker compose up -d postgres",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "test:db": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run",
+    "db:migrate": "pnpm build && node --env-file-if-exists=.env dist/adapters/outbound/postgres/migrate.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.3.2",
     "@nestjs/core": "^12.3.2",
     "@nestjs/platform-fastify": "^12.3.2",
+    "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "typeorm": "^1.1.2"
   },
   "devDependencies": {
     "@nestjs/testing": "^12.3.2",
     "@swc/core": "^1.16.20",
     "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
     "oxlint": "^1.90.0",
     "typescript": "^7.0.2",
     "unplugin-swc": "^2.0.0",

@@ -37,8 +37,20 @@ pnpm db:up
 pnpm dev            # http://localhost:3000/health
 ```
 
+## Database
+
+```bash
+pnpm db:up          # PostgreSQL 18 with two databases: bulk_mailer and bulk_mailer_test
+pnpm db:migrate     # applies pending migrations to DATABASE_URL
+```
+
+Production roles (application user with insert-only audit): [`deploy/db/roles.sql`](deploy/db/roles.sql).
+
 ## Checks
 
 ```bash
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm test:db        # same tests plus PostgreSQL integration (reads TEST_DATABASE_URL from .env)
 ```
+
+`pnpm test` skips the PostgreSQL integration tests when `TEST_DATABASE_URL` is not set; CI always sets it.
