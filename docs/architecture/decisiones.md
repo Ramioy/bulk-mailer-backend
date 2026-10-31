@@ -507,7 +507,54 @@ Hallazgos M1 y M12 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la ram
 
 ### Supuestos (informados al usuario)
 
-- **`UNCERTAIN` cuenta como procesado** (D42): al completar el lote su archivo se borra, como antes. Si después resulta no enviado (`FAILED / NOT_FOUND_AT_PROVIDER`), el operador debe volver a subirlo para reenviarlo; ese paso deliberado protege contra un duplicado si el correo sí salió (D34). Si se prefiere que entre solo al siguiente manifiesto, habría que conservarlo (por aprobar).
+- **`UNCERTAIN` cuenta como procesado** (D42) — ✅ aprobado por el usuario el 2026-10-31: al completar el lote su archivo se borra, como antes. Si después resulta no enviado (`FAILED / NOT_FOUND_AT_PROVIDER`), el operador debe volver a subirlo para reenviarlo; ese paso deliberado protege contra un duplicado si el correo sí salió (D34). Si se prefiere que entre solo al siguiente manifiesto, habría que conservarlo (por aprobar).
 - **El método `purgeBatch` del puerto** queda sin uso en la aplicación; se conserva por compatibilidad y por su prueba de contrato.
 - **El asentamiento no deja auditoría**: no es una acción de un operador; queda el evento `BATCH_COMPLETED` en el *outbox*.
+
+## Alertas que dicen la verdad: auditoría, bloque 6 (2026-10-31)
+
+Hallazgos M2, M3, M4, M6 y M14 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la rama `audita`.
+
+| # | Decisión |
+|---|---|
+| D43 | ✅ **(M2) Un `UNCERTAIN` que la última consulta programada no resolvió no desaparece.** Si la consulta final lo deja `UNCERTAIN` (la API de logs no respondió, por ejemplo), se genera la alerta **`UNCERTAIN_UNRESOLVED`**, una vez por intento, con el archivo, el intento, el motivo y las salidas manuales (`verify-delivery` y `resolve`). El barrido horario también consulta los `UNCERTAIN` cuya última consulta programada ya pasó, hasta 72 h, **sin marcarlos nunca fallidos**: si aparecen en los logs quedan `SENT`; si no, siguen `UNCERTAIN`. Pasadas las 72 h solo se ven en el resumen del lote y en su alerta |
+| D44 | ✅ **(M3, M4) El barrido cubre `SOFT_BOUNCE`, tiene presupuesto y no da falsas alarmas de silencio.** (1) El barrido consulta los `SENT` con entrega `UNCONFIRMED` **o `SOFT_BOUNCE`** entre N y 72 h: un rebote duro cuyo webhook se perdió se detecta, se suprime la dirección y se alerta. (2) **Presupuesto**: como máximo `RECONCILE_SWEEP_BATCH_SIZE` consultas por barrido (50), primero las que llevan más tiempo sin consultarse y luego las más antiguas, para que ninguna quede sin turno. (3) **Silencio total**: solo cuentan los envíos que salieron, es decir, cuyo soporte está `SENT` (o sigue `UNCERTAIN`) por ese intento; un envío incierto que resultó no existir (`FAILED / NOT_FOUND_AT_PROVIDER`) o que fue reemplazado por otro intento no espera webhook. Un envío confirmado tarde por los logs (D34) sigue siendo una pérdida probada de webhook, y la alerta lo dice |
+| D45 | ✅ **(M6) Un webhook del que no se puede leer nada nuestro no pasa en silencio.** El lector del webhook informa qué nombres de evento vio y por qué descartó cada mensaje; eso se guarda con el webhook. Si un webhook autenticado no da ningún evento (salvo que solo traiga aperturas o clics) o todos sus eventos son de intentos desconocidos, se genera la alerta **`WEBHOOK_UNPARSED`**, una vez por webhook, con los motivos y dónde ver el contenido. La alerta de silencio distingue "no llegó ningún webhook" de "llegaron webhooks que no se pudieron leer" |
+| D46 | ✅ **(M14) Alertas con las que el operador puede trabajar.** Las alertas se pueden **reconocer** (quién y cuándo; auditado `ALERT_ACKNOWLEDGED`, con nota opcional) y siguen en el historial. `GET /alerts` devuelve las **más recientes primero** (antes, las más antiguas), con filtros `pending`, `type`, `subject` y `limit` (200 por defecto, máximo 1000). La deduplicación de alertas consulta por tipo y sujeto en la base, sin leer todo el historial |
+
+### Cómo quedó implementado
+
+- **D43**: `ReconcileAttempt` genera la alerta cuando la consulta final deja el soporte `UNCERTAIN` (deduplicada por tipo, sujeto e intento). `SweepUnconfirmed` (se mantiene el nombre) suma los `UNCERTAIN` cuyo último intento terminó hace más que el último retraso de `RECONCILE_DELAYS_MINUTES` y menos de `RECONCILE_SWEEP_MAX_HOURS`; un envío que quedó `UNCERTAIN` por una caída no tiene hora de fin y cuenta desde su inicio. Siempre consulta con `final=false`.
+- **D44**: el barrido usa `isPendingDelivery` (la misma regla que la verificación por minuto). El orden del presupuesto se guarda en memoria en el caso de uso, como en D38. El conteo de silencio relee cada soporte y comprueba que su último intento sea el del envío.
+- **D45**: `parseZeptoMailWebhook` devuelve `notes` (`eventNames`, `dropped: [{ index, reason }]`, `onlyIgnorable`) además de los eventos. Se guardan en `webhook_events.parse_notes` (migración `WebhookParseNotes1761908400000`): es una columna `jsonb` y el operador los ve en `GET /webhooks/zeptomail/events/{id}` junto al cuerpo crudo, sin tener que reproducir el análisis. `ProcessDeliveryEvent` genera la alerta en la misma transacción en que marca el webhook procesado. De paso, el lector ahora entiende listas de textos (`event_name: ["hardbounce"]`), que antes descartaba, así que el nombre del evento sí sirve de respaldo.
+- **D46**: columnas `alerts.acknowledged_at`/`acknowledged_by` e índices por tipo y sujeto y de pendientes (migración `AlertAcknowledgement1761904800000`). `AlertStore` gana `get`, `list(filtro)` filtrado en SQL (equivalente en memoria) y `acknowledge`; pruebas de contrato. Casos de uso `ListAlerts` y `AcknowledgeAlert`; `AlertsController` (el controlador de ejecuciones ya no lee el repositorio). `WEBHOOKS_NOT_RECEIVED`, `DUPLICATE_SEND_DETECTED`, `UNCERTAIN_UNRESOLVED` y `WEBHOOK_UNPARSED` se deduplican con la consulta filtrada.
+- **Pruebas**: `test/application/pending-deliveries.test.ts` (H11, H8 y H9 de la auditoría como pruebas reales, presupuesto y rotación), pruebas HTTP de `WEBHOOK_UNPARSED` y de alertas, contratos de alertas, y la prueba del lector con los motivos de descarte.
+
+### Alertas nuevas
+
+| Alerta | Sujeto | Cuándo |
+|---|---|---|
+| `UNCERTAIN_UNRESOLVED` | SHA-256 del soporte | La última consulta programada dejó el envío `UNCERTAIN` (D43) |
+| `WEBHOOK_UNPARSED` | `webhookRequestId` | Un webhook autenticado no dio ningún evento utilizable, o todos eran de intentos desconocidos (D45) |
+
+### Endpoints (JWT, D20)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `GET` | `/alerts?pending=true&type=&subject=&limit=` | Alertas, **las más recientes primero** (cambio de orden), 200 por defecto y 1000 como máximo. Errores: `INVALID_REQUEST` (400) por un filtro inválido |
+| `POST` | `/alerts/{alertId}/acknowledge` | `{ "note"?: "…" }` → 200 con la alerta reconocida. Auditado `ALERT_ACKNOWLEDGED`. Errores: `ALERT_NOT_FOUND` (404), `ALERT_ALREADY_ACKNOWLEDGED` (409) |
+
+### Configuración nueva
+
+| Variable | Por defecto | Uso |
+|---|---|---|
+| `RECONCILE_SWEEP_BATCH_SIZE` | 50 | Consultas como máximo por barrido horario (D44). Entero positivo |
+
+### Supuestos (informados al usuario)
+
+- **Aperturas y clics** (`email_open`, `email_click`…) no son eventos de entrega: un webhook que solo trae eso no genera `WEBHOOK_UNPARSED`. Si ZeptoMail no se configura para enviarlos, nunca llegan.
+- **Más allá de 72 h** un `UNCERTAIN` o un `SENT` sin confirmar ya no se consultan solos: quedan en el resumen y, el incierto, en su alerta.
+- **Con 300 soportes y 50 consultas por hora** un barrido completo tarda unas 6 horas en el peor caso; los webhooks siguen siendo la vía principal y el barrido es la red de seguridad.
+- **El cambio de orden de `GET /alerts`** (más recientes primero) es aceptable porque el cliente web todavía no existe.
+- **Webhooks anteriores a D45** no tienen `parseNotes`: si no dieron eventos, la alerta dice "nothing readable".
 

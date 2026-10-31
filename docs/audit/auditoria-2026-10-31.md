@@ -122,6 +122,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### M2 — Un `UNCERTAIN` que la última consulta no pudo resolver queda así para siempre, sin alerta
 
+**Estado:** corregido en `audita` (D43, commit `88dd0c4`).
+
 - **Evidencia:** `reconciliation.ts:65-68` (`UNAVAILABLE` → solo historial); `SweepUnconfirmed` solo mira `SENT` (línea 180); `CheckRecentSends` solo 30 min. No hay alerta de "`UNCERTAIN` sin resolver".
 - **Verificado (§7, H11):** tras la consulta final con la API caída: `state: 'UNCERTAIN', pendingJob: undefined, alerts: []` incluso 100 h después.
 - **Impacto:** la decisión "el operador puede resolverlo a mano" exige que alguien lo vea. Si no, el cliente nunca recibe su soporte y el sistema no lo dice.
@@ -129,12 +131,16 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### M3 — El barrido ignora `SOFT_BOUNCE`: un rebote duro cuyo webhook se perdió nunca se detecta ni suprime
 
+**Estado:** corregido en `audita` (D44, commit `e16c4d0`).
+
 - **Evidencia:** `reconciliation.ts:181` (`if (receipt.deliveryState !== 'UNCONFIRMED') continue`); `isPendingDelivery` sí incluye `SOFT_BOUNCE` pero el barrido lo filtra antes.
 - **Verificado (§7, H8):** `SOFT_BOUNCE` de 10 h, logs dicen `HARD_BOUNCE`: `lookedUp: 0`.
 - **Impacto:** la dirección no entra a la lista local; el próximo lote le vuelve a enviar (ZeptoMail la descarta en silencio o rechaza; §12.7), y el operador no ve "No entregado".
 - **Propuesta:** el barrido usa `isPendingDelivery` (incluye `SOFT_BOUNCE`) con la misma ventana N–72 h.
 
 ### M4 — Falsa alarma `WEBHOOKS_NOT_RECEIVED` cuando nada llegó a salir
+
+**Estado:** corregido en `audita` (D44, commit `e16c4d0`).
 
 - **Evidencia:** `reconciliation.ts:195` cuenta intentos con `outcome: UNCERTAIN` como "esperan webhook" aunque el soporte haya terminado `FAILED / NOT_FOUND_AT_PROVIDER`.
 - **Verificado (§7, H9):** un solo envío incierto, no encontrado, luego fallido → a las 10 h: `WEBHOOKS_NOT_RECEIVED: 1 receipt(s) sent … and no webhook in 6 h`.
@@ -148,6 +154,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** regla única en el núcleo: **todo cambio que vuelva a un soporte "listo" o "no listo" publica una versión nueva del manifiesto de su lote** (conciliación, resolución manual, supresión de una dirección, liberación). Alternativa más simple: que `isReadyToSend` no dependa del manifiesto para soportes `FAILED` y que `GetBatchSummary` los muestre como "listos, requiere nueva versión" con un botón explícito.
 
 ### M6 — Un webhook que llega pero no produce ningún evento correlacionable pasa en silencio
+
+**Estado:** corregido en `audita` (D45, commit `376946a`).
 
 - **Evidencia:** `zeptomail-webhook.ts:106,111` descartan en silencio los mensajes sin `client_reference` o con `object` desconocido; `ProcessDeliveryEvent` marca `processedAt` con `results: []` y no alerta; la alerta "silencio total" (M4) diría "revise el *endpoint*" aunque el *endpoint* esté recibiendo.
 - **Por código.** Es el escenario **más probable** del piloto: §12.7 reconoce que no hay ejemplo completo del JSON real y el *parser* es un supuesto.
@@ -204,6 +212,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** `CORS_ALLOWED_ORIGINS` en configuración, obligatorio en producción, aplicado en `bootstrap.ts`; o servir el cliente desde el mismo origen y documentarlo en `deploy/`.
 
 ### M14 — Alertas sin reconocimiento, sin paginación y con búsqueda O(n)
+
+**Estado:** corregido en `audita` (D46, commit `183cc4b`).
 
 - **Evidencia:** `GET /alerts` devuelve todo el historial (`executions.controller.ts:54-57`); no existe "atendida"; `alertOnce` recorre `tx.alerts.list()` completo en cada barrido (`reconciliation.ts:217`).
 - **Impacto:** la interfaz no puede distinguir lo pendiente; con retención permanente la lista solo crece. §13 pide "información mínima" útil, no un archivo.

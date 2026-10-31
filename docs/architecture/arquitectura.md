@@ -76,7 +76,7 @@ flowchart LR
 | `SendLookup` | Look up a send by `client_reference` | `ZeptoMailSendLookup` (logs API, OAuth) | — |
 | `SuppressionManager` | Remove an address from the provider suppression list | `ZeptoMailConsoleSuppressionManager`: no API is documented, the operator removes it in the console and confirms it (D19) | `ZeptoMailSuppressionManager` (API), if Zoho confirms one |
 | `ProgressNotifier` | Real-time progress | `SseProgressNotifier` | WebSocket |
-| `AlertNotifier` | Deliver persisted typed alerts | `UiAlertNotifier` | Email / Teams / Slack |
+| `AlertNotifier` | Deliver persisted typed alerts. The operator lists them newest first, filters them (`pending`, type, subject) and acknowledges them (D46) | `UiAlertNotifier` | Email / Teams / Slack |
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
 
@@ -298,6 +298,8 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | — (D34) | `DUPLICATE_SEND_DETECTED` (an older send believed not sent went out, and a later one too) | Alert |
 | — (D39) | `OUTBOX_EVENT_DEAD` (a domain event could not be delivered after 10 attempts) | Alert |
 | — (D41) | `FILE_PURGE_FAILED` (receipt files no receipt needs could not be deleted) | Alert |
+| — (D43) | `UNCERTAIN_UNRESOLVED` (an uncertain send still unresolved after its last scheduled lookup) | Alert |
+| — (D45) | `WEBHOOK_UNPARSED` (an authenticated webhook with no event of ours could be read) | Alert |
 | `AGREGADO` / `EXCLUIDO` | `ADDED` / `REMOVED` | `409` difference |
 | `RENOMBRADO` | `RENAMED` (same hash re-uploaded with another name) | `409` difference |
 | `DESTINATARIO_CAMBIO` (409) | `RECIPIENT_CHANGED` (e.g. after *Refresh recipients*) | `409` difference |
