@@ -62,6 +62,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const contracts = file ? (JSON.parse(readFileSync(file, 'utf8')) as Record<string, MockContract>) : {};
   const app = createContractsApiMock({ token: process.env.MOCK_TOKEN ?? 'dev-token', contracts });
   const port = Number(process.env.PORT ?? '4001');
-  await app.listen({ port, host: '127.0.0.1' });
-  process.stdout.write(`Contracts API mock on http://127.0.0.1:${port} (${Object.keys(contracts).length} contracts)\n`);
+  const host = process.env.HOST ?? '127.0.0.1';
+  await app.listen({ port, host });
+  process.stdout.write(`Contracts API mock on http://${host}:${port} (${Object.keys(contracts).length} contracts)\n`);
 }

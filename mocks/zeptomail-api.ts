@@ -83,7 +83,8 @@ export interface ZeptoMailMockOptions {
   readonly clientReferenceMatch?: 'exact' | 'partial';
   readonly webhook?: WebhookTarget;
   /** Emit the delivery scenario's events by itself after each accepted email. Off by default (tests call `emit`). */
-  readonly autoEvents?: { readonly delayMs: number };
+  /** `maxDelayMs` (simulation): each event waits a random time between `delayMs` and `maxDelayMs`. */
+  readonly autoEvents?: { readonly delayMs: number; readonly maxDelayMs?: number };
   /** Current time; default the system clock. */
   readonly now?: () => Date;
 }
@@ -341,7 +342,9 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): ZeptoMailMoc
         const events = DELIVERY_SCENARIOS[own ?? ''] ?? ['delivered'];
         const work = (async () => {
           for (const event of events) {
-            await delay(options.autoEvents?.delayMs ?? 0);
+            const min = options.autoEvents?.delayMs ?? 0;
+            const max = Math.max(min, options.autoEvents?.maxDelayMs ?? min);
+            await delay(min + Math.round(Math.random() * (max - min)));
             await apply(delivery, event, own !== 'nowebhook' && event !== 'processfailed');
           }
         })().catch(() => undefined);
@@ -565,9 +568,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           },
         }
       : {}),
-    autoEvents: { delayMs: Number(process.env.MOCK_EVENT_DELAY_MS ?? '2000') },
+    autoEvents: { delayMs: Number(process.env.MOCK_EVENT_DELAY_MS ?? '2000'), maxDelayMs: Number(process.env.MOCK_EVENT_DELAY_MAX_MS ?? process.env.MOCK_EVENT_DELAY_MS ?? '2000') },
   });
   const port = Number(process.env.PORT ?? '4002');
-  await app.listen({ port, host: '127.0.0.1' });
-  process.stdout.write(`ZeptoMail mock on http://127.0.0.1:${port}/v1.1\n`);
+  const host = process.env.HOST ?? '127.0.0.1';
+  await app.listen({ port, host });
+  process.stdout.write(`ZeptoMail mock on http://${host}:${port}/v1.1\n`);
 }

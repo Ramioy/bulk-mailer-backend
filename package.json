@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "dev": "pnpm build && node --env-file-if-exists=.env dist/main.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p sim/tsconfig.json",
     "lint": "oxlint --deny-warnings",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -23,7 +23,10 @@
     "db:migrate": "pnpm build && node --env-file-if-exists=.env dist/adapters/outbound/postgres/migrate.js",
     "hash-password": "pnpm -s build && node dist/adapters/outbound/auth/hash-password.js",
     "mock:contracts": "MOCK_CONTRACTS_FILE=deploy/dev/mock-contracts-api.json node mocks/contracts-api.ts",
-    "mock:zeptomail": "node mocks/zeptomail-api.ts"
+    "mock:zeptomail": "node mocks/zeptomail-api.ts",
+    "sim:up": "sim/up.sh",
+    "sim:run": "sim/run.sh",
+    "sim:down": "sim/down.sh"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.6",

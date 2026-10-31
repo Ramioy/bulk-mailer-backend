@@ -4,3 +4,4 @@ coverage/
 data/
 .env
 *.log
+sim/out/
