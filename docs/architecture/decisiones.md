@@ -464,3 +464,50 @@ Hallazgos A5, M7 y M15 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la
 - **En memoria, un trabajo encolado dentro de una transacción es visible antes del *commit*** para el mismo proceso (no hay aislamiento); en PostgreSQL no lo es. Las pruebas no dependen de eso.
 - **Un evento `ALERT_RAISED` muerto** solo deja constancia en el log del relé y en `GET /outbox/dead`; la alerta está en `GET /alerts`.
 
+## Archivos de los soportes: auditoría, bloque 5 (2026-10-31)
+
+Hallazgos M1 y M12 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la rama `audita`. Los PDF tienen datos personales (Ley 1581, §15): se guardan solo mientras algún soporte los necesita (D4).
+
+| # | Decisión |
+|---|---|
+| D41 | ✅ **(M1) Ningún PDF se conserva indefinidamente.** (1) **Toda transición a `SENT`** (resultado del envío en la ejecución y en el reenvío, confirmación por webhook o por logs, evidencia tardía D34, resolución manual) deja el archivo no disponible y encola, **en la misma transacción** (D40), el trabajo `DELETE_RECEIPT_FILE`; el archivo se borra después del *commit* y nunca antes, para que un *rollback* no pierda un archivo todavía referenciado. (2) **Un lote `STOPPED` sin nada listo para enviar ni nada `SENDING`/`UNCERTAIN` pasa a `COMPLETED`** cuando se resuelve el soporte que lo deja así, con el evento `BATCH_COMPLETED` (`by: settlement`) y la purga de sus archivos. `STOPPED → COMPLETED` existe solo para este caso; un lote `OPEN` nunca se cierra solo. (3) Al completar una ejecución, la purga también es un trabajo (`PURGE_BATCH_FILES`) encolado en su transacción: desaparece la ventana de caída entre el *commit* y el borrado. (4) **Barrido de huérfanos** (`PURGE_ORPHAN_FILES`, cada `FILE_ORPHAN_SWEEP_INTERVAL_MINUTES`): borra los archivos que ningún soporte necesita y que tienen más de `FILE_ORPHAN_MIN_AGE_MINUTES`; si algún borrado falla, alerta `FILE_PURGE_FAILED` |
+| D42 | ✅ **(M12) Completar un lote borra solo los archivos de los soportes que pasaron por un envío** (`SENT`, `FAILED` o `UNCERTAIN`) y que no están en conflicto. Un `PENDING` (con cualquier error, p. ej. `SOURCE_UNAVAILABLE` o `CONTRACT_NOT_FOUND`, que nunca entró al manifiesto) o un soporte en `DUPLICATE_CONFLICT` **conservan su archivo**: al corregir el destinatario o resolver el conflicto quedan listos sin volver a subirlo. El resumen del lote muestra el error propio del soporte en `errorType` y, aparte, `fileError: "FILE_NOT_AVAILABLE"` para cualquier `PENDING` o `FAILED` sin archivo (antes solo `FAILED`, y tapando su error). *Refresh recipients* informa cuántos soportes quedaron con destinatario pero sin archivo (`withoutFile`) |
+
+### Cómo quedó implementado
+
+- **Retiro del archivo** (`src/application/files/retire-file.ts`): `retireFile(tx, receipt, now)` encola `DELETE_RECEIPT_FILE { period, block, sha256 }` si el soporte tenía archivo; quien llama guarda `fileAvailable: false` en la misma transacción (`sentWithoutFile` para las confirmaciones). Lo usan `RunExecution` (resultado `SENT`), `ResendReceipt`, `confirmSent`, `confirmLateSent` y `ResolveUncertain`. Al volver un reenvío fallido a `SENT` (D36) el archivo **no** se retira: se había subido de nuevo para reenviar y se puede volver a intentar.
+- **`DeleteReceiptFile`** (idempotente: un archivo que no está es un éxito) relee el soporte **dentro del `SerialExecutor`**, donde decide una carga: si el mismo contenido se volvió a subir entretanto para un *Resend* (A2) y está disponible en ese lugar, conserva el archivo. Se eligió esta comprobación y no llevar la versión (D37) en el trabajo porque lo que importa es si el archivo se necesita ahora, no si el soporte cambió por otra razón (por ejemplo, un evento de entrega).
+- **`PurgeBatchFiles`** recibe la **lista explícita** de soportes cuyo archivo puede borrar (decidida en la transacción que completó el lote) y aplica la misma comprobación a cada uno. Se prefirió a "borrar los no disponibles del lote" porque una carga posterior al mismo lote no puede quedar dentro de una purga vieja.
+- **Cierre por asentamiento** (`settleBatchIfDone` en `src/application/sending/batch-settlement.ts`): lo llaman `confirmSent`, `confirmLateSent`, el `fail` de la conciliación y `ResolveUncertain`, es decir, todo lo que resuelve un soporte de un lote detenido. Comprueba el estado del lote, que no quede ningún `SENDING`/`UNCERTAIN` y que el manifiesto vigente no tenga soportes listos; entonces `COMPLETED` (sin motivo de detención), purga con la regla de D42 y `BATCH_COMPLETED`. Un `FAILED` con archivo y destinatario sigue listo y el lote sigue `STOPPED` para que el operador lo envíe.
+- **Carril de archivos**: un cuarto `JobRunner` (`DELETE_RECEIPT_FILE`, `PURGE_BATCH_FILES`, `PURGE_ORPHAN_FILES`). Borrar es E/S local y rápida; con su propio carril nunca espera a la API de logs. El volumen local no es un servicio externo (D36), así que el borrado ocurre dentro del ejecutor tras releer el soporte.
+- **Barrido de huérfanos** (`PurgeOrphanFiles`): `ReceiptFileStore.list()` devuelve cada archivo con su fecha de modificación (volumen local con `stat`; en memoria, la hora del reloj al guardar; prueba de contrato); los `.tmp` de una escritura en curso no se listan. Se borra lo que tiene más de la edad mínima y cuyo soporte no existe, no lo necesita (`fileAvailable` falso) o vive en otro lote. La edad mínima evita competir con una carga, que escribe el archivo justo antes de su fila (D36). Se encola cada intervalo desde `BackgroundWork`, sin duplicarse (`hasPending`), y registra en el log cuántos borró.
+- **Pruebas**: `test/application/receipt-files.test.ts` (cada camino a `SENT`, el escenario H4 de la auditoría como prueba real, un lote detenido que no se cierra, la evidencia tardía, un archivo vuelto a subir para *Resend* antes del borrado, el barrido y su alerta) y `test/application/processed-files.test.ts` (D42). Los *fixtures* ejecutan los trabajos de archivos al final de `startAndRun`, como el carril, y exponen `runFileJobs()`.
+
+### Trabajos nuevos
+
+| Trabajo | Carga | Lo encola |
+|---|---|---|
+| `DELETE_RECEIPT_FILE` | `{ period, block, sha256 }` | Toda transición a `SENT`, en su transacción |
+| `PURGE_BATCH_FILES` | `{ period, block, sha256s }` | El cierre de un lote (`COMPLETED` por ejecución o por asentamiento), en su transacción |
+| `PURGE_ORPHAN_FILES` | `{}` | `BackgroundWork`, cada `FILE_ORPHAN_SWEEP_INTERVAL_MINUTES`, si no hay uno pendiente |
+
+### Cambios en las respuestas (cliente web)
+
+| Endpoint | Cambio |
+|---|---|
+| `GET /batches/{YYYY-MM}/{BLOCK}` | Cada soporte puede traer `fileError: "FILE_NOT_AVAILABLE"` (`PENDING` o `FAILED` sin archivo). `errorType` siempre es el error propio del soporte: un `FAILED` sin archivo ya no muestra `FILE_NOT_AVAILABLE` en `errorType` |
+| `POST /batches/{YYYY-MM}/{BLOCK}/refresh-recipients` | Agrega `withoutFile`: soportes que quedaron con destinatario pero sin archivo (hay que volver a subirlos) |
+
+### Configuración nueva
+
+| Variable | Por defecto | Uso |
+|---|---|---|
+| `FILE_ORPHAN_SWEEP_INTERVAL_MINUTES` | 360 | Cada cuánto corre el barrido de archivos huérfanos (D41). Entero positivo |
+| `FILE_ORPHAN_MIN_AGE_MINUTES` | 60 | El barrido no toca archivos más recientes (D41). Entero positivo |
+
+### Supuestos (informados al usuario)
+
+- **`UNCERTAIN` cuenta como procesado** (D42): al completar el lote su archivo se borra, como antes. Si después resulta no enviado (`FAILED / NOT_FOUND_AT_PROVIDER`), el operador debe volver a subirlo para reenviarlo; ese paso deliberado protege contra un duplicado si el correo sí salió (D34). Si se prefiere que entre solo al siguiente manifiesto, habría que conservarlo (por aprobar).
+- **El método `purgeBatch` del puerto** queda sin uso en la aplicación; se conserva por compatibilidad y por su prueba de contrato.
+- **El asentamiento no deja auditoría**: no es una acción de un operador; queda el evento `BATCH_COMPLETED` en el *outbox*.
+

@@ -18,7 +18,7 @@ flowchart LR
         subgraph IN["Inbound adapters"]
             REST["REST API<br/>(Bearer JWT)"]
             WH["Webhook reception<br/>POST /webhooks/zeptomail<br/>(ZeptoMail credentials: HMAC + header;<br/>no operator session, returns no data — D20)"]
-            RUN["Job runner, three lanes (D21, D38)<br/>execution: one batch at a time<br/>webhooks: delivery events<br/>lookups: reconciliation · sweep · checks"]
+            RUN["Job runner, four lanes (D21, D38, D41)<br/>execution: one batch at a time<br/>webhooks: delivery events<br/>lookups: reconciliation · sweep · checks<br/>files: deletion of receipt files"]
         end
 
         subgraph CORE["🧠 Core — domain + use cases (no infrastructure)"]
@@ -80,7 +80,7 @@ flowchart LR
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
 
-Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with three lanes (D21, D38): execution (one batch at a time), webhooks (never behind a lookup) and lookups in the provider logs (reconciliation, sweep, per-minute check, at most `DELIVERY_CHECK_BATCH_SIZE` sends per check). Every receipt change of every lane goes through the same serial executor.
+Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with four lanes (D21, D38, D41): execution (one batch at a time), webhooks (never behind a lookup), lookups in the provider logs (reconciliation, sweep, per-minute check, at most `DELIVERY_CHECK_BATCH_SIZE` sends per check) and files (deletion of receipt files that are no longer needed, and the periodic orphan sweep). Every receipt change of every lane goes through the same serial executor.
 
 ### 2.1 `BasicPdfInspector` (verificación sencilla)
 
@@ -173,15 +173,15 @@ sequenceDiagram
         R->>R: Same hash · same email as manifest · not suppressed
         R->>ZM: POST /v1.1/email (client_reference = attemptId)
         ZM-->>R: Response
-        R->>DB: SENT / FAILED / UNCERTAIN / PENDING
+        R->>DB: SENT / FAILED / UNCERTAIN / PENDING (SENT: file unavailable + DELETE_RECEIPT_FILE job, D41)
         R-->>W: Progress event (SSE)
         opt Uncertain response (1st or 2nd in a row)
             R-->>W: Wait event (reason, seconds, next send at) — before waiting
         end
     end
     alt Whole manifest processed
-        R->>DB: Batch COMPLETED
-        R->>FS: PurgeBatchFiles(period, block)
+        R->>DB: Batch COMPLETED + PURGE_BATCH_FILES job (files of the processed receipts only, D42), same transaction
+        Note over R,FS: The file lane deletes them after the commit (D41)
     else Batch error
         R->>DB: Batch STOPPED (+ reason) — files kept
     else Unexpected exception (D32)
@@ -249,7 +249,8 @@ stateDiagram-v2
     [*] --> OPEN: first upload
     OPEN --> OPEN: upload / remove (new manifest version)
     OPEN --> RUNNING: send (current version)
-    RUNNING --> COMPLETED: whole manifest processed → files purged
+    RUNNING --> COMPLETED: whole manifest processed → files of processed receipts purged (D42)
+    STOPPED --> COMPLETED: settlement only: nothing ready, nothing SENDING or UNCERTAIN (D41)
     RUNNING --> STOPPED: batch error, unexpected exception (INTERNAL_ERROR), shutdown or operator abort (INTERRUPTED); files kept
     STOPPED --> RUNNING: send (current version)
     STOPPED --> OPEN: upload / remove
@@ -257,6 +258,8 @@ stateDiagram-v2
 ```
 
 Only one execution at a time in the whole system. While it runs, upload, remove, send and resend are disabled.
+
+`STOPPED → COMPLETED` exists only for settlement (D41): when whatever resolves a receipt of a stopped batch (a webhook, the logs, the operator) leaves it with nothing ready to send and nothing `SENDING` or `UNCERTAIN`, the batch completes (`BATCH_COMPLETED` event) and its processed files are purged. An `OPEN` batch is never closed automatically.
 
 ## 8. Catálogo de errores (inglés)
 
@@ -294,6 +297,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | — (D34) | `LATE_SEND_EVIDENCE` (a send failed as not found did go out; now SENT) | Alert |
 | — (D34) | `DUPLICATE_SEND_DETECTED` (an older send believed not sent went out, and a later one too) | Alert |
 | — (D39) | `OUTBOX_EVENT_DEAD` (a domain event could not be delivered after 10 attempts) | Alert |
+| — (D41) | `FILE_PURGE_FAILED` (receipt files no receipt needs could not be deleted) | Alert |
 | `AGREGADO` / `EXCLUIDO` | `ADDED` / `REMOVED` | `409` difference |
 | `RENOMBRADO` | `RENAMED` (same hash re-uploaded with another name) | `409` difference |
 | `DESTINATARIO_CAMBIO` (409) | `RECIPIENT_CHANGED` (e.g. after *Refresh recipients*) | `409` difference |
@@ -303,7 +307,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | # | Supuesto |
 |---|---|
 | A1 | **Regla de repetidos.** Un hash que ya existe en cualquier lote o periodo se descarta como `DUPLICATE`, **excepto** si el registro existente es del mismo lote y está `INVALID`, `REMOVED` o `FAILED` sin archivo: en ese caso la carga reevalúa ese mismo registro (sirve para renombrar y para volver a subir tras la purga). Si el registro existente está `REMOVED` en **otro** lote o periodo, ese registro **se mueve** al lote nuevo y se reevalúa (D8). Nunca se crea un segundo registro |
-| A2 | **Purga y reintentos.** Con los archivos borrados al completar el lote, reintentar un `FAILED` o hacer *Resend* tras un `HARD_BOUNCE` obliga a volver a subir el mismo PDF (regla A1). Hasta entonces el soporte muestra `FILE_NOT_AVAILABLE` y no entra al manifiesto |
+| A2 | **Purga y reintentos.** Con los archivos borrados al completar el lote, reintentar un `FAILED` o hacer *Resend* tras un `HARD_BOUNCE` obliga a volver a subir el mismo PDF (regla A1). Hasta entonces el soporte muestra `FILE_NOT_AVAILABLE` y no entra al manifiesto. *Precisado por D41/D42:* el archivo se borra en cuanto el soporte queda `SENT` y, al completar el lote, solo los de soportes que pasaron por un envío; un `PENDING` o un soporte en conflicto lo conservan. El resumen muestra `fileError: FILE_NOT_AVAILABLE` junto al error propio del soporte |
 | A3 | **Retirar soporte.** El operador puede retirar un soporte no enviado desde la interfaz (`DELETE`); sin esto no hay forma de corregir un nombre equivocado |
 | A4 | **Destinatarios.** Se resuelven al cargar y se vuelven a consultar al enviar. Si cambió el correo, el soporte queda `FAILED / RECIPIENT_CHANGED`; para reintentarlo hace falta refrescar el destinatario (acción *Refresh recipients* del lote, que genera nueva versión de manifiesto) |
 | A5 | **Periodo y bloques.** Periodo en formato `YYYY-MM` (p. ej. `2026-10`); bloques `CASH`, `AVVILLAS`, `BANCOLOMBIA`, `DAVIVIENDA`, `ANGLO`, `OTHERS`. Las claves del catálogo de conceptos siguen en español porque forman parte del nombre del archivo |

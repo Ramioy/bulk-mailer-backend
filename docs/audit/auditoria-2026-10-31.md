@@ -40,7 +40,7 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### A1 — La evidencia tardía de que un correo sí salió se ignora si el soporte ya quedó `FAILED` → reenvío duplicado
 
-**Estado:** corregido en `audita` (D34, commit `9afc980`).
+**Estado:** corregido en `audita` (D34, commit `9afc980`). El resumen del lote ya no esconde `NOT_FOUND_AT_PROVIDER` detrás de `FILE_NOT_AVAILABLE`: muestra el error propio y `fileError` aparte (D42, commit `a960b8d`).
 
 - **Clasificación:** núcleo (máquina de estados del soporte y `applyToReceipt`).
 - **Evidencia:** `src/application/delivery/apply-delivery-event.ts:107` — todo evento de entrega del último intento sobre un soporte que no está `SENT`, `SENDING` ni `UNCERTAIN` se anota como `DELIVERY_EVENT_IGNORED` y no hace nada más. `src/domain/receipt/receipt-state.ts` no tiene transición `FAILED → SENT`.
@@ -111,6 +111,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 ## 4. Hallazgos de gravedad media
 
 ### M1 — PDFs retenidos indefinidamente en el volumen (D4 y §15 incumplidos)
+
+**Estado:** corregido en `audita` (D41, commit `086a2db`).
 
 - **Clasificación:** núcleo.
 - **Evidencia:** la purga solo ocurre al pasar a `COMPLETED` (`run-execution.ts:259-266`) y en un reenvío `SENT` (`resend-receipt.ts:144`). `confirmSent` (`apply-delivery-event.ts:29-42`), `checkAttempt` y `ResolveUncertain` (`resolve-uncertain.ts:26-29`) llevan `UNCERTAIN → SENT` **sin tocar `fileAvailable` ni el archivo**.
@@ -189,6 +191,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** columna `version` en `receipts` y `batches` con comprobación optimista en `save` (`WHERE version = $n`, `DomainError`/`ConflictError` si 0 filas); `saveManifest` **sin** `DO UPDATE` (una violación de unicidad debe ser un error visible); relectura dentro de `write()` en `RunExecution`.
 
 ### M12 — La purga al `COMPLETED` borra los archivos de soportes que no se alcanzaron
+
+**Estado:** corregido en `audita` (D42, commit `a960b8d`).
 
 - **Evidencia:** `run-execution.ts:259-263` pone `fileAvailable=false` a **todos** los soportes del lote, incluidos `PENDING` con error de destinatario (`SOURCE_UNAVAILABLE`, `CONTRACT_NOT_FOUND`…) y los bloqueados por `DUPLICATE_CONFLICT`, que no estaban en el manifiesto.
 - **Escenario:** Tayrona falló al cargar 5 de 300; se envían 295; el lote queda `COMPLETED`; Tayrona vuelve; *Refresh recipients* resuelve los 5 → quedan listos **pero sin archivo**: el operador debe volver a subir los 5 PDF y, si no lo nota (el resumen los muestra con el error de destinatario corregido, pero `fileAvailable=false` solo se traduce a `FILE_NOT_AVAILABLE` para `FAILED`, `get-batch-summary.ts:58`), cree que están listos.
