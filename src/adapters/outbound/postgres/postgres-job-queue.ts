@@ -55,6 +55,11 @@ export class PostgresJobQueue implements JobQueue {
     await this.finish(jobId, 'FAILED', error);
   }
 
+  async hasPending(type: JobType): Promise<boolean> {
+    const found = await rows(this.db, `SELECT 1 FROM jobs WHERE type = $1 AND status IN ('READY', 'CLAIMED') LIMIT 1`, [type]);
+    return found.length > 0;
+  }
+
   async releaseAbandoned(): Promise<number> {
     const released = await rows(
       this.db,

@@ -46,6 +46,21 @@ export function jobQueueContract(name: string, create: () => Promise<JobQueue>):
       expect(await queue.claimNext(later(1))).toBeUndefined();
     });
 
+    it('D38: says whether a job of a type is waiting or running, not once it is done or failed', async () => {
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
+      const a = await queue.enqueue({ type: 'CHECK_RECENT_SENDS', payload: {}, runAt: T0 });
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(true);
+      expect(await queue.hasPending('SWEEP_UNCONFIRMED')).toBe(false);
+      await queue.claimNext(T0);
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(true);
+      await queue.complete(a);
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
+      const b = await queue.enqueue({ type: 'CHECK_RECENT_SENDS', payload: {}, runAt: T0 });
+      await queue.claimNext(T0);
+      await queue.fail(b, 'boom');
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
+    });
+
     it('releases jobs claimed by a process that died', async () => {
       const id = await queue.enqueue({ type: 'EXECUTE_BATCH', payload: { batch: 'x' }, runAt: T0 });
       await queue.claimNext(T0);

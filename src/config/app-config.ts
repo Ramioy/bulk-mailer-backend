@@ -54,6 +54,10 @@ export interface AppConfig {
   /** While a batch runs and `deliveryCheckTailMinutes` after, its sends are checked this often; default 60 s (D21). */
   readonly deliveryCheckIntervalSeconds: number;
   readonly deliveryCheckTailMinutes: number;
+  /** Sends looked up per per-minute check (D38); default 20. */
+  readonly deliveryCheckBatchSize: number;
+  /** Checks skipped by a send whose lookup found the logs API unavailable (D38); default 2. */
+  readonly deliveryCheckBackoffCycles: number;
   /** Outside production every email goes to this test mailbox (§15). Required with ZeptoMail outside production. */
   readonly redirectAllEmailTo?: string;
   /** Pause between two sends; default 1000 ms. */
@@ -151,6 +155,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const reconcileSweepIntervalMinutes = positiveInteger(env.RECONCILE_SWEEP_INTERVAL_MINUTES ?? '60', 'RECONCILE_SWEEP_INTERVAL_MINUTES', problems);
   const deliveryCheckIntervalSeconds = positiveInteger(env.DELIVERY_CHECK_INTERVAL_SECONDS ?? '60', 'DELIVERY_CHECK_INTERVAL_SECONDS', problems);
   const deliveryCheckTailMinutes = nonNegativeInteger(env.DELIVERY_CHECK_TAIL_MINUTES ?? '30', 'DELIVERY_CHECK_TAIL_MINUTES', problems);
+  const deliveryCheckBatchSize = positiveInteger(env.DELIVERY_CHECK_BATCH_SIZE ?? '20', 'DELIVERY_CHECK_BATCH_SIZE', problems);
+  const deliveryCheckBackoffCycles = nonNegativeInteger(env.DELIVERY_CHECK_BACKOFF_CYCLES ?? '2', 'DELIVERY_CHECK_BACKOFF_CYCLES', problems);
   const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
   const incidentBaseWaitSeconds = positiveInteger(env.INCIDENT_BASE_WAIT_SECONDS ?? '30', 'INCIDENT_BASE_WAIT_SECONDS', problems);
   const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
@@ -204,6 +210,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reconcileSweepIntervalMinutes,
     deliveryCheckIntervalSeconds,
     deliveryCheckTailMinutes,
+    deliveryCheckBatchSize,
+    deliveryCheckBackoffCycles,
     sendPauseMs,
     incidentBaseWaitSeconds,
     incidentMaxWaitSeconds,

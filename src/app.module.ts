@@ -66,11 +66,15 @@ export class AppModule {
         sweepAfterHours: config.reconcileSweepAfterHours,
         sweepMaxHours: config.reconcileSweepMaxHours,
         recentCheckTailMinutes: config.deliveryCheckTailMinutes,
+        recentCheckBatchSize: config.deliveryCheckBatchSize,
+        recentCheckBackoffCycles: config.deliveryCheckBackoffCycles,
       },
       emailTemplate,
       archiveCopyAddress: config.archiveCopyAddress,
     });
-    // Two lanes (D21): one batch at a time in the whole system; delivery work one at a time, in parallel to it.
+    // Three lanes (D21, D38): one batch at a time in the whole system; webhooks one at a time, never behind a lookup;
+    // lookups in the provider logs (reconciliation, sweep, per-minute check) one at a time. Every receipt change of
+    // every lane still goes through the same serial executor.
     // On shutdown each lane signals its job and waits for it at most `shutdownTimeoutSeconds` (D33).
     const laneOptions = { stopTimeoutMs: config.shutdownTimeoutSeconds * 1000 };
     const runner = new JobLanes([
@@ -85,11 +89,20 @@ export class AppModule {
       new JobRunner(
         adapters.jobQueue,
         {
-          RECONCILE_ATTEMPT: async (job) => {
-            await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
-          },
           PROCESS_DELIVERY_EVENT: async (job) => {
             await delivery.processWebhook.execute(String(job.payload.webhookRequestId));
+          },
+        },
+        adapters.clock,
+        config.jobRunnerPollMs,
+        new Logger('WebhookLane'),
+        laneOptions,
+      ),
+      new JobRunner(
+        adapters.jobQueue,
+        {
+          RECONCILE_ATTEMPT: async (job) => {
+            await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
           },
           SWEEP_UNCONFIRMED: async () => {
             await delivery.sweep.execute();
@@ -100,7 +113,7 @@ export class AppModule {
         },
         adapters.clock,
         config.jobRunnerPollMs,
-        new Logger('DeliveryLane'),
+        new Logger('LookupLane'),
         laneOptions,
       ),
     ]);

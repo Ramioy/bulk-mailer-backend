@@ -31,6 +31,8 @@ export interface JobQueue {
   claimNext(now: Date, types?: readonly JobType[]): Promise<Job | undefined>;
   complete(jobId: string): Promise<void>;
   fail(jobId: string, error: string): Promise<void>;
+  /** A job of this type is waiting or running (READY or CLAIMED): periodic work is not queued twice (D38). */
+  hasPending(type: JobType): Promise<boolean>;
   /** Called at startup: releases jobs claimed by a process that died. */
   releaseAbandoned(): Promise<number>;
 }

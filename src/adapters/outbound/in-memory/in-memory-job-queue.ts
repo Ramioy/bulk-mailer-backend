@@ -36,6 +36,10 @@ export class InMemoryJobQueue implements JobQueue {
     entry.error = error;
   }
 
+  async hasPending(type: JobType): Promise<boolean> {
+    return [...this.jobs.values()].some((e) => e.job.type === type && (e.status === 'READY' || e.status === 'CLAIMED'));
+  }
+
   async releaseAbandoned(): Promise<number> {
     let released = 0;
     for (const entry of this.jobs.values()) {

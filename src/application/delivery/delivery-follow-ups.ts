@@ -27,13 +27,20 @@ export class DeliveryFollowUps {
     await this.deps.jobQueue.enqueue({ type: 'PROCESS_DELIVERY_EVENT', payload: { webhookRequestId: String(event.payload.webhookRequestId) } });
   }
 
-  async requestSweep(): Promise<void> {
+  /** Hourly; not queued again while one is still waiting or running (D38). Returns whether it was queued. */
+  async requestSweep(): Promise<boolean> {
+    if (await this.deps.jobQueue.hasPending('SWEEP_UNCONFIRMED')) return false;
     await this.deps.jobQueue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {} });
+    return true;
   }
 
-  /** Every minute: queues the recent-sends check only while there is something to follow (D21). */
+  /**
+   * Every minute: queues the recent-sends check only while there is something to follow (D21), and only if the
+   * previous one is not still waiting or running (D38): a slow logs API must not pile checks up.
+   */
   async requestRecentCheck(active: () => Promise<boolean>): Promise<boolean> {
     if (!(await active())) return false;
+    if (await this.deps.jobQueue.hasPending('CHECK_RECENT_SENDS')) return false;
     await this.deps.jobQueue.enqueue({ type: 'CHECK_RECENT_SENDS', payload: {} });
     return true;
   }

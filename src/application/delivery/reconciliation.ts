@@ -142,8 +142,19 @@ export class ReconcileAttempt {
 /**
  * Every minute while an execution runs and `recentCheckTailMinutes` after it (D21): the sends of those executions
  * whose delivery can still change are looked up. No alert here: WEBHOOKS_NOT_RECEIVED is judged after N hours.
+ *
+ * D38: at most `recentCheckBatchSize` lookups per check, the sends looked up longest ago first, so a slow logs API or
+ * a large batch cannot turn one check into hundreds of calls; a send whose lookup found the logs API unavailable is
+ * skipped for `recentCheckBackoffCycles` checks. That rotation is kept in this object: a restart only resets it to
+ * "oldest send first", which is fair too.
  */
 export class CheckRecentSends {
+  private cycle = 0;
+  /** Cycle in which each send was last looked up. */
+  private readonly lastChecked = new Map<string, number>();
+  /** Last cycle in which each send is skipped after an unavailable lookup. */
+  private readonly skipUntil = new Map<string, number>();
+
   constructor(private readonly deps: CheckDependencies & Pick<DeliveryDependencies, 'reconciliation'>) {}
 
   /** True while there is something to follow: an execution running or finished within the tail. */
@@ -152,15 +163,32 @@ export class CheckRecentSends {
   }
 
   async execute(): Promise<{ checked: number; updated: number }> {
+    const { repository, reconciliation } = this.deps;
+    this.cycle += 1;
+    const seen = new Set<string>();
+    const candidates: Attempt[] = [];
+    for (const execution of await this.executions()) {
+      for (const attempt of await repository.attempts.listByExecution(execution.executionId)) {
+        if (!(await needsLookup(repository, attempt))) continue;
+        seen.add(attempt.attemptId);
+        if ((this.skipUntil.get(attempt.attemptId) ?? 0) >= this.cycle) continue;
+        candidates.push(attempt);
+      }
+    }
+    // Forget sends that need no lookup any more, so the maps do not grow.
+    for (const map of [this.lastChecked, this.skipUntil]) for (const id of map.keys()) if (!seen.has(id)) map.delete(id);
+    // Stable sort: never checked first, then by cycle; among equals, in send order.
+    candidates.sort((a, b) => (this.lastChecked.get(a.attemptId) ?? 0) - (this.lastChecked.get(b.attemptId) ?? 0));
+
     let checked = 0;
     let updated = 0;
-    for (const execution of await this.executions()) {
-      for (const attempt of await this.deps.repository.attempts.listByExecution(execution.executionId)) {
-        const { result } = await checkAttempt(this.deps, attempt.attemptId, false);
-        if (result === 'NOT_APPLICABLE') continue;
-        checked += 1;
-        if (result === 'UPDATED') updated += 1;
-      }
+    for (const attempt of candidates.slice(0, reconciliation.recentCheckBatchSize)) {
+      this.lastChecked.set(attempt.attemptId, this.cycle);
+      const { result } = await checkAttempt(this.deps, attempt.attemptId, false);
+      if (result === 'NOT_APPLICABLE') continue;
+      checked += 1;
+      if (result === 'UPDATED') updated += 1;
+      if (result === 'UNAVAILABLE') this.skipUntil.set(attempt.attemptId, this.cycle + reconciliation.recentCheckBackoffCycles);
     }
     return { checked, updated };
   }
@@ -172,6 +200,13 @@ export class CheckRecentSends {
     const running = await repository.executions.running();
     return running ? [...recent, running] : recent;
   }
+}
+
+/** Without calling anyone: the latest attempt of a receipt whose delivery can still change. */
+async function needsLookup(stores: Pick<BulkMailerStores, 'receipts' | 'attempts'>, attempt: Attempt): Promise<boolean> {
+  const receipt = await stores.receipts.get(attempt.sha256);
+  if (!receipt || !isPendingDelivery(receipt)) return false;
+  return (await latestAttempt(stores, receipt))?.attemptId === attempt.attemptId;
 }
 
 /**

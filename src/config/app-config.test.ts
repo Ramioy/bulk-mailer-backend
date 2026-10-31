@@ -29,6 +29,8 @@ describe('loadConfig', () => {
       reconcileSweepIntervalMinutes: 60,
       deliveryCheckIntervalSeconds: 60,
       deliveryCheckTailMinutes: 30,
+      deliveryCheckBatchSize: 20,
+      deliveryCheckBackoffCycles: 2,
       sendPauseMs: 1000,
       incidentBaseWaitSeconds: 30,
       incidentMaxWaitSeconds: 600,
@@ -37,6 +39,12 @@ describe('loadConfig', () => {
       executionAbortAfterMinutes: 10,
       shutdownTimeoutSeconds: 25,
     });
+  });
+
+  it('D38: the per-minute check budget is a positive integer and the backoff an integer >= 0', () => {
+    expect(loadConfig({ ...REQUIRED, DELIVERY_CHECK_BATCH_SIZE: '5', DELIVERY_CHECK_BACKOFF_CYCLES: '0' })).toMatchObject({ deliveryCheckBatchSize: 5, deliveryCheckBackoffCycles: 0 });
+    expect(() => loadConfig({ ...REQUIRED, DELIVERY_CHECK_BATCH_SIZE: '0' })).toThrow('DELIVERY_CHECK_BATCH_SIZE must be a positive integer');
+    expect(() => loadConfig({ ...REQUIRED, DELIVERY_CHECK_BACKOFF_CYCLES: '-1' })).toThrow('DELIVERY_CHECK_BACKOFF_CYCLES must be an integer >= 0');
   });
 
   it('D32/D33: the abort threshold and the shutdown timeout are positive integers', () => {
