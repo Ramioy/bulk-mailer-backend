@@ -281,3 +281,9 @@ JSON real de cada evento (en especial *Delivered* y el campo del destinatario), 
 | `PATCH` | `/concepts/{key}` | `{ "subject"?, "active"? }`. Errores: `CONCEPT_NOT_FOUND` (404), `NOTHING_TO_CHANGE` (400), `INVALID_CONCEPT_SUBJECT` (422) |
 | `GET` | `/settings/archive-copy` | `{ "enabled", "address" }` (`address` es `null` si no está configurada) |
 | `PUT` | `/settings/archive-copy` | `{ "enabled": bool }`. Error: `ARCHIVE_COPY_NOT_CONFIGURED` (409) |
+
+## Correos en minúsculas (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D27 | ✅ **Toda dirección de correo se normaliza a minúsculas, incluida la parte local**, y se le quitan los espacios de los bordes (`normaliseEmail`). Se aplica al correo que devuelven Tayrona y SAP, a la lista local de supresiones y su liberación, y a la comparación con el destinatario de los webhooks y de los logs de ZeptoMail. Así, `Admin@Altos.com` y `admin@altos.com` son la misma dirección para el manifiesto, la supresión y la detección de cambio de destinatario. Riesgo aceptado: el estándar permite que un servidor distinga mayúsculas en la parte local, pero en la práctica los proveedores no lo hacen. Surgió de la simulación de la rama `simulacion`, donde el simulador de ZeptoMail sí las distinguía |

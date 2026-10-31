@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveRecipient, type ContractLookup } from './recipient';
+import { normaliseEmail, resolveRecipient, type ContractLookup } from './recipient';
 
 const found = (overrides: Partial<Extract<ContractLookup, { kind: 'FOUND' }>> = {}): ContractLookup => ({
   kind: 'FOUND',
@@ -34,5 +34,11 @@ describe('resolveRecipient', () => {
 
   it('flags a suppressed address', () => {
     expect(resolveRecipient(found(), (email) => email === 'admin@altos.com')).toEqual({ ok: false, error: 'EMAIL_SUPPRESSED' });
+  });
+});
+
+describe('normaliseEmail (D27)', () => {
+  it('trims and lower-cases the whole address, local part included', () => {
+    expect(normaliseEmail('  Conjunto.Altos+SM_113@Clientes.TEST ')).toBe('conjunto.altos+sm_113@clientes.test');
   });
 });
