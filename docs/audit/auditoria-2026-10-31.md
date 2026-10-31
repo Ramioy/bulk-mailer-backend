@@ -171,6 +171,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### M8 — Nada impide dos instancias; un *rolling restart* corrompe el lote en curso
 
+**Estado:** corregido en `audita` (D47, commit `cd783d8`).
+
 - **Evidencia:** `SerialExecutor` es en memoria (`serial-executor.ts`); `RecoverAfterCrash` marca `INTERRUPTED` a **cualquier** ejecución `RUNNING` y `UNCERTAIN` a **todo** `SENDING` al arrancar (`recover-after-crash.ts:14-27`), sin comprobar si pertenecen a un proceso vivo; `releaseAbandoned` libera **todos** los `CLAIMED` (`postgres-job-queue.ts:58-64`).
 - **Escenario:** despliegue con la instancia nueva arrancando antes de que la vieja termine (comportamiento por defecto de la mayoría de orquestadores), o alguien arranca una segunda réplica "para pruebas" contra la misma BD. La nueva marca el lote de la vieja como interrumpido y sus soportes `UNCERTAIN`; la vieja sigue enviando y sobrescribe (`SENDING→SENT` sobre un objeto leído antes, M11); al final `finish` lanza `DomainError` (`STOPPED → COMPLETED` no existe) y cae en A2.
 - **Por código.** C5 exige una instancia; nada lo hace cumplir.
@@ -185,6 +187,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** `RunExecution` recibe un `AbortSignal`; al apagar, termina el soporte en curso (registra su resultado), marca el lote `STOPPED / INTERRUPTED` **limpiamente** (sin `UNCERTAIN`) y emite `FINISHED`; `stop()` espera como máximo el tiempo de un envío.
 
 ### M10 — Memoria: hasta 300 archivos × 15 MB en RAM por petición, sin tope total
+
+**Estado:** corregido en `audita` (D48, commit `28b8e54`).
 
 - **Evidencia:** `bootstrap.ts:28` (`files: 300`, `fileSize: 15 MB + 1`); `receipts.controller.ts:70-75` acumula **todos** los `part.toBuffer()` antes de llamar al caso de uso; `upload-receipts.ts` conserva `file.content` de todos los archivos hasta el final del comando (sección crítica, A3).
 - **Impacto:** 4,5 GB teóricos por petición; con dos operadores subiendo a la vez, caída por OOM que a su vez dispara A2/M8. Al volumen real (300 PDF pequeños) no pasará, pero el límite no protege nada.
@@ -207,6 +211,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** purgar solo los soportes **procesados** en esa ejecución (`SENT`, `FAILED` del manifiesto); mostrar `FILE_NOT_AVAILABLE` para cualquier estado sin archivo; o, si se prefiere D4 estricto, documentarlo y hacer que `RefreshRecipients` lo advierta en la respuesta.
 
 ### M13 — Sin CORS: el cliente web (repositorio aparte) no podrá hablar con la API desde otro origen
+
+**Estado:** corregido en `audita` (D49, commit `3574f17`).
 
 - **Evidencia:** no hay `enableCors` ni cabecera `Access-Control-*` en `src/` (búsqueda `cors|helmet` sin resultados). D12 exige abrir el SSE con `fetch` + `Authorization: Bearer`, lo que dispara *preflight*.
 - **Propuesta:** `CORS_ALLOWED_ORIGINS` en configuración, obligatorio en producción, aplicado en `bootstrap.ts`; o servir el cliente desde el mismo origen y documentarlo en `deploy/`.

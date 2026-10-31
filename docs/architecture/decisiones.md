@@ -558,3 +558,59 @@ Hallazgos M2, M3, M4, M6 y M14 de `docs/audit/auditoria-2026-10-31.md`, corregid
 - **El cambio de orden de `GET /alerts`** (más recientes primero) es aceptable porque el cliente web todavía no existe.
 - **Webhooks anteriores a D45** no tienen `parseNotes`: si no dieron eventos, la alerta dice "nothing readable".
 
+## Despliegue seguro: auditoría, bloque 7 (2026-10-31)
+
+Hallazgos M8, M10 y M13 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la rama `audita`.
+
+| # | Decisión |
+|---|---|
+| D47 | ✅ **(M8) Una segunda instancia nunca corrompe el lote en curso: C5 se hace cumplir.** Un *lease* en la base de datos (puerto nuevo `InstanceLease`) decide qué instancia es la **líder**: solo ella ejecuta la recuperación tras una caída, la liberación de trabajos abandonados, los cuatro carriles y los ciclos periódicos. Cualquier otra instancia atiende HTTP y queda **en espera**: lo anota en el log ("another instance holds the lease; this one serves HTTP only"), sigue pidiendo el *lease* y, si la líder muere, lo toma cuando expira y entonces sí ejecuta la recuperación. El *lease* dura `INSTANCE_LEASE_TTL_SECONDS` (30) y se renueva cada tercio. Una líder que no puede renovarlo deja de tomar trabajos en el acto (la ejecución en curso se detiene como `INTERRUPTED`, D33) y pasa a espera. Al apagarse, la líder detiene su trabajo y libera el *lease*. La estrategia de despliegue debe ser *recreate* (`deploy/README.md`) |
+| D48 | ✅ **(M10) Las cargas no se guardan en memoria.** Cada archivo se escribe en un área de *staging* dentro del volumen (`/data/.staging/<uuid>`) mientras llega, calculando su SHA-256 por el camino. El caso de uso lee **un archivo a la vez** para el inspector y, en la fase (b), mueve el archivo a su lugar con un *rename* (atómico en el mismo volumen); lo que no se conserva (rechazado, inválido, duplicado) se descarta. Una petición que supera `UPLOAD_MAX_TOTAL_BYTES` (200 MB) o `UPLOAD_MAX_FILES` (300) recibe `413 UPLOAD_TOO_LARGE`, se descarta lo recibido y se cierra la conexión sin leer el resto. El límite de 15 MB por archivo no cambia (`REJECTED / ATTACHMENT_TOO_LARGE`) |
+| D49 | ✅ **(M13) CORS para el cliente web.** `CORS_ALLOWED_ORIGINS` lista los orígenes exactos del cliente web; es **obligatorio en producción** y allí nunca `*`; fuera de producción, vacío significa CORS apagado. Se permiten los métodos de la API y los encabezados `Authorization`, `Content-Type` y `Last-Event-ID`; sin credenciales de navegador (el token va en el encabezado, no en *cookies*); la respuesta al *preflight* se guarda 10 minutos. Las peticiones sin `Origin` (el webhook de ZeptoMail, `curl`) no se ven afectadas |
+
+### Cómo quedó implementado
+
+- **D47, puerto `InstanceLease`** (`acquire`, `renew`, `release`, `current`): el adaptador PostgreSQL usa una tabla de una fila (`instance_lease`, migración `InstanceLease1761912000000`) y el reloj de la base: tomarlo es un `INSERT … ON CONFLICT DO UPDATE … WHERE expires_at <= now() OR holder = $yo`, atómico; renovar solo funciona si es propio y no expiró. Se prefirió a `pg_advisory_lock` porque un *advisory lock* pertenece a una conexión y el *pool* reparte conexiones; además, la fila sobrevive a una conexión caída hasta su expiración, que es lo que hace seguro el TTL. Adaptador en memoria para pruebas; pruebas de contrato en ambos, incluida la petición simultánea de cuatro instancias.
+- **D47, `InstanceCoordinator`** (adaptador de entrada, sin Nest, en `src/adapters/inbound/jobs/`): espera → líder (recuperación una vez, luego carriles y ciclos); líder → espera si la renovación falla o lanza un error; líder → apagado (trabajo detenido, *lease* liberado). Para detener y reanudar bastan `stop` y `start` de `JobLanes` y `PollingLoop`, que ya podían reanudarse; no hizo falta `pause`/`resume`. `BackgroundWork` quedó como adaptador Nest delgado que renueva cada TTL/3. Si la recuperación falla, la instancia no arranca nada y libera el *lease*.
+- **D47, invariantes**: a lo sumo una líder según el reloj de la base; una líder que no puede renovar deja de tomar trabajos al primer fallo, al menos dos tercios del TTL antes de que otra pueda tomarlo; la recuperación corre exactamente una vez por cambio de líder.
+- **D47, `GET /instance`** (JWT): `{ instanceId, role, leaseHolder, leaseExpiresAt }`, por el caso de uso `GetInstanceStatus`, que lee el *lease* (no el estado interno del coordinador). `/health` sigue pública y mínima.
+- **D48, puerto `ReceiptFileStore`**: `stage(trozos)` (escribe y calcula el *hash*; si el flujo falla, no deja nada), `readStaged`, `commitStaged` (*rename*), `discardStaged` y `listStaged`. Volumen local en `.staging` y versión en memoria; pruebas de contrato. El controlador pasa los trozos por `UploadReceipts.stage` (no toca el almacén directamente) y cuenta los bytes; el caso de uso recibe archivos ya preparados (los llamadores internos y las pruebas pueden pasar los bytes, que se preparan primero). El barrido de huérfanos (D41) también descarta lo preparado hace más de `FILE_ORPHAN_MIN_AGE_MINUTES` (una caída entre la recepción y la decisión).
+- **D49**: `@fastify/cors` 11.3.1 (ya estaba en el árbol por Nest; ahora es dependencia directa) se registra en `bootstrap.ts` solo si hay orígenes configurados.
+- **Pruebas**: dos coordinadores con un *lease* compartido y reloj fijo (espera, relevo con recuperación, la antigua líder que vuelve y se retira, base caída, apagado), dos aplicaciones con un mismo *lease* vistas por `GET /instance`; carga por HTTP con *staging* (sin escribir bytes desde memoria, una lectura a la vez), presupuesto total y de archivos (`413`), *staging* abandonado y barrido; *preflight* de un origen permitido y de otro, `Last-Event-ID`, webhook y `/health` intactos, y validación de la configuración.
+
+### Puerto nuevo
+
+| Puerto | Responsabilidad | Adaptador |
+|---|---|---|
+| `InstanceLease` | Qué instancia ejecuta el trabajo en segundo plano: tomar, renovar y liberar un *lease* juzgado por el reloj de la base (D47) | `PostgresInstanceLease` (tabla de una fila); en memoria para pruebas |
+
+### Endpoints (JWT, D20)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `GET` | `/instance` | `{ instanceId, role: "leader" \| "standby", leaseHolder?, leaseExpiresAt? }` (D47) |
+| `POST` | `/batches/{YYYY-MM}/{BLOCK}/receipts` | Sin cambios en la respuesta; nuevo error `413 UPLOAD_TOO_LARGE` con `{ maxTotalBytes, maxFiles }` (D48) |
+
+### Configuración nueva
+
+| Variable | Por defecto | Uso |
+|---|---|---|
+| `INSTANCE_LEASE_TTL_SECONDS` | 30 | Duración del *lease*; se renueva cada tercio (D47). Entero ≥ 3 |
+| `UPLOAD_MAX_TOTAL_BYTES` | 209715200 (200 MB) | Bytes de archivos por petición de carga (D48). Entero positivo |
+| `UPLOAD_MAX_FILES` | 300 | Archivos por petición de carga; también el límite del *multipart* (D48). Entero positivo |
+| `CORS_ALLOWED_ORIGINS` | (vacío) | Orígenes exactos del cliente web, separados por coma (`https://host[:puerto]`, sin ruta ni barra final). Obligatorio en producción, nunca `*` allí (D49) |
+
+### Para el cliente web (D49)
+
+- Puede estar en otro origen, siempre que ese origen esté en `CORS_ALLOWED_ORIGINS` exactamente como lo envía el navegador.
+- Envía el token en `Authorization: Bearer …`; no usa *cookies* (`credentials: "omit"`, el valor por defecto de `fetch`).
+- Puede enviar `Content-Type` (JSON o *multipart*) y `Last-Event-ID` (para reanudar el SSE, D11). Ningún otro encabezado propio.
+
+### Supuestos (informados al usuario)
+
+- **Superposición en el relevo** (D47): la líder que no puede renovar deja de tomar trabajos en el acto, pero un envío ya en curso puede tardar hasta 30 s (`ZEPTOMAIL_TIMEOUT_MS`) y la siguiente líder puede tomar el *lease* 20 s después del primer fallo. En ese caso la recuperación de la nueva líder deja ese soporte `UNCERTAIN` (conservador) y la ejecución vieja, al volver, se retira sin tomar otro soporte (guardas de D32 y versiones de D37); su resultado, si es cierto, asienta el soporte como en D32. Ningún correo se envía dos veces.
+- **La instancia en espera atiende HTTP**: sus comandos usan su propio `SerialExecutor`; las versiones optimistas (D37) y el manifiesto de solo inserción impiden que dos instancias se pisen, pero el diseño sigue siendo de una instancia.
+- **El identificador de instancia** es `host:pid:aleatorio`, para reconocerla en el log y en `GET /instance`.
+- **Las pruebas y los llamadores internos** pueden seguir entregando bytes a `UploadReceipts`; solo la ruta HTTP, que es la que recibe cargas grandes, prepara los archivos sobre la marcha.
+- **`*` fuera de producción** se admite para desarrollo local.
+

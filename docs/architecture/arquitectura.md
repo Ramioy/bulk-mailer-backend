@@ -16,14 +16,14 @@ flowchart LR
     subgraph SVC["☁️ 3. SERVICE — single process (NestJS)"]
         direction LR
         subgraph IN["Inbound adapters"]
-            REST["REST API<br/>(Bearer JWT)"]
+            REST["REST API<br/>(Bearer JWT · CORS for the web client's origin, D49)"]
             WH["Webhook reception<br/>POST /webhooks/zeptomail<br/>(ZeptoMail credentials: HMAC + header;<br/>no operator session, returns no data — D20)"]
-            RUN["Job runner, four lanes (D21, D38, D41)<br/>execution: one batch at a time<br/>webhooks: delivery events<br/>lookups: reconciliation · sweep · checks<br/>files: deletion of receipt files"]
+            RUN["Job runner, four lanes (D21, D38, D41)<br/>execution: one batch at a time<br/>webhooks: delivery events<br/>lookups: reconciliation · sweep · checks<br/>files: deletion of receipt files<br/>only on the instance holding the lease (InstanceCoordinator, D47)"]
         end
 
         subgraph CORE["🧠 Core — domain + use cases (no infrastructure)"]
             UC["SignIn · UploadReceipts · RemoveReceipt<br/>GetBatchSummary · ExecuteBatch · ResendReceipt<br/>ResolveUncertain · ReleaseSuppressedAddress<br/>ReconcileSends · ProcessDeliveryEvent · VerifyDelivery · PurgeBatchFiles"]
-            PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock"}}
+            PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock · InstanceLease"}}
         end
 
         subgraph OUT["Outbound adapters (initial)"]
@@ -69,7 +69,8 @@ flowchart LR
 | `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit. Receipts and batches carry a row version: a save based on a stale version fails (`ConcurrentModificationError`); manifests are insert-only (`DuplicateManifestVersionError`) (D37) | PostgreSQL 18 | — |
 | `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash; `hasPending` so periodic work is not queued twice (D38). A job can also be queued inside a repository transaction (`tx.jobs`, same table): it exists if and only if the transaction commits (D40) | Jobs table in PostgreSQL | Kafka / RabbitMQ |
 | `EventBus` | Domain and progress events, at least once. An event that fails 10 deliveries is dead: it leaves the pending window, raises `OUTBOX_EVENT_DEAD` and can be retried by the operator (D39) | Outbox in PostgreSQL | Kafka |
-| `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)` | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
+| `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)`. Uploads are staged while received (`/data/.staging`, hashed on the way) and moved into place by a rename (D48) | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
+| `InstanceLease` | One instance runs the background work: acquire, renew, release a lease judged by the database clock (D47) | `PostgresInstanceLease` (one-row table) | — |
 | `FileInspector` | Verdict on the file (see §2.1) | `BasicPdfInspector` | `QpdfClamAvInspector` |
 | `ContractSource` | `get(contract)` → recipient | `TayronaContractSource` (blocks 1–4, 6) · `SapContractSource` (block 5) · `FakeContractSource` (non-prod) | — |
 | `EmailProvider` | Send a message and classify the response | `ZeptoMailEmailProvider` | Another provider |
@@ -80,7 +81,7 @@ flowchart LR
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
 
-Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with four lanes (D21, D38, D41): execution (one batch at a time), webhooks (never behind a lookup), lookups in the provider logs (reconciliation, sweep, per-minute check, at most `DELIVERY_CHECK_BATCH_SIZE` sends per check) and files (deletion of receipt files that are no longer needed, and the periodic orphan sweep). Every receipt change of every lane goes through the same serial executor.
+Inbound adapters: REST API (JWT on every query and command; CORS only for the configured origins of the web client, D49), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with four lanes (D21, D38, D41), run together with the recovery and the periodic loops only by the instance that holds the lease (`InstanceCoordinator`, D47; any other instance serves HTTP only and takes over when the lease expires): execution (one batch at a time), webhooks (never behind a lookup), lookups in the provider logs (reconciliation, sweep, per-minute check, at most `DELIVERY_CHECK_BATCH_SIZE` sends per check) and files (deletion of receipt files that are no longer needed, and the periodic orphan sweep). Every receipt change of every lane goes through the same serial executor.
 
 ### 2.1 `BasicPdfInspector` (verificación sencilla)
 
@@ -111,10 +112,14 @@ sequenceDiagram
     Op->>W: Chooses period + block, selects files from the host
     W->>API: POST /batches/{period}/{block}/receipts (Bearer JWT, multipart)
     API->>API: Verify JWT
+    loop per multipart part, as it arrives (D48)
+        API->>FS: stage(stream) → /data/.staging/<uuid>, sha256 and size computed on the way
+        Note over API: Over UPLOAD_MAX_TOTAL_BYTES or UPLOAD_MAX_FILES: 413, staged files dropped
+    end
     Note over API,SRC: Phase (a), outside the serial executor (D36)
-    loop per file
-        API->>API: sha256(content) · NFC name + regex + catalog + length (§4 of context)
-        API->>INS: inspect(bytes)
+    loop per file, one at a time
+        API->>API: NFC name + regex + catalog + length (§4 of context)
+        API->>INS: inspect(bytes of this file only)
         opt Name and file valid
             API->>SRC: GET /contratos/{contract} (once per contract)
         end
@@ -127,11 +132,12 @@ sequenceDiagram
             API->>API: Discarded, not stored, not counted
         else New or re-evaluated
             API->>DB: Check local suppression list
-            API->>FS: save(period, block, sha256)
+            API->>FS: commitStaged → rename into (period, block, sha256)
             API->>DB: Receipt PENDING or INVALID (+ error type), optimistic version
         end
     end
     API->>DB: Batch OPEN · new manifest version (insert-only)
+    API->>FS: discard what was not committed (rejected, invalid, duplicate)
     API-->>W: Summary: accepted · invalid · discarded duplicates · manifest version
 ```
 
