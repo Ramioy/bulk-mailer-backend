@@ -40,7 +40,7 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### A1 — La evidencia tardía de que un correo sí salió se ignora si el soporte ya quedó `FAILED` → reenvío duplicado
 
-**Estado:** corregido en `audita` (D34, commit `9afc980`). El resumen del lote ya no esconde `NOT_FOUND_AT_PROVIDER` detrás de `FILE_NOT_AVAILABLE`: muestra el error propio y `fileError` aparte (D42, commit `a960b8d`).
+**Estado:** corregido en `audita` (D34, commit `9afc980`). El resumen del lote ya no esconde `NOT_FOUND_AT_PROVIDER` detrás de `FILE_NOT_AVAILABLE`: muestra el error propio y `fileError` aparte (D42, commit `a960b8d`). La evidencia de un intento **anterior** cuando el último también quedó no encontrado ahora también confirma el envío (D50, commit `078ccbc`).
 
 - **Clasificación:** núcleo (máquina de estados del soporte y `applyToReceipt`).
 - **Evidencia:** `src/application/delivery/apply-delivery-event.ts:107` — todo evento de entrega del último intento sobre un soporte que no está `SENT`, `SENDING` ni `UNCERTAIN` se anota como `DELIVERY_EVENT_IGNORED` y no hace nada más. `src/domain/receipt/receipt-state.ts` no tiene transición `FAILED → SENT`.
@@ -112,7 +112,7 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### M1 — PDFs retenidos indefinidamente en el volumen (D4 y §15 incumplidos)
 
-**Estado:** corregido en `audita` (D41, commit `086a2db`).
+**Estado:** corregido en `audita` (D41, commit `086a2db`). Retirar un soporte y resolver un conflicto también borran su archivo por trabajo, no después del *commit* (D50, commit `078ccbc`).
 
 - **Clasificación:** núcleo.
 - **Evidencia:** la purga solo ocurre al pasar a `COMPLETED` (`run-execution.ts:259-266`) y en un reenvío `SENT` (`resend-receipt.ts:144`). `confirmSent` (`apply-delivery-event.ts:29-42`), `checkAttempt` y `ResolveUncertain` (`resolve-uncertain.ts:26-29`) llevan `UNCERTAIN → SENT` **sin tocar `fileAvailable` ni el archivo**.
@@ -219,7 +219,7 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### M14 — Alertas sin reconocimiento, sin paginación y con búsqueda O(n)
 
-**Estado:** corregido en `audita` (D46, commit `183cc4b`).
+**Estado:** corregido en `audita` (D46, commit `183cc4b`). La deduplicación ya no compara el texto del detalle: las alertas guardan una referencia (D50, commit `e150ce1`).
 
 - **Evidencia:** `GET /alerts` devuelve todo el historial (`executions.controller.ts:54-57`); no existe "atendida"; `alertOnce` recorre `tx.alerts.list()` completo en cada barrido (`reconciliation.ts:217`).
 - **Impacto:** la interfaz no puede distinguir lo pendiente; con retención permanente la lista solo crece. §13 pide "información mínima" útil, no un archivo.
@@ -250,6 +250,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 | B10 | Un PDF de 15 MB se envía en base64 (~20 MB) y ZeptoMail limita el **mensaje** (supuesto por validar); se rechazaría como `SM_127` tras aceptar la carga | `zeptomail-email-provider.ts:body()` | Bajar el tope de carga a lo que admita el cuerpo codificado, o validar con la cuenta real |
 | B11 | `SweepUnconfirmed` carga **todos** los `SENT` del historial permanente cada hora | `reconciliation.ts:180` | Consulta por ventana de tiempo en el puerto (`listSentUnconfirmedBetween`) |
 | B12 | `latestAttempt` ordena por `started_at, attempt_id`; dos intentos en el mismo milisegundo (reloj fijo en pruebas, posible en producción con reenvío inmediato) pueden invertirse | `postgres-bulk-mailer-repository.ts:listByReceipt` | Ordenar por `seq` (añadir `bigserial` a `attempts`) |
+
+**Estado de §5:** corregidos en `audita` (D50): B1 y B6 (commit `078ccbc`), B3, B5, B7 y B8 (commit `722b330`), B4 (commit `612ae1e`), B9, B10, B11 y B12 (commit `e150ce1`). **B2 queda abierto** como decisión de producto (pregunta al usuario en D50).
 
 **Observaciones sin acción propuesta (para que consten):**
 - `ResendReceipt` no exige periodo operable (documentado) ni comprueba que el lote del soporte no esté `RUNNING` por **otra** ejecución: no hace falta, el bloqueo es global.
@@ -339,3 +341,5 @@ Para que el informe no se lea como si todo estuviera mal: se intentó romper y *
 8. Bajos y observaciones según convenga.
 
 Cada punto se puede registrar como decisión (D32 en adelante) **solo después** de que el usuario lo apruebe, paso a paso, como manda la regla 2. Ninguno exige las APIs reales ni la cuenta de ZeptoMail; A4, A5 y M6 se **completan** con el paso 12, pero su parte de código puede corregirse antes.
+
+**Estado al cierre:** bloques 1–8 aplicados en `audita` (D32–D50), pendientes de fusión a `main`. Quedan como preguntas al usuario: la retención máxima de PDF de soportes que siguen "necesarios", el reconocimiento automático de alertas y B2.

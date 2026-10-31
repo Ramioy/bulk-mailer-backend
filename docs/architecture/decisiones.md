@@ -222,7 +222,7 @@ Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADD
 
 ### Por validar con la cuenta real (se suma a §12.7)
 
-JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones. Agregado por D35: **forma exacta del campo `to`** en `GET /v1.1/email` y en el detalle (texto, `Nombre <dirección>`, objeto o lista) y **paginación de `GET /v1.1/email`** (tamaño de página por defecto, parámetros `limit`/`offset` y si la respuesta indica que hay más páginas, y con qué campo). Agregado por D38: **límites de uso de la API de logs** (llamadas por minuto u hora) y **si comparten cuota con la API de envío**, para calibrar `DELIVERY_CHECK_BATCH_SIZE`.
+JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones. Agregado por D35: **forma exacta del campo `to`** en `GET /v1.1/email` y en el detalle (texto, `Nombre <dirección>`, objeto o lista) y **paginación de `GET /v1.1/email`** (tamaño de página por defecto, parámetros `limit`/`offset` y si la respuesta indica que hay más páginas, y con qué campo). Agregado por D38: **límites de uso de la API de logs** (llamadas por minuto u hora) y **si comparten cuota con la API de envío**, para calibrar `DELIVERY_CHECK_BATCH_SIZE`. Agregado por D50: **límite de ZeptoMail sobre el mensaje codificado** (un adjunto de 15 MB son ~20 MB en base64), para calibrar `MAX_ATTACHMENT_BYTES`.
 
 ## Webhook, seguimiento por minuto y verificación manual (2026-10-31)
 
@@ -613,4 +613,66 @@ Hallazgos M8, M10 y M13 de `docs/audit/auditoria-2026-10-31.md`, corregidos en l
 - **El identificador de instancia** es `host:pid:aleatorio`, para reconocerla en el log y en `GET /instance`.
 - **Las pruebas y los llamadores internos** pueden seguir entregando bytes a `UploadReceipts`; solo la ruta HTTP, que es la que recibe cargas grandes, prepara los archivos sobre la marcha.
 - **`*` fuera de producción** se admite para desarrollo local.
+
+## Cierre de la auditoría: bajos y adyacentes (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D50 | ✅ **Cierre de la auditoría: hallazgos bajos (§5) y problemas adyacentes encontrados en los bloques 1 a 7.** Uno por fila en la tabla siguiente. Quedan fuera, como preguntas al usuario, dos decisiones de negocio y B2 |
+
+| Ítem | Qué se hizo |
+|---|---|
+| B1 | Tras un error de cuenta el soporte vuelve a `PENDING` **sin** el detalle del proveedor; la causa queda en el intento y en el historial |
+| B3 | Retirar un soporte y resolver un conflicto (D31) son correcciones: se permiten en cualquier periodo; solo una ejecución en curso los rechaza |
+| B4 | Casos de uso de consulta `ListSuppressions`, `ListWebhooks`, `GetWebhook` y `ExecutionEventsQuery`; `ProgressNotifier.subscribe`; los controladores reciben `Clock` y los secretos del webhook por su propio *token*. Reglas nuevas en `architecture.test.ts`: la entrada no importa la salida; los adaptadores solo importan de la composición sus *tokens* o tipos; ningún controlador lee el repositorio |
+| B5 | Límite por IP en las rutas públicas de autenticación (`AUTH_RATE_LIMIT_PER_MINUTE`, 20; `429` con `Retry-After`), sin bloquear cuentas; el usuario intentado de `SIGN_IN_FAILED` se audita sin caracteres de control y con 100 caracteres como máximo |
+| B6 | Fuera de producción, cada intento registra el buzón de prueba al que se redirigió (`redirectedTo`); un rebote de ese buzón alerta pero **no** suprime la dirección real |
+| B7 | Registro de operación: una línea JSON por evento de dominio (carga, inicio y fin de ejecución, resultado de cada envío, resolución, webhook, cambio de entrega, supresión, alerta) y resúmenes de conciliación, barrido, verificación por minuto y procesamiento de webhooks; solo identificadores, estados y conteos |
+| B8 | `GET /health` comprueba la base (`SELECT 1`) y el volumen; si algo falla responde `503 { status: "degraded", checks }`; sigue pública y mínima |
+| B9 | `PURGE_FINISHED_WORK`, diario: borra los trabajos terminados y los eventos del *outbox* despachados con más de `WORK_RETENTION_DAYS` (30). Los eventos muertos y todo registro de negocio se conservan |
+| B10 | `MAX_ATTACHMENT_BYTES` es configuración (15 MB por defecto, sin cambio de comportamiento); el límite de ZeptoMail sobre el mensaje codificado pasa a §12.7 |
+| B11 | El barrido horario lee solo los soportes pendientes actualizados dentro de su ventana (`listPendingDeliveriesSince`), no todo el historial |
+| B12 | `attempts.seq` desempata intentos con la misma hora de inicio (orden `started_at, seq`) |
+| Bloque 2 | Evidencia de un intento **anterior** incierto cuando el último también quedó `FAILED / NOT_FOUND_AT_PROVIDER`: el soporte queda `SENT` por esa evidencia (regla de D34, alerta `LATE_SEND_EVIDENCE`); antes quedaba listo para un tercer envío |
+| Bloques 3 y 5 | `RemoveReceipt` y `ResolveDuplicateConflict` encolan el borrado del archivo en su transacción (D41) en vez de borrar después del *commit*; el reenvío ya no tenía borrado directo |
+| Bloque 6 | Las alertas guardan una referencia (el intento) y `AlertFilter` acepta `reference` y `since`: `UNCERTAIN_UNRESOLVED` y `DUPLICATE_SEND_DETECTED` se deduplican por ella, no por su texto |
+
+### Cómo quedó implementado
+
+- **Migraciones**: `Hygiene1761915600000` (`alerts.reference`, `attempts.seq`, índices de limpieza) y `AttemptRedirect1761919200000` (`attempts.redirected_to`).
+- **Puertos que cambiaron**: `ProgressNotifier.subscribe`; `ReceiptStore.listPendingDeliveriesSince`; `AlertStore` con `reference` y `since`; `JobQueue.purgeFinished`; `OutboxStore.purgeDispatched`; `EmailProvider.redirectsTo` (opcional: lo declara `RedirectingEmailProvider`); puerto nuevo `ReadinessProbe` (adaptador `SystemReadinessProbe`). Todos con pruebas de contrato o unitarias.
+- **B6, diseño**: en lugar de que cada `SendOutcome` traiga el destinatario efectivo, el proveedor declara una sola vez si redirige (`redirectsTo`) y los casos de uso lo anotan en el intento. Es lo mínimo que cuenta la verdad: la redirección es una propiedad del proveedor configurado, no de cada respuesta.
+- **Evidencia de un intento anterior**: después de confirmar así el soporte, los eventos siguientes de ese mismo intento no se toman como duplicado (se reconoce por la alerta `LATE_SEND_EVIDENCE` con su referencia).
+- **B7**: el consumidor está en `src/adapters/outbound/logging/operation-log.ts` y nunca falla (un problema del log no hace reentregar el evento). El `Logger` de Nest solo se usa en la composición.
+- **B9**: el trabajo corre en el carril de archivos (limpieza local, rápida) y no se duplica (`hasPending`).
+- **B5**: el limitador es un gancho de Fastify en memoria (no hay `@fastify/rate-limit` en el árbol), con ventana fija de un minuto por IP. Las aplicaciones de prueba suben el límite porque inician sesión muchas veces desde la misma dirección; la prueba del límite usa 3.
+- **Pruebas**: `test/application/audit-closure.test.ts`, `test/application/housekeeping.test.ts`, `test/operability.test.ts`, las reglas nuevas de `test/architecture.test.ts` y los contratos ampliados.
+
+### Configuración nueva
+
+| Variable | Por defecto | Uso |
+|---|---|---|
+| `WORK_RETENTION_DAYS` | 30 | Días que se conservan los trabajos terminados y los eventos despachados (B9) |
+| `MAX_ATTACHMENT_BYTES` | 15728640 (15 MB) | Archivo más grande aceptado (B10) |
+| `AUTH_RATE_LIMIT_PER_MINUTE` | 20 | Peticiones por minuto e IP a las rutas públicas de autenticación (B5) |
+
+### Trabajos nuevos
+
+| Trabajo | Cuándo |
+|---|---|
+| `PURGE_FINISHED_WORK` | Una vez al día, en la instancia líder (D47), si no hay uno pendiente |
+
+### Supuestos (informados al usuario)
+
+- **Orden de los intentos**: se ordena primero por hora de inicio y luego por `seq`. No se usa solo `seq` para que los datos ya existentes, numerados al migrar en el orden físico de la tabla, no cambien de orden.
+- **Soporte confirmado por un intento anterior**: su estado de entrega queda como lo dejó esa evidencia; los eventos siguientes de ese intento no lo cambian (solo cuentan los del último intento), y el barrido consulta el último intento, que no aparece en los logs. Es un caso marginal; el operador puede verificarlo a mano.
+- **B3**: resolver un conflicto puede mover el soporte a un lote de un periodo cerrado; enviarlo sigue exigiendo un periodo operable.
+- **`execution_events`** no se purga: es lo que permite repetir el progreso de una ejecución (D10, D11) y es pequeño.
+- **El límite de autenticación** es por proceso y se reinicia con él.
+
+### Preguntas abiertas al usuario
+
+1. **Retención máxima de los PDF** de soportes que siguen "necesarios" (un `FAILED` que nunca se reenvía, un `PENDING` que nunca se corrige): hoy se conservan mientras sigan así (D41/D42). ¿Plazo máximo, por ejemplo al cerrar el periodo?
+2. **Reconocer solas las alertas** cuando su causa se resuelve (por ejemplo, un `UNCERTAIN_UNRESOLVED` que el barrido confirma después). Hoy el operador las reconoce (D46).
+3. **B2**: corregir el contrato de un soporte subiéndolo con el nombre arreglado produce un `DUPLICATE_CONFLICT` con nota obligatoria (consecuencia de D31). ¿Se acepta esa fricción o se permite reemplazar el nombre en la misma carga?
 

@@ -23,7 +23,7 @@ flowchart LR
 
         subgraph CORE["🧠 Core — domain + use cases (no infrastructure)"]
             UC["SignIn · UploadReceipts · RemoveReceipt<br/>GetBatchSummary · ExecuteBatch · ResendReceipt<br/>ResolveUncertain · ReleaseSuppressedAddress<br/>ReconcileSends · ProcessDeliveryEvent · VerifyDelivery · PurgeBatchFiles"]
-            PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock · InstanceLease"}}
+            PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock · InstanceLease · ReadinessProbe"}}
         end
 
         subgraph OUT["Outbound adapters (initial)"]
@@ -35,6 +35,7 @@ flowchart LR
             A_ZM["ZeptoMailEmailProvider<br/>ZeptoMailSendLookup<br/>ZeptoMailConsoleSuppressionManager (D19)"]
             A_SSE["SseProgressNotifier"]
             A_AL["UiAlertNotifier"]
+            A_LOG["Operation log<br/>(consumer of domain events, D50)"]
         end
     end
 
@@ -66,7 +67,7 @@ flowchart LR
 | Port | Responsibility | Initial adapter | Future adapter |
 |---|---|---|---|
 | `Authenticator` | Sign in, issue and verify JWT (access 15 min, refresh 8 h), one role `operator` | `LocalJwtAuthenticator` (Argon2, accounts provisioned in DB) | AD / Entra ID |
-| `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit. Receipts and batches carry a row version: a save based on a stale version fails (`ConcurrentModificationError`); manifests are insert-only (`DuplicateManifestVersionError`) (D37) | PostgreSQL 18 | — |
+| `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit. Receipts and batches carry a row version: a save based on a stale version fails (`ConcurrentModificationError`); manifests are insert-only (`DuplicateManifestVersionError`) (D37). Pending deliveries are read by time window and alerts by type, subject, reference and date (D46, D50) | PostgreSQL 18 | — |
 | `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash; `hasPending` so periodic work is not queued twice (D38). A job can also be queued inside a repository transaction (`tx.jobs`, same table): it exists if and only if the transaction commits (D40) | Jobs table in PostgreSQL | Kafka / RabbitMQ |
 | `EventBus` | Domain and progress events, at least once. An event that fails 10 deliveries is dead: it leaves the pending window, raises `OUTBOX_EVENT_DEAD` and can be retried by the operator (D39) | Outbox in PostgreSQL | Kafka |
 | `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)`. Uploads are staged while received (`/data/.staging`, hashed on the way) and moved into place by a rename (D48) | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
@@ -76,7 +77,8 @@ flowchart LR
 | `EmailProvider` | Send a message and classify the response | `ZeptoMailEmailProvider` | Another provider |
 | `SendLookup` | Look up a send by `client_reference` | `ZeptoMailSendLookup` (logs API, OAuth) | — |
 | `SuppressionManager` | Remove an address from the provider suppression list | `ZeptoMailConsoleSuppressionManager`: no API is documented, the operator removes it in the console and confirms it (D19) | `ZeptoMailSuppressionManager` (API), if Zoho confirms one |
-| `ProgressNotifier` | Real-time progress | `SseProgressNotifier` | WebSocket |
+| `ProgressNotifier` | Real-time progress: publish, and subscribe to one execution (the SSE stream, D50) | `SseProgressNotifier` | WebSocket |
+| `ReadinessProbe` | Whether the database and the volume work, for `GET /health` (D50) | `SystemReadinessProbe` | — |
 | `AlertNotifier` | Deliver persisted typed alerts. The operator lists them newest first, filters them (`pending`, type, subject) and acknowledges them (D46) | `UiAlertNotifier` | Email / Teams / Slack |
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
