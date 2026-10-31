@@ -21,7 +21,7 @@ export const NEW_CONCEPT = 'SANCIÓN';
 
 /** What each file must end as, according to the design (docs/context and docs/architecture/decisiones.md). */
 export interface Expected {
-  readonly upload: 'REGISTERED' | 'DUPLICATE';
+  readonly upload: 'REGISTERED' | 'DUPLICATE' | 'DUPLICATE_CONFLICT';
   readonly state?: string;
   readonly errorType?: string;
   readonly deliveryState?: string;
@@ -43,6 +43,8 @@ export interface SimFile {
   /** Duplicates only: the normal file whose content it repeats. */
   readonly duplicateOf?: string;
   readonly expected: Expected;
+  /** `extra`: not part of the batch's 50 files; used by a scenario of the audit (D32-D53) at another moment of the month. */
+  readonly phase?: 'extra';
 }
 
 type Scenario = { readonly name: string; readonly expected: Expected; readonly contract?: (c: Contract) => void };
@@ -90,7 +92,7 @@ const SOURCE_DOWN: Scenario = { name: 'source-unavailable', expected: { upload: 
 const INVALID_NAME: Scenario = { name: 'invalid-name', expected: { upload: 'REGISTERED', state: 'INVALID', errorType: 'INVALID_NAME', why: '§4.2: double space after CNCPT' } };
 const UNKNOWN_CONCEPT: Scenario = { name: 'unknown-concept', expected: { upload: 'REGISTERED', state: 'INVALID', errorType: 'UNKNOWN_CONCEPT', why: '§4.2: concept not in the catalog (case-sensitive)' } };
 const NOT_PDF: Scenario = { name: 'not-a-pdf', expected: { upload: 'REGISTERED', state: 'INVALID', errorType: 'NOT_A_PDF', why: '§5: content is not a PDF' } };
-const DUPLICATE: Scenario = { name: 'duplicate', expected: { upload: 'DUPLICATE', why: '§4.2/D2: same content as another file of the batch → discarded' } };
+const DUPLICATE: Scenario = { name: 'duplicate', expected: { upload: 'DUPLICATE_CONFLICT', why: 'D31: same content as another file of the batch under another name → both blocked until the operator chooses a name (the runner chooses the original one)' } };
 const OK: Scenario = { name: 'ok', expected: delivered('Normal send, delivered') };
 
 const CONCEPTS = ['PAGO ADMINISTRACIÓN', 'CUOTA EXTRA', 'MULTA'] as const;
@@ -191,6 +193,30 @@ export function generate(): { files: SimFile[]; contracts: Record<'TAYRONA' | 'S
     const at = files.indexOf(batch[position] as SimFile);
     files[at] = { ...(batch[position] as SimFile), seed: original.seed, duplicateOf: original.fileName };
   }
+  // Extra files of the audit scenarios (sim/run.ts), outside the 300 of the month:
+  // - CASH, after batch 1: a lost-response send aborted by the operator while the provider keeps it waiting (D32); the
+  //   receipt is released UNCERTAIN, the reconciliation finds it in the logs → SENT, and the STOPPED batch with nothing
+  //   left settles to COMPLETED and purges its files (D41).
+  // - AVVILLAS, before batch 2: the 51st file of one upload, refused with 413 before anything is registered (D48).
+  const extra = (block: string, source: 'TAYRONA' | 'SAP', scenario: string, local: string, expected: Expected): void => {
+    const number = source === 'SAP' ? (sap += 1) : (tayrona += 1);
+    const contractId = String(number);
+    const complex = `Conjunto ${pick(STREETS)} ${number}`;
+    contracts[source][contractId] = { activo: true, nombre_conjunto: complex, correo: `conjunto${number}${local}@clientes.test` };
+    files.push({
+      block,
+      fileName: `${complex} ${block.toLowerCase()} extra CNCPT ${pick(CONCEPTS)} CNTRT ${contractId}.pdf`,
+      scenario,
+      contract: contractId,
+      email: `conjunto${number}${local}@clientes.test`,
+      content: 'pdf',
+      seed: `${block}-extra-${number}`,
+      expected,
+      phase: 'extra',
+    });
+  };
+  extra('CASH', 'TAYRONA', 'abort-settle', '+zm-timeout', delivered('D32/D41: aborted while waiting for the provider → UNCERTAIN → found in the logs → SENT; the stopped batch settles to COMPLETED'));
+  extra('AVVILLAS', 'TAYRONA', 'upload-budget', '', { upload: 'REGISTERED', why: 'D48: the 51st file of one request → 413 UPLOAD_TOO_LARGE, nothing registered (never uploaded on its own)' });
   return { files, contracts };
 }
 

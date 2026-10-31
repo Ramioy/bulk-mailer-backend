@@ -5,7 +5,8 @@ cd "$(dirname "$0")/.."
 OUT=sim/out
 COMPOSE=(docker compose -f sim/docker-compose.yml --env-file "$OUT/sim.env")
 
-mkdir -p "$OUT/tls"
+mkdir -p "$OUT/tls" "$OUT/control"
+rm -f "$OUT"/control/*
 node sim/generate.ts "$OUT"
 
 if [ ! -f "$OUT/sim.env" ]; then
@@ -29,7 +30,7 @@ ENV
 fi
 if [ ! -f "$OUT/tls/cert.pem" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=app" \
-    -addext "subjectAltName=DNS:app,DNS:localhost,IP:127.0.0.1" \
+    -addext "subjectAltName=DNS:app,DNS:app2,DNS:localhost,IP:127.0.0.1" \
     -keyout "$OUT/tls/key.pem" -out "$OUT/tls/cert.pem" 2>/dev/null
   chmod 644 "$OUT/tls/key.pem"
 fi

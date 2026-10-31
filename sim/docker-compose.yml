@@ -64,16 +64,20 @@ services:
     volumes: ["./out:/sim:ro"]
     depends_on: { postgres: { condition: service_healthy } }
 
-  app:
+  app: &app
     <<: *image
     command: ["node", "dist/main.js"]
     ports: ["3443:3443"]
-    environment:
+    # D33: the process waits up to SHUTDOWN_TIMEOUT_SECONDS for the send in progress; Docker must wait longer.
+    stop_grace_period: 40s
+    environment: &app-env
       PORT: "3443"
       DATA_DIR: /data
       DATABASE_URL: postgres://bulk_mailer_app:${APP_DB_PASSWORD}@postgres:5432/bulk_mailer
       TLS_CERT_FILE: /sim/tls/cert.pem
       TLS_KEY_FILE: /sim/tls/key.pem
+      # D49: required in production (the simulation has no web client; an exact origin anyway)
+      CORS_ALLOWED_ORIGINS: https://localhost:5173
       CONTRACT_SOURCE: http
       TAYRONA_API_URL: http://tayrona:4001
       SAP_API_URL: http://sap:4001
@@ -88,6 +92,24 @@ services:
       DELIVERY_WAIT_LOOKUP_SECONDS: "30"
       RECONCILE_DELAYS_MINUTES: "1,2,3"
       DELIVERY_CHECK_TAIL_MINUTES: "3"
+      # Audit (D32-D53), accelerated where the month must show it: the sweep looks at sends older than 1 h every
+      # 5 min (a lost webhook of batch 1 must be found before the month ends); orphan files are swept every 10 min.
+      RECONCILE_SWEEP_AFTER_HOURS: "1"
+      RECONCILE_SWEEP_MAX_HOURS: "72"
+      RECONCILE_SWEEP_INTERVAL_MINUTES: "5"
+      RECONCILE_SWEEP_BATCH_SIZE: "50"
+      DELIVERY_CHECK_BATCH_SIZE: "20"
+      FILE_ORPHAN_SWEEP_INTERVAL_MINUTES: "10"
+      FILE_ORPHAN_MIN_AGE_MINUTES: "5"
+      # Exactly one batch fits in a request: the 51st file must be refused with 413 (D48)
+      UPLOAD_MAX_FILES: "50"
+      UPLOAD_MAX_TOTAL_BYTES: "209715200"
+      WORK_RETENTION_DAYS: "30"
+      MAX_ATTACHMENT_BYTES: "15728640"
+      AUTH_RATE_LIMIT_PER_MINUTE: "60"
+      INSTANCE_LEASE_TTL_SECONDS: "30"
+      EXECUTION_ABORT_AFTER_MINUTES: "10"
+      SHUTDOWN_TIMEOUT_SECONDS: "25"
     volumes: ["./out:/sim:ro", "appdata:/data"]
     depends_on:
       provision: { condition: service_completed_successfully }
@@ -95,18 +117,34 @@ services:
       sap: { condition: service_started }
       zeptomail: { condition: service_started }
 
+  # D47: a second replica against the same database and volume (started on demand by sim/run.sh): it must serve HTTP
+  # and stay standby while the first one holds the lease.
+  app2:
+    <<: *app
+    profiles: ["two"]
+    ports: ["3444:3444"]
+    environment:
+      <<: *app-env
+      PORT: "3444"
+    depends_on:
+      app: { condition: service_started }
+
   runner:
     <<: *image
     profiles: ["run"]
     command: ["node", "sim/run.ts"]
     environment:
       APP_URL: https://app:3443
+      APP2_URL: https://app2:3444
+      # Requests to the host (stop/start containers) and read-only view of the receipt files volume
+      SIM_CONTROL: /sim/control
+      APP_DATA_DIR: /appdata
       REPORT_DATABASE_URL: postgres://bulk_mailer:${OWNER_DB_PASSWORD}@postgres:5432/bulk_mailer
       ZEPTO_URL: http://zeptomail:4002
       SIM_OUT: /sim
       ARCHIVE_COPY_ADDRESS: archivo@anutibara.com
       NODE_EXTRA_CA_CERTS: /sim/tls/cert.pem
-    volumes: ["./out:/sim"]
+    volumes: ["./out:/sim", "appdata:/appdata:ro"]
     depends_on: { app: { condition: service_started } }
 
 volumes:
