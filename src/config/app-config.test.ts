@@ -15,6 +15,8 @@ describe('loadConfig', () => {
       databaseUrl: 'postgres://localhost/bulk_mailer',
       accessTokenMinutes: 15,
       sessionHours: 8,
+      pdfMaxIncrementalUpdates: 0,
+      contractAllowLeadingZeros: false,
     });
   });
 

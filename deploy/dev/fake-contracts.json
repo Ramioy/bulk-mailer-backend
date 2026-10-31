@@ -1,0 +1,11 @@
+{
+  "TAYRONA": {
+    "104522": { "complexName": "Edificio Altos", "email": "admin@altos.example" },
+    "98765": { "complexName": "Conjunto Las Palmas", "email": "palmas@example.com" },
+    "55555": { "complexName": "Contrato inactivo", "email": "inactivo@example.com", "active": false },
+    "44444": { "complexName": "Sin correo", "email": null }
+  },
+  "SAP": {
+    "7001": { "complexName": "Anglo Torre 1", "email": "anglo@example.com" }
+  }
+}

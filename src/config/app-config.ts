@@ -17,6 +17,12 @@ export interface AppConfig {
   readonly accessTokenMinutes: number;
   /** Absolute lifetime of a session (refresh credential). */
   readonly sessionHours: number;
+  /** Incremental PDF revisions accepted (control 6); default 0, calibrated in the pilot. */
+  readonly pdfMaxIncrementalUpdates: number;
+  /** Accept and strip leading zeros in the contract of the file name; default false. */
+  readonly contractAllowLeadingZeros: boolean;
+  /** Non-production only: data for the simulated contract sources. */
+  readonly fakeContractsFile?: string;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -56,6 +62,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const accessTokenMinutes = positiveInteger(env.ACCESS_TOKEN_MINUTES ?? '15', 'ACCESS_TOKEN_MINUTES', problems);
   const sessionHours = positiveInteger(env.SESSION_HOURS ?? '8', 'SESSION_HOURS', problems);
+  const pdfMaxIncrementalUpdates = Number(env.PDF_MAX_INCREMENTAL_UPDATES ?? '0');
+  if (!Number.isInteger(pdfMaxIncrementalUpdates) || pdfMaxIncrementalUpdates < 0) {
+    problems.push('PDF_MAX_INCREMENTAL_UPDATES must be an integer >= 0');
+  }
+  const leadingZeros = env.CONTRACT_ALLOW_LEADING_ZEROS ?? 'false';
+  if (leadingZeros !== 'true' && leadingZeros !== 'false') problems.push('CONTRACT_ALLOW_LEADING_ZEROS must be true or false');
+  const fakeContractsFile = env.FAKE_CONTRACTS_FILE ?? '';
+  if (nodeEnv === 'production' && fakeContractsFile !== '') problems.push('FAKE_CONTRACTS_FILE is not allowed in production');
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -69,6 +83,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(certFile === '' ? {} : { tls: { certFile, keyFile } }),
     accessTokenMinutes,
     sessionHours,
+    pdfMaxIncrementalUpdates,
+    contractAllowLeadingZeros: leadingZeros === 'true',
+    ...(fakeContractsFile === '' ? {} : { fakeContractsFile }),
   };
 }
 

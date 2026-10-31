@@ -24,6 +24,7 @@
     "hash-password": "pnpm -s build && node dist/adapters/outbound/auth/hash-password.js"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.6",
     "@nestjs/common": "^12.3.2",
     "@nestjs/core": "^12.3.2",
     "@nestjs/platform-fastify": "^12.3.2",
