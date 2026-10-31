@@ -249,3 +249,35 @@ JSON real de cada evento (en especial *Delivered* y el campo del destinatario), 
 | `GET` | `/webhooks/zeptomail/events/{webhookRequestId}` | Un webhook con su cuerpo crudo (JWT) |
 | `POST` | `/receipts/{sha256}/verify-delivery` | Verificación manual de un soporte (D22) |
 | `POST` | `/batches/{YYYY-MM}/{BLOCK}/verify-delivery` | Verificación manual de un lote (D22) |
+
+## Paso 11: administración del catálogo y de la copia (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D23 | ✅ **Catálogo de conceptos.** Se agregan conceptos; de uno existente se puede **cambiar el asunto**, **retirarlo** y **reactivarlo**. La **clave no se edita** (identifica el concepto en los nombres de archivo): para cambiarla se retira el concepto y se agrega otro. Un asunto nuevo aplica a los envíos y reenvíos posteriores; lo ya enviado no cambia |
+| D24 | ✅ **Validación de una clave nueva**, con las reglas del nombre de archivo: NFC, palabras separadas por un solo espacio y sin espacios al borde, sin `CNCPT` ni `CNTRT`, y que el nombre más corto posible con ella quepa en 150 caracteres (máximo 130 caracteres). No puede repetir una clave existente, activa o retirada. El asunto no puede quedar vacío y se recortan sus bordes |
+| D25 | ✅ **Retirar un concepto no toca lo ya cargado**: los soportes `PENDING` o `FAILED` con ese concepto quedan como están y se envían con el asunto vigente. El concepto retirado solo se rechaza en las cargas posteriores (`INVALID / UNKNOWN_CONCEPT`) |
+| D26 | ✅ **Copia `bcc`.** Activarla sin `ARCHIVE_COPY_ADDRESS` configurada se rechaza con `ARCHIVE_COPY_NOT_CONFIGURED` (409); desactivarla siempre se permite. Se puede cambiar durante una ejecución: aplica desde la siguiente, porque `StartExecution` fija el valor al iniciar |
+
+### Cómo quedó implementado
+
+- Casos de uso `ManageConcepts` (agregar y modificar), `ListConcepts` y `ArchiveCopy`, por el mismo `SerialExecutor` que los comandos del lote. Cada cambio guarda, audita y deja su evento en `tx.outbox` en una sola transacción.
+- **Auditoría**: `CONCEPT_CHANGED` con la clave como sujeto y `{ subject, active }` en JSON como valor anterior y nuevo (sin valor anterior al agregar). `ARCHIVE_COPY_CHANGED` con sujeto `archive-copy` y valores `true`/`false`. Una petición que no cambia nada (por ejemplo, retirar un concepto ya retirado) no se audita y responde el estado actual.
+- **Eventos nuevos**: `CONCEPT_CHANGED` (`change`: `ADDED`, `RETIRED`, `REACTIVATED`, `SUBJECT_CHANGED`) y `ARCHIVE_COPY_CHANGED`.
+- Las cuentas de operador no se administran desde la interfaz (§13).
+
+### Supuestos (informados al usuario)
+
+- **Campos JSON en inglés** (`key`, `subject`, `active`, `enabled`), como el resto de la API (D5), en lugar de `clave`, `asunto` y `activo` de la propuesta. Las claves del catálogo siguen en español (A5).
+- La clave y el asunto **no pueden traer caracteres de control** (tabuladores, saltos de línea): el asunto va en el encabezado del correo.
+- Las claves distinguen mayúsculas y minúsculas, igual que el nombre de archivo: `MULTA` y `Multa` serían dos conceptos distintos.
+
+### Endpoints (todos con JWT, D20)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `GET` | `/concepts` | Todos los conceptos, activos y retirados |
+| `POST` | `/concepts` | `{ "key", "subject" }` → 201 con el concepto activo. Errores: `INVALID_CONCEPT_KEY` (422, con `reason`: `EMPTY`, `SPACING`, `RESERVED_WORD`, `TOO_LONG`, `CONTROL_CHARACTER`), `INVALID_CONCEPT_SUBJECT` (422), `CONCEPT_ALREADY_EXISTS` (409) |
+| `PATCH` | `/concepts/{key}` | `{ "subject"?, "active"? }`. Errores: `CONCEPT_NOT_FOUND` (404), `NOTHING_TO_CHANGE` (400), `INVALID_CONCEPT_SUBJECT` (422) |
+| `GET` | `/settings/archive-copy` | `{ "enabled", "address" }` (`address` es `null` si no está configurada) |
+| `PUT` | `/settings/archive-copy` | `{ "enabled": bool }`. Error: `ARCHIVE_COPY_NOT_CONFIGURED` (409) |

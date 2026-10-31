@@ -47,6 +47,10 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   BUSINESS_CONFIRMATION_REQUIRED: UnprocessableEntityException,
   PROVIDER_REMOVAL_NOT_CONFIRMED: UnprocessableEntityException,
   SUPPRESSION_PROVIDER_FAILED: BadGatewayException,
+  CONCEPT_NOT_FOUND: NotFoundException,
+  CONCEPT_ALREADY_EXISTS: ConflictException,
+  INVALID_CONCEPT_KEY: UnprocessableEntityException,
+  INVALID_CONCEPT_SUBJECT: UnprocessableEntityException,
 };
 
 /** Typed use-case errors → HTTP status with `{ error, ...details }` body. */

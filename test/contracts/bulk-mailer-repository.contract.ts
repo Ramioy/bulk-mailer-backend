@@ -177,6 +177,11 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect((await repo.concepts.list()).map((c) => c.key).sort()).toEqual(['CUOTA EXTRA', 'MULTA', 'PAGO ADMINISTRACIÓN']);
         await repo.concepts.save({ key: 'MULTA', subject: 'Multa', active: false });
         expect((await repo.concepts.list()).find((c) => c.key === 'MULTA')?.active).toBe(false);
+        await repo.concepts.save({ key: 'MULTA', subject: 'Multa por ruido', active: true });
+        await repo.concepts.save({ key: 'SANCIÓN', subject: 'Sanción', active: true });
+        expect((await repo.concepts.list()).filter((c) => c.key === 'MULTA' || c.key === 'SANCIÓN')).toEqual(
+          expect.arrayContaining([{ key: 'MULTA', subject: 'Multa por ruido', active: true }, { key: 'SANCIÓN', subject: 'Sanción', active: true }]),
+        );
       });
 
       it('has the archive copy disabled by default', async () => {

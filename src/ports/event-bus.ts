@@ -15,6 +15,9 @@ export const DomainEventType = {
   RECEIPT_RESOLVED: 'RECEIPT_RESOLVED',
   ADDRESS_SUPPRESSED: 'ADDRESS_SUPPRESSED',
   ADDRESS_RELEASED: 'ADDRESS_RELEASED',
+  /** A concept was added, retired, reactivated or got a new subject. */
+  CONCEPT_CHANGED: 'CONCEPT_CHANGED',
+  ARCHIVE_COPY_CHANGED: 'ARCHIVE_COPY_CHANGED',
 } as const;
 export type DomainEventType = (typeof DomainEventType)[keyof typeof DomainEventType];
 

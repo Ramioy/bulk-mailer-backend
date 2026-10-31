@@ -1,6 +1,7 @@
 import { type DynamicModule, Logger, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 
+import { AdminController } from './adapters/inbound/http/admin/admin.controller';
 import { AuthController } from './adapters/inbound/http/auth/auth.controller';
 import { BearerAuthGuard } from './adapters/inbound/http/auth/bearer-auth.guard';
 import { DeliveryController } from './adapters/inbound/http/delivery/delivery.controller';
@@ -15,10 +16,11 @@ import { AuthUseCases } from './application/auth/auth-use-cases';
 import { OutboxRelay } from './application/events/outbox-relay';
 import { SerialExecutor } from './application/shared/serial-executor';
 import { type Adapters, loadEmailTemplate } from './composition/adapters';
+import { adminUseCases } from './composition/admin-use-cases';
 import { deliveryUseCases } from './composition/delivery-use-cases';
 import { executionUseCases } from './composition/execution-use-cases';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -107,7 +109,7 @@ export class AppModule {
     const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock);
     return {
       module: AppModule,
-      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController],
+      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: ADAPTERS, useValue: adapters },
@@ -137,6 +139,16 @@ export class AppModule {
         },
         { provide: EXECUTION_USE_CASES, useValue: executions },
         { provide: DELIVERY_USE_CASES, useValue: delivery },
+        {
+          provide: ADMIN_USE_CASES,
+          useValue: adminUseCases({
+            repository: adapters.repository,
+            clock: adapters.clock,
+            newId: adapters.newId,
+            serial,
+            archiveCopyAddress: config.archiveCopyAddress,
+          }),
+        },
         { provide: SSE_HUB, useValue: adapters.progressHub },
         { provide: JOB_RUNNER, useValue: runner },
         { provide: OUTBOX_RELAY, useValue: relay },
