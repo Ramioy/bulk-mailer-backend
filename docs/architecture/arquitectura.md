@@ -18,7 +18,7 @@ flowchart LR
         subgraph IN["Inbound adapters"]
             REST["REST API<br/>(Bearer JWT)"]
             WH["Webhook reception<br/>POST /webhooks/zeptomail<br/>(ZeptoMail credentials: HMAC + header;<br/>no operator session, returns no data — D20)"]
-            RUN["Job runner, two lanes (D21)<br/>execution: one batch at a time<br/>delivery: webhooks · reconciliation · checks"]
+            RUN["Job runner, three lanes (D21, D38)<br/>execution: one batch at a time<br/>webhooks: delivery events<br/>lookups: reconciliation · sweep · checks"]
         end
 
         subgraph CORE["🧠 Core — domain + use cases (no infrastructure)"]
@@ -67,8 +67,8 @@ flowchart LR
 |---|---|---|---|
 | `Authenticator` | Sign in, issue and verify JWT (access 15 min, refresh 8 h), one role `operator` | `LocalJwtAuthenticator` (Argon2, accounts provisioned in DB) | AD / Entra ID |
 | `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit. Receipts and batches carry a row version: a save based on a stale version fails (`ConcurrentModificationError`); manifests are insert-only (`DuplicateManifestVersionError`) (D37) | PostgreSQL 18 | — |
-| `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash | Jobs table + outbox in PostgreSQL | Kafka / RabbitMQ |
-| `EventBus` | Domain and progress events | Outbox in PostgreSQL | Kafka |
+| `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash; `hasPending` so periodic work is not queued twice (D38). A job can also be queued inside a repository transaction (`tx.jobs`, same table): it exists if and only if the transaction commits (D40) | Jobs table in PostgreSQL | Kafka / RabbitMQ |
+| `EventBus` | Domain and progress events, at least once. An event that fails 10 deliveries is dead: it leaves the pending window, raises `OUTBOX_EVENT_DEAD` and can be retried by the operator (D39) | Outbox in PostgreSQL | Kafka |
 | `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)` | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
 | `FileInspector` | Verdict on the file (see §2.1) | `BasicPdfInspector` | `QpdfClamAvInspector` |
 | `ContractSource` | `get(contract)` → recipient | `TayronaContractSource` (blocks 1–4, 6) · `SapContractSource` (block 5) · `FakeContractSource` (non-prod) | — |
@@ -80,7 +80,7 @@ flowchart LR
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
 
-Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with two lanes (D21).
+Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with three lanes (D21, D38): execution (one batch at a time), webhooks (never behind a lookup) and lookups in the provider logs (reconciliation, sweep, per-minute check, at most `DELIVERY_CHECK_BATCH_SIZE` sends per check). Every receipt change of every lane goes through the same serial executor.
 
 ### 2.1 `BasicPdfInspector` (verificación sencilla)
 
@@ -293,6 +293,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | `WEBHOOKS_NO_RECIBIDOS` | `WEBHOOKS_NOT_RECEIVED` | Alert |
 | — (D34) | `LATE_SEND_EVIDENCE` (a send failed as not found did go out; now SENT) | Alert |
 | — (D34) | `DUPLICATE_SEND_DETECTED` (an older send believed not sent went out, and a later one too) | Alert |
+| — (D39) | `OUTBOX_EVENT_DEAD` (a domain event could not be delivered after 10 attempts) | Alert |
 | `AGREGADO` / `EXCLUIDO` | `ADDED` / `REMOVED` | `409` difference |
 | `RENOMBRADO` | `RENAMED` (same hash re-uploaded with another name) | `409` difference |
 | `DESTINATARIO_CAMBIO` (409) | `RECIPIENT_CHANGED` (e.g. after *Refresh recipients*) | `409` difference |

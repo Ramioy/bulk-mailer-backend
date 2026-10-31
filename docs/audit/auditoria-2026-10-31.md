@@ -94,6 +94,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### A5 — El carril de entrega se acumula: `CHECK_RECENT_SENDS` se encola cada minuto sin deduplicar y sin límite de costo
 
+**Estado:** corregido en `audita` (D38, commit `a77596b`).
+
 - **Clasificación:** adaptador de entrada (`BackgroundWork`) + núcleo (`DeliveryFollowUps`, `CheckRecentSends`).
 - **Evidencia:** `background-work.ts:44-50` encola cada 60 s mientras `active()`; `delivery-follow-ups.ts:35-39` no comprueba si ya hay uno `READY` o en curso; `reconciliation.ts:136-148` consulta **cada intento pendiente de entrega** de la ejecución en curso y de las terminadas en los últimos 30 min, 2 llamadas HTTP por soporte (lista + detalle), 5 s de timeout cada una (`contractApiTimeoutMs` no; `zeptomail.timeoutMs` = 30 s); `postgres-job-queue.ts:36-47` entrega por `run_at, seq`, así que los `CHECK_RECENT_SENDS` atrasados compiten en igualdad con `PROCESS_DELIVERY_EVENT`.
 - **Escenario:** lote de 300 soportes, ZeptoMail acepta todos; los webhooks *Delivered* tardan minutos. A los 5 min hay ~250 `UNCONFIRMED`: un ciclo son 500 llamadas; si la API de logs responde en 300 ms, 150 s por ciclo → cada ciclo dura más que el intervalo → **los trabajos se apilan** y los webhooks reales (que sí actualizarían la supresión antes del siguiente envío al mismo correo) esperan detrás. Si Zoho limita (429, no documentado, §12.7) el costo es `UNAVAILABLE` masivo; peor: si el límite de uso es compartido con la API de envío, **el propio seguimiento provoca `UNCERTAIN` en los envíos** y detiene el lote a la 3.ª incidencia.
@@ -151,6 +153,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### M7 — El *outbox* se bloquea en la cabeza cuando se acumulan eventos envenenados
 
+**Estado:** corregido en `audita` (D39, commit `8164d89`).
+
 - **Evidencia:** `outbox-relay.ts:25` salta los eventos con `attempts >= 10` pero `lockPending` (`postgres-bulk-mailer-repository.ts:485`) los sigue devolviendo dentro del `LIMIT 50`. Con 50 eventos envenenados no despachados, **ningún evento posterior se entrega nunca**: ni alertas, ni `RECEIPT_UNCERTAIN` (sin conciliación), ni `WEBHOOK_RECEIVED` (sin procesamiento de webhooks).
 - **Por código.** Un consumidor roto (p. ej. un `payload` malformado por una migración) lo provoca sin ruido.
 - **Propuesta:** `lockPending` excluye `attempts >= 10` (o columna `dead_at`), alerta `OUTBOX_EVENT_DEAD` al décimo fallo, y una consulta `GET /outbox/dead` (JWT) para verlos.
@@ -202,6 +206,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** `acknowledged_at`/`acknowledged_by` (auditado), filtro `?pending=true`, consulta por tipo y sujeto en SQL.
 
 ### M15 — `StartExecution` encola el trabajo **después** del *commit*
+
+**Estado:** corregido en `audita` (D40, commit `f2b2611`).
 
 - **Evidencia:** `start-execution.ts:82` tras la transacción (líneas 54-79). Si `enqueue` falla (BD intermitente), la ejecución queda `RUNNING` sin trabajo y el operador recibe `500`; la decisión del paso 6 ("si cae entre registrar y encolar, la recuperación lo detiene") solo vale si el **proceso** cae, no si falla la llamada.
 - **Propuesta:** `JobQueue.enqueue` acepta la transacción (`tx.jobs.enqueue`) —la tabla ya está en la misma BD—, igual que el *outbox*. Aplica también a `DeliveryFollowUps` (tres `enqueue` no atómicos; duplicados inocuos, pero una caída a mitad deja conciliaciones sin programar y el evento se reintenta solo si el relé lo marca fallido).

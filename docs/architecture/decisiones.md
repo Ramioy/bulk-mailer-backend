@@ -92,6 +92,7 @@ P1 a P4: ✅ **aprobados** el 2026-10-31.
 - **Contadores:** el total de una ejecución son los soportes listos al iniciarla.
 - **Texto del correo:** ✅ aprobado el 2026-10-31 y **configurable** (ver abajo).
 - **Si el proceso cae justo entre registrar la ejecución y encolarla,** la recuperación al reiniciar la detiene como `INTERRUPTED`.
+  - *Nota (D40, 2026-10-31):* este caso ya no existe: el trabajo se encola en la misma transacción que registra la ejecución, así que hay ejecución con trabajo o no hay ninguna de las dos.
 - **Alertas:** se guardan siempre y la interfaz las lee con `GET /alerts`; `UiAlertNotifier` es el único proveedor registrado.
 
 ### Endpoints
@@ -221,7 +222,7 @@ Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADD
 
 ### Por validar con la cuenta real (se suma a §12.7)
 
-JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones. Agregado por D35: **forma exacta del campo `to`** en `GET /v1.1/email` y en el detalle (texto, `Nombre <dirección>`, objeto o lista) y **paginación de `GET /v1.1/email`** (tamaño de página por defecto, parámetros `limit`/`offset` y si la respuesta indica que hay más páginas, y con qué campo).
+JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones. Agregado por D35: **forma exacta del campo `to`** en `GET /v1.1/email` y en el detalle (texto, `Nombre <dirección>`, objeto o lista) y **paginación de `GET /v1.1/email`** (tamaño de página por defecto, parámetros `limit`/`offset` y si la respuesta indica que hay más páginas, y con qué campo). Agregado por D38: **límites de uso de la API de logs** (llamadas por minuto u hora) y **si comparten cuota con la API de envío**, para calibrar `DELIVERY_CHECK_BATCH_SIZE`.
 
 ## Webhook, seguimiento por minuto y verificación manual (2026-10-31)
 
@@ -422,3 +423,44 @@ Hallazgos A3 y M11 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la ram
 - **El volumen local no cuenta como llamada externa** (D21 se refiere a servicios de red); por eso la escritura de archivos queda en la fase (b), antes de la fila que los referencia. Si en el futuro el almacén pasa a S3/Blob (§2), esa escritura debería pasar a la fase (a), con la misma regla de huérfanos.
 - **Una fila nueva se inserta con la versión que trae** (1 en todo el código); un objeto "nuevo" para una clave que ya existe falla como uno desactualizado.
 - **`ConcurrentModificationError` y `DuplicateManifestVersionError` no tienen código HTTP propio**: si ocurrieran responderían 500 y quedarían en el registro, porque indican un error del servicio, no del operador.
+
+## Carriles, *outbox* y encolado: auditoría, bloque 4 (2026-10-31)
+
+Hallazgos A5, M7 y M15 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la rama `audita`. Ningún reintento de estos envía correos (C2): solo reintentan trabajo interno.
+
+| # | Decisión |
+|---|---|
+| D38 | ✅ **(A5) El trabajo de entrega no se acumula ni hace esperar a los webhooks.** (1) La verificación por minuto (`CHECK_RECENT_SENDS`) y el barrido (`SWEEP_UNCONFIRMED`) **no se encolan si ya hay uno esperando o en curso** (`JobQueue.hasPending`). (2) **Los webhooks van primero** porque tienen su propio carril: el carril de entrega de D21 se divide en dos, *webhooks* (`PROCESS_DELIVERY_EVENT`) y *consultas* (`RECONCILE_ATTEMPT`, `SWEEP_UNCONFIRMED`, `CHECK_RECENT_SENDS`). Se eligió esto y no una columna de prioridad porque no cambia el esquema y porque una prioridad no evita que un webhook espere a un trabajo de consultas ya en curso (con la API lenta, una verificación de 20 envíos puede tardar minutos); con un carril propio no espera nunca a una consulta. Todo cambio de soportes de cualquier carril sigue pasando por el mismo `SerialExecutor`. (3) **Presupuesto:** cada verificación por minuto consulta como máximo `DELIVERY_CHECK_BATCH_SIZE` envíos (20), los consultados hace más tiempo primero, y un envío cuya consulta encontró la API de logs no disponible se salta durante `DELIVERY_CHECK_BACKOFF_CYCLES` verificaciones (2). El barrido solo cambia en que no se duplica |
+| D39 | ✅ **(M7) Un evento envenenado no bloquea el *outbox*.** Al décimo fallo de entrega el evento queda **muerto** (`dead_at`): sale de la ventana de pendientes, así que los que vienen detrás se entregan, y se genera la alerta **`OUTBOX_EVENT_DEAD`** en la misma transacción del relé. Un evento `ALERT_RAISED` muerto no genera otra alerta (solo se registra en el log), para que una alerta no pueda producir una cadena de alertas; la alerta en sí ya quedó guardada. El operador consulta los eventos muertos y puede pedir que se reintenten (auditado `OUTBOX_EVENT_RETRIED`) |
+| D40 | ✅ **(M15) Un trabajo se encola en la misma transacción que lo origina.** Los almacenes de una transacción tienen `tx.jobs.enqueue`, sobre la misma tabla de la que el `JobQueue` toma los trabajos: el trabajo existe si y solo si la transacción se confirma. `StartExecution` encola `EXECUTE_BATCH` junto con el registro de la ejecución, el lote `RUNNING`, la auditoría y el evento. Los seguimientos (`RECEIPT_UNCERTAIN`, `WEBHOOK_RECEIVED`) siguen siendo consumidores del *outbox* y encolan por el `JobQueue`: el bus de eventos no lleva la transacción (ni debe: sus consumidores podrían estar en otro proceso, Kafka); no se pierde ningún trabajo porque un consumidor que falla hace que el relé reentregue el evento (y D39 alerta si muere), y un trabajo encolado dos veces es inofensivo |
+
+### Cómo quedó implementado
+
+- **D38, deduplicación:** `JobQueue.hasPending(type)` (`READY` o `CLAIMED`) en PostgreSQL y en memoria, con prueba de contrato. `requestRecentCheck` y `requestSweep` devuelven si encolaron.
+- **D38, carriles:** `app.module.ts` arma tres `JobRunner` (ejecución, webhooks, consultas); los tres se detienen como en D33.
+- **D38, presupuesto:** `CheckRecentSends` filtra sin llamar a nadie los envíos que siguen pendientes de entrega (último intento del soporte), los ordena por el ciclo en que se consultaron por última vez (nunca consultados primero; entre iguales, en orden de envío) y consulta los primeros `DELIVERY_CHECK_BATCH_SIZE`. Ese orden y el salto tras `UNAVAILABLE` se guardan en memoria en el caso de uso, no en la base: la verificación solo corre durante un lote y 30 min después, y un reinicio solo la devuelve a "el más antiguo primero", que también es justo. Así no hace falta escribir en la base en cada consulta.
+- **D39:** columna `outbox_events.dead_at` (migración `OutboxDeadEvents1761901200000`, que además da por muertos los eventos que ya tenían 10 intentos y rehace el índice de pendientes); `markFailed(id, error, deadAt)`, `listDead`, `revive` en PostgreSQL y en memoria, con prueba de contrato (60 muertos y 1 vivo: se toma el vivo). Casos de uso `ListDeadEvents` y `RetryDeadEvent` en `src/application/events/`; controlador `OutboxController` sin acceso directo al repositorio.
+- **D40:** `JobStore` en `BulkMailerStores`; en PostgreSQL usa la conexión de la transacción (`insertJob`, compartida con `PostgresJobQueue`); en memoria, el repositorio tiene una `InMemoryJobTable` que forma parte de su copia de transacción y que el `InMemoryJobQueue` de las pruebas comparte. Prueba de contrato en ambos: un trabajo encolado en una transacción que falla no existe. `ExecutionDependencies` ya no necesita la cola.
+
+### Endpoints (JWT, D20)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `GET` | `/outbox/dead?limit=50` | Eventos muertos, el más reciente primero (máximo 500): id, tipo, fecha, contenido, intentos, último error y cuándo murió |
+| `POST` | `/outbox/dead/{eventId}/retry` | `{ "note"?: "…" }` → 200 `{ eventId }`: vuelve a pendiente con los intentos en cero. Auditado `OUTBOX_EVENT_RETRIED`. Error: `OUTBOX_EVENT_NOT_DEAD` (404) |
+
+### Configuración nueva
+
+| Variable | Por defecto | Uso |
+|---|---|---|
+| `DELIVERY_CHECK_BATCH_SIZE` | 20 | Envíos consultados como máximo en cada verificación por minuto (D38). Entero positivo |
+| `DELIVERY_CHECK_BACKOFF_CYCLES` | 2 | Verificaciones que se salta un envío cuya consulta encontró la API de logs no disponible (D38). Entero ≥ 0 |
+
+### Supuestos (informados al usuario)
+
+- **Rotación en memoria** (D38), como se explica arriba. Con 300 soportes y 20 por minuto, cada envío pendiente se consulta al menos una vez cada 15 minutos durante el lote; los webhooks siguen siendo la vía principal.
+- **La conciliación programada no tiene presupuesto:** `RECONCILE_ATTEMPT` sigue su calendario (5, 15 y 60 min por envío incierto) en el carril de consultas, sin presupuesto, porque son pocos y cada uno decide un estado.
+- **Un trabajo encolado dos veces por un seguimiento** (D40) cuesta como mucho una consulta de logs más para un soporte que sigue `UNCERTAIN`; una conciliación de un soporte ya resuelto termina sin consultar y un webhook ya procesado se salta.
+- **En memoria, un trabajo encolado dentro de una transacción es visible antes del *commit*** para el mismo proceso (no hay aislamiento); en PostgreSQL no lo es. Las pruebas no dependen de eso.
+- **Un evento `ALERT_RAISED` muerto** solo deja constancia en el log del relé y en `GET /outbox/dead`; la alerta está en `GET /alerts`.
+
