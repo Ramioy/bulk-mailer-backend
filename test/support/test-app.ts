@@ -10,6 +10,7 @@ import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-
 import { FakeSendLookup } from '../../src/adapters/outbound/fakes/fake-send-lookup';
 import { FakeSuppressionManager } from '../../src/adapters/outbound/fakes/fake-suppression-manager';
 import type { ZeptoMailWebhookSecrets } from '../../src/adapters/inbound/webhooks/zeptomail-webhook';
+import { InMemoryInstanceLease } from '../../src/adapters/outbound/in-memory/in-memory-instance-lease';
 import { InMemoryJobQueue } from '../../src/adapters/outbound/in-memory/in-memory-job-queue';
 import { SseProgressHub } from '../../src/adapters/outbound/sse/sse-progress-hub';
 import { InProcessEventBus } from '../../src/adapters/outbound/events/in-process-event-bus';
@@ -77,6 +78,7 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     suppressionManager,
     webhookSecrets: WEBHOOK_SECRETS,
     jobQueue: new InMemoryJobQueue(() => clock.now(), () => repository.jobTable()),
+    instanceLease: new InMemoryInstanceLease(() => clock.now()),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],

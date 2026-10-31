@@ -1,9 +1,13 @@
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
+
 import { type DynamicModule, Logger, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 
 import { AdminController } from './adapters/inbound/http/admin/admin.controller';
 import { OutboxController } from './adapters/inbound/http/outbox/outbox.controller';
 import { AlertsController } from './adapters/inbound/http/alerts/alerts.controller';
+import { InstanceController } from './adapters/inbound/http/instance/instance.controller';
 import { AuthController } from './adapters/inbound/http/auth/auth.controller';
 import { BearerAuthGuard } from './adapters/inbound/http/auth/bearer-auth.guard';
 import { DeliveryController } from './adapters/inbound/http/delivery/delivery.controller';
@@ -24,7 +28,7 @@ import { executionUseCases } from './composition/execution-use-cases';
 import { fileUseCases } from './composition/file-use-cases';
 import { fileKeyOf } from './application/files/delete-receipt-file';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, INSTANCE_ID, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -36,6 +40,8 @@ export class AppModule {
   static register(config: AppConfig, adapters: Adapters): DynamicModule {
     // One executor for every command that changes a batch (and, in step 6, starts an execution).
     const serial = new SerialExecutor();
+    // D47: which process this is, as shown in the lease and in GET /instance.
+    const instanceId = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
     const emailTemplate = loadEmailTemplate(config);
     const executions = executionUseCases({
       repository: adapters.repository,
@@ -161,7 +167,7 @@ export class AppModule {
     const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock, { newId: adapters.newId, logger: new Logger('OutboxRelay') });
     return {
       module: AppModule,
-      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController, OutboxController, AlertsController],
+      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController, OutboxController, AlertsController, InstanceController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: ADAPTERS, useValue: adapters },
@@ -199,8 +205,11 @@ export class AppModule {
             newId: adapters.newId,
             serial,
             archiveCopyAddress: config.archiveCopyAddress,
+            instanceLease: adapters.instanceLease,
+            instanceId,
           }),
         },
+        { provide: INSTANCE_ID, useValue: instanceId },
         { provide: SSE_HUB, useValue: adapters.progressHub },
         { provide: JOB_RUNNER, useValue: runner },
         { provide: FILE_USE_CASES, useValue: files },

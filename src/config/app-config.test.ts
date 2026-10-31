@@ -45,11 +45,18 @@ describe('loadConfig', () => {
       incidentMaxWaitSeconds: 600,
       fileOrphanSweepIntervalMinutes: 360,
       fileOrphanMinAgeMinutes: 60,
+      instanceLeaseTtlSeconds: 30,
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,
       executionAbortAfterMinutes: 10,
       shutdownTimeoutSeconds: 25,
     });
+  });
+
+  it('D47: the instance lease TTL is an integer of at least 3 seconds', () => {
+    expect(loadConfig({ ...REQUIRED, INSTANCE_LEASE_TTL_SECONDS: '9' })).toMatchObject({ instanceLeaseTtlSeconds: 9 });
+    expect(() => loadConfig({ ...REQUIRED, INSTANCE_LEASE_TTL_SECONDS: '2' })).toThrow('INSTANCE_LEASE_TTL_SECONDS must be at least 3');
+    expect(() => loadConfig({ ...REQUIRED, INSTANCE_LEASE_TTL_SECONDS: 'x' })).toThrow('INSTANCE_LEASE_TTL_SECONDS must be a positive integer');
   });
 
   it('D49: CORS origins are exact origins, required in production and never * there', () => {

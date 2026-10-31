@@ -9,7 +9,9 @@ import { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { PostgresBulkMailerRepository } from '../../src/adapters/outbound/postgres/postgres-bulk-mailer-repository';
 import { PostgresJobQueue } from '../../src/adapters/outbound/postgres/postgres-job-queue';
 import { bulkMailerRepositoryContract } from '../contracts/bulk-mailer-repository.contract';
+import { instanceLeaseContract } from '../contracts/instance-lease.contract';
 import { jobQueueContract, transactionalJobsContract } from '../contracts/job-queue.contract';
+import { PostgresInstanceLease } from '../../src/adapters/outbound/postgres/postgres-instance-lease';
 import type { Receipt } from '../../src/domain/receipt/receipt';
 import { ConcurrentModificationError } from '../../src/ports/bulk-mailer-repository';
 import { aReceipt, anExecution, hashOf, T0 } from '../support/builders';
@@ -40,6 +42,16 @@ describe.skipIf(!TEST_DATABASE_URL)('PostgreSQL 18', () => {
   transactionalJobsContract('postgres', async () => {
     await resetData(dataSource);
     return { repository: new PostgresBulkMailerRepository(dataSource), queue: new PostgresJobQueue(dataSource) };
+  });
+
+  instanceLeaseContract('postgres', async () => {
+    await resetData(dataSource);
+    return {
+      lease: new PostgresInstanceLease(dataSource),
+      expire: async () => {
+        await dataSource.query(`UPDATE instance_lease SET expires_at = now() - interval '1 second'`);
+      },
+    };
   });
 
   describe('storage-level guarantees', () => {

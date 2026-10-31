@@ -3,6 +3,8 @@ import { ArchiveCopy } from '../application/admin/archive-copy';
 import { ListConcepts, ManageConcepts } from '../application/admin/manage-concepts';
 import { AcknowledgeAlert, ListAlerts } from '../application/alerts/alert-queries';
 import { ListDeadEvents, RetryDeadEvent } from '../application/events/dead-events';
+import { GetInstanceStatus } from '../application/instance/get-instance-status';
+import type { InstanceLease } from '../ports/instance-lease';
 
 export interface AdminUseCases {
   readonly listConcepts: ListConcepts;
@@ -12,9 +14,10 @@ export interface AdminUseCases {
   readonly retryDeadEvent: RetryDeadEvent;
   readonly alerts: ListAlerts;
   readonly acknowledgeAlert: AcknowledgeAlert;
+  readonly instance: GetInstanceStatus;
 }
 
-export function adminUseCases(deps: AdminDependencies): AdminUseCases {
+export function adminUseCases(deps: AdminDependencies & { readonly instanceLease: InstanceLease; readonly instanceId: string }): AdminUseCases {
   return {
     listConcepts: new ListConcepts(deps),
     concepts: new ManageConcepts(deps),
@@ -23,5 +26,6 @@ export function adminUseCases(deps: AdminDependencies): AdminUseCases {
     retryDeadEvent: new RetryDeadEvent(deps),
     alerts: new ListAlerts(deps),
     acknowledgeAlert: new AcknowledgeAlert(deps),
+    instance: new GetInstanceStatus(deps),
   };
 }

@@ -39,6 +39,8 @@ import type { ReceiptFileStore } from '../ports/receipt-file-store';
 import { MissingSecretError, type SecretStore } from '../ports/secret-store';
 import type { SendLookup } from '../ports/send-lookup';
 import type { SuppressionManager } from '../ports/suppression-manager';
+import type { InstanceLease } from '../ports/instance-lease';
+import { PostgresInstanceLease } from '../adapters/outbound/postgres/postgres-instance-lease';
 
 /** Every adapter the application uses. Tests build their own set; production uses `buildAdapters`. */
 export interface Adapters {
@@ -55,6 +57,8 @@ export interface Adapters {
   /** Webhook authentication; without it the webhook endpoint answers 404. */
   readonly webhookSecrets?: ZeptoMailWebhookSecrets;
   readonly jobQueue: JobQueue;
+  /** D47: only the holder runs the background work. */
+  readonly instanceLease: InstanceLease;
   /** Progress fan-out to SSE streams; also the ProgressNotifier adapter. */
   readonly progressHub: SseProgressHub;
   /** Delivery side of the outbox; in-process for now, Kafka in the future. */
@@ -183,6 +187,7 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     ...(await deliveryTracking(config, secrets)),
     webhookSecrets: await webhookSecrets(config, secrets),
     jobQueue: new PostgresJobQueue(dataSource, () => clock.now()),
+    instanceLease: new PostgresInstanceLease(dataSource),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],
