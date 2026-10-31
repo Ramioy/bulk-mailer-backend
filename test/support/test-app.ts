@@ -7,6 +7,9 @@ import { InMemoryOperatorAccountStore, type OperatorAccount } from '../../src/ad
 import { hashPassword } from '../../src/adapters/outbound/auth/password-hasher';
 import { FakeContractSource } from '../../src/adapters/outbound/fakes/fake-contract-source';
 import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-provider';
+import { FakeSendLookup } from '../../src/adapters/outbound/fakes/fake-send-lookup';
+import { FakeSuppressionManager } from '../../src/adapters/outbound/fakes/fake-suppression-manager';
+import type { ZeptoMailWebhookSecrets } from '../../src/adapters/inbound/webhooks/zeptomail-webhook';
 import { InMemoryJobQueue } from '../../src/adapters/outbound/in-memory/in-memory-job-queue';
 import { SseProgressHub } from '../../src/adapters/outbound/sse/sse-progress-hub';
 import { InProcessEventBus } from '../../src/adapters/outbound/events/in-process-event-bus';
@@ -32,6 +35,8 @@ export interface TestContext {
   readonly clock: FixedClock;
   readonly tayrona: FakeContractSource;
   readonly email: FakeEmailProvider;
+  readonly lookup: FakeSendLookup;
+  readonly suppressionManager: FakeSuppressionManager;
   /** The background runner is not started in tests: call `runner.drain()` to process queued jobs. */
   readonly runner: JobRunner;
   /** Not started in tests either: call `relay.drain()` to deliver outbox events. */
@@ -39,7 +44,14 @@ export interface TestContext {
 }
 
 /** Real LocalJwtAuthenticator over in-memory storage, with one operator account `operador`. */
-export async function startTestApp(env: Record<string, string> = {}): Promise<TestContext> {
+export const WEBHOOK_SECRETS: ZeptoMailWebhookSecrets = {
+  authenticationKey: 'webhook-hmac-key',
+  authorizationHeader: 'authorization',
+  authorizationValue: 'Webhook s3cr3t',
+  maxSkewSeconds: 300,
+};
+
+export async function startTestApp(env: Record<string, string> = {}, options: { readonly suppressionConfirmation?: 'PROVIDER_API' | 'OPERATOR'; readonly adapters?: Partial<Adapters> } = {}): Promise<TestContext> {
   const clock = new FixedClock();
   const repository = new InMemoryBulkMailerRepository();
   const account: OperatorAccount = { operatorId: 'op-1', username: 'operador', passwordHash: await hashPassword(TEST_PASSWORD) };
@@ -49,6 +61,8 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
     sessionHours: 8,
   });
   const email = new FakeEmailProvider();
+  const lookup = new FakeSendLookup();
+  const suppressionManager = new FakeSuppressionManager(options.suppressionConfirmation);
   const tayrona = new FakeContractSource({ '104522': { complexName: 'Edificio Altos', email: 'admin@altos.com' } });
   const adapters: Adapters = {
     repository,
@@ -59,11 +73,15 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
     fileInspector: new BasicPdfInspector(),
     contractSources: { TAYRONA: tayrona, SAP: new FakeContractSource() },
     emailProvider: email,
+    sendLookup: lookup,
+    suppressionManager,
+    webhookSecrets: WEBHOOK_SECRETS,
     jobQueue: new InMemoryJobQueue(() => clock.now()),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],
     close: async () => undefined,
+    ...options.adapters,
   };
   const config = loadConfig({
     NODE_ENV: 'test',
@@ -75,5 +93,5 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
   const app = await createApp(config, adapters);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { app, adapters, repository, clock, tayrona, email, runner: app.get<JobRunner>(JOB_RUNNER), relay: app.get<OutboxRelay>(OUTBOX_RELAY) };
+  return { app, adapters, repository, clock, tayrona, email, lookup, suppressionManager, runner: app.get<JobRunner>(JOB_RUNNER), relay: app.get<OutboxRelay>(OUTBOX_RELAY) };
 }

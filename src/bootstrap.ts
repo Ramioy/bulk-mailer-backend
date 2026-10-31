@@ -27,6 +27,8 @@ export async function createApp(config: AppConfig, adapters?: Adapters): Promise
     throwFileSizeLimit: false,
     limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: 300, fields: 10 },
   });
+  // ZeptoMail posts the event as a single form-encoded parameter; the signature is checked over the raw body.
+  app.useBodyParser('application/x-www-form-urlencoded', { bodyLimit: 1024 * 1024 }, (_request, body, done) => done(null, body.toString('utf8')));
   app.enableShutdownHooks();
   app.getHttpAdapter().getInstance().addHook('onClose', async () => resolved.close());
   return app;

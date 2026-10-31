@@ -19,14 +19,9 @@ Responde al usuario en **español**. El código, los identificadores y los mensa
 
 ## Estado al 2026-10-31
 
-Hechos y en `main`: pasos 0 a 8 (el 10 quedó cubierto por el 7), plantilla de correo configurable (D14), bus de eventos con *outbox* (D15, D16). Los pasos 7 y 8 están construidos **contra simuladores** (`mocks/`, D17) porque las APIs reales y la cuenta de ZeptoMail aún no están disponibles.
+Hechos y en `main`: pasos 0 a 9 (el 10 quedó cubierto por el 7), plantilla de correo configurable (D14), bus de eventos con *outbox* (D15, D16). Los pasos 7, 8 y 9 están construidos **contra simuladores** (`mocks/`, D17) porque las APIs reales y la cuenta de ZeptoMail aún no están disponibles. El paso 9 dejó supuestos por validar con la cuenta real (ver `decisiones.md`, "Paso 9") y la liberación de direcciones confirmada desde la consola (D19), porque Zoho no documenta API de supresiones.
 
-**Siguiente: paso 9.** Antes de empezar, el usuario debe dar el visto bueno. Incluye:
-- Webhook `POST /webhooks/zeptomail` (público, autenticado con HMAC `producer-signature` y encabezado `Authorization` propio, §12.5) + caso de uso `ProcessDeliveryEvent` (estado de entrega que solo avanza; solo cuentan los eventos del destinatario principal; duplicados por id de evento).
-- `ZeptoMailSendLookup` (API de logs, OAuth) + `ReconcileSends` (resolver `UNCERTAIN` a los 5, 15 y 60 min; barrido de `SENT` sin confirmar) + `ResolveUncertain` manual con nota de evidencia + alerta `WEBHOOKS_NOT_RECEIVED` (§9.4).
-- `ZeptoMailSuppressionManager` + liberación atómica de direcciones (§10.3) + lista de supresión local alimentada por rebotes duros y quejas.
-- `ResendReceipt` (§10.4).
-- Hacerlo como el paso 8: **primero** leer la documentación de Zoho (logs, webhooks, supresiones: enlaces en `docs/context/19-references.md`) con un agente `web-fetch`, y **ampliar el simulador** `mocks/zeptomail-api.ts` (logs por `client_reference`, envío de webhooks firmados, supresiones). No suponer formatos sin anotarlo como supuesto.
+**Siguiente: paso 11** (administración: catálogo de conceptos y copia `bcc`, auditados). Antes de empezar, el usuario debe dar el visto bueno.
 
 **Preguntas abiertas al usuario** (el usuario construye las APIs de Tayrona y SAP):
 - ¿El token de servicio de las APIs de contratos va como `Authorization: Bearer <token>`? ¿La respuesta 200 trae exactamente `contrato`, `activo`, `nombre_conjunto`, `correo`?

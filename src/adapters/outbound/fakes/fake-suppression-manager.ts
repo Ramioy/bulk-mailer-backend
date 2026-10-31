@@ -5,8 +5,11 @@ export class FakeSuppressionManager implements SuppressionManager {
   private readonly suppressed = new Set<string>();
   private failure: string | undefined;
 
-  async release(email: string): Promise<Result<'RELEASED' | 'NOT_SUPPRESSED', string>> {
+  constructor(readonly confirmation: SuppressionManager['confirmation'] = 'PROVIDER_API') {}
+
+  async release(email: string): Promise<Result<'RELEASED' | 'NOT_SUPPRESSED' | 'CONFIRMED_BY_OPERATOR', string>> {
     if (this.failure !== undefined) return err(this.failure);
+    if (this.confirmation === 'OPERATOR') return ok('CONFIRMED_BY_OPERATOR');
     return ok(this.suppressed.delete(email) ? 'RELEASED' : 'NOT_SUPPRESSED');
   }
 

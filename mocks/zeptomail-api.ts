@@ -23,6 +23,10 @@
  *   400 (list) / 404 (specific) → { "error": { "code": "EL_404", "message": "Email log not found" }, "status": "failure" }
  *   401 → wrong or missing OAuth token
  *
+ * OAuth (Zoho Accounts; the CPaaS pages do not document it, assumption): POST /oauth/v2/token with form fields
+ *   grant_type=refresh_token, client_id, client_secret, refresh_token → { access_token, expires_in: 3600, api_domain, token_type }
+ *   and `{ "error": "invalid_client" }` / `{ "error": "invalid_code" }` (HTTP 200, as Zoho Accounts answers) otherwise.
+ *
  * Webhooks (https://www.zoho.com/cpaas/help/webhooks.html): POST to the configured URL, the event JSON as the single
  * form-encoded parameter of the body, `producer-signature: ts=<epoch ms>;s=<url-encoded base64 HMAC>;s-algorithm=HmacSHA256`,
  * HMAC-SHA256 with the Agent's Authentication Key over the decoded parameter value (ts is not signed), plus the optional
@@ -53,7 +57,7 @@
  *
  * Run: node mocks/zeptomail-api.ts  (PORT, MOCK_API_KEY, MOCK_OAUTH_TOKEN, MOCK_VERIFIED_DOMAINS=anutibara.com,
  *   MOCK_WEBHOOK_URL, MOCK_WEBHOOK_KEY, MOCK_WEBHOOK_AUTH_NAME, MOCK_WEBHOOK_AUTH_VALUE, MOCK_WEBHOOK_PARAM,
- *   MOCK_EVENT_DELAY_MS=2000, MOCK_LOG_DELAY_MS=0)
+ *   MOCK_EVENT_DELAY_MS=2000, MOCK_LOG_DELAY_MS=0, MOCK_OAUTH_CLIENT_ID, MOCK_OAUTH_CLIENT_SECRET, MOCK_OAUTH_REFRESH_TOKEN)
  */
 import { createHmac, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -70,6 +74,8 @@ export interface ZeptoMailMockOptions {
   readonly retryAfterSeconds?: number;
   /** OAuth access token accepted by the logs API; default `dev-oauth-token`. */
   readonly oauthToken?: string;
+  /** Client accepted by the simulated Zoho Accounts token endpoint (`POST /oauth/v2/token`). */
+  readonly oauthClient?: { readonly clientId: string; readonly clientSecret: string; readonly refreshToken: string };
   readonly mailagentKey?: string;
   /** Milliseconds before an accepted email shows up in the logs; default 0. */
   readonly logDelayMs?: number;
@@ -195,6 +201,10 @@ export interface ZeptoMailMock extends FastifyInstance {
   emit(clientReference: string, event: MockDeliveryEvent, options?: { readonly recipient?: 'to' | 'bcc'; readonly webhook?: boolean }): Promise<SentWebhook | undefined>;
   /** Waits for the scheduled automatic events (autoEvents) to be posted. */
   settle(): Promise<void>;
+  /** OAuth access tokens issued so far. */
+  tokensIssued(): number;
+  /** Points the webhooks at another endpoint (e.g. an app started after the simulator). */
+  setWebhook(target: WebhookTarget | undefined): void;
 }
 
 /** Status a recipient reaches with each event; the console never moves a final status back (assumption). */
@@ -226,10 +236,12 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): ZeptoMailMoc
   const deliveries: MockDelivery[] = [];
   const webhooks: SentWebhook[] = [];
   const pending = new Set<Promise<unknown>>();
+  let webhookTarget = options.webhook;
   const format = options.errorFormat ?? 'details';
   const now = options.now ?? (() => new Date());
   const oauthToken = options.oauthToken ?? 'dev-oauth-token';
   const mailagentKey = options.mailagentKey ?? 'mock-agent';
+  let tokensIssued = 0;
 
   const fail = (reply: FastifyReply, code: string, target?: string, targetValue?: string) => {
     const message = MESSAGES[code] ?? 'error';
@@ -406,6 +418,15 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): ZeptoMailMoc
     return { data: { ...logEntry(d), client_reference: d.clientReference ?? '' }, status: 'success' };
   });
 
+  app.post('/oauth/v2/token', async (request) => {
+    const form = new URLSearchParams(String(request.body));
+    const client = options.oauthClient;
+    if (!client || form.get('client_id') !== client.clientId || form.get('client_secret') !== client.clientSecret) return { error: 'invalid_client' };
+    if (form.get('grant_type') !== 'refresh_token' || form.get('refresh_token') !== client.refreshToken) return { error: 'invalid_code' };
+    tokensIssued += 1;
+    return { access_token: oauthToken, api_domain: 'https://www.zohoapis.com', token_type: 'Bearer', expires_in: 3600 };
+  });
+
   app.post('/__mock/events', async (request, reply) => {
     const body = (parseJson(String(request.body)) ?? {}) as { client_reference?: string; recipient?: 'to' | 'bcc'; event?: MockDeliveryEvent };
     if (!body.client_reference || !body.event || !(body.event in STATUS_AFTER)) return reply.code(400).send({ message: 'client_reference and event are required' });
@@ -418,8 +439,8 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): ZeptoMailMoc
   async function apply(delivery: MockDelivery, event: MockDeliveryEvent, sendWebhook: boolean): Promise<SentWebhook | undefined> {
     // final statuses do not move back (assumption)
     if (!FINAL_STATUSES.has(delivery.status)) delivery.status = STATUS_AFTER[event];
-    if (!sendWebhook || event === 'processfailed' || !options.webhook) return undefined;
-    return postWebhook(options.webhook, webhookPayload(delivery, event));
+    if (!sendWebhook || event === 'processfailed' || !webhookTarget) return undefined;
+    return postWebhook(webhookTarget, webhookPayload(delivery, event));
   }
 
   async function emit(
@@ -495,7 +516,11 @@ export function createZeptoMailMock(options: ZeptoMailMockOptions): ZeptoMailMoc
     while (pending.size > 0) await Promise.all([...pending]);
   };
 
-  return Object.assign(app, { accepted, deliveries, webhooks, emit, settle });
+  return Object.assign(app, { accepted, deliveries, webhooks, emit, settle, tokensIssued: () => tokensIssued,
+    setWebhook: (target: WebhookTarget | undefined) => {
+      webhookTarget = target;
+    },
+  });
 }
 
 /** `producer-signature` value: base64 HMAC-SHA256 of the decoded parameter, URL-encoded as in the documented sample. */
@@ -522,6 +547,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     verifiedDomains: (process.env.MOCK_VERIFIED_DOMAINS ?? 'anutibara.com').split(','),
     errorFormat: process.env.MOCK_ERROR_FORMAT === 'documented' ? 'documented' : 'details',
     oauthToken: process.env.MOCK_OAUTH_TOKEN ?? 'dev-oauth-token',
+    oauthClient: {
+      clientId: process.env.MOCK_OAUTH_CLIENT_ID ?? 'dev-client',
+      clientSecret: process.env.MOCK_OAUTH_CLIENT_SECRET ?? 'dev-secret',
+      refreshToken: process.env.MOCK_OAUTH_REFRESH_TOKEN ?? 'dev-refresh',
+    },
     logDelayMs: Number(process.env.MOCK_LOG_DELAY_MS ?? '0'),
     ...(process.env.MOCK_WEBHOOK_URL
       ? {

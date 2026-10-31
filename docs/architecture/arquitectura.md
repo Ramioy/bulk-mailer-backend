@@ -32,7 +32,7 @@ flowchart LR
             A_FS["LocalVolumeFileStore"]
             A_INS["BasicPdfInspector"]
             A_SRC["TayronaContractSource<br/>SapContractSource"]
-            A_ZM["ZeptoMailEmailProvider<br/>ZeptoMailSendLookup<br/>ZeptoMailSuppressionManager"]
+            A_ZM["ZeptoMailEmailProvider<br/>ZeptoMailSendLookup<br/>ZeptoMailConsoleSuppressionManager (D19)"]
             A_SSE["SseProgressNotifier"]
             A_AL["UiAlertNotifier"]
         end
@@ -74,7 +74,7 @@ flowchart LR
 | `ContractSource` | `get(contract)` → recipient | `TayronaContractSource` (blocks 1–4, 6) · `SapContractSource` (block 5) · `FakeContractSource` (non-prod) | — |
 | `EmailProvider` | Send a message and classify the response | `ZeptoMailEmailProvider` | Another provider |
 | `SendLookup` | Look up a send by `client_reference` | `ZeptoMailSendLookup` (logs API, OAuth) | — |
-| `SuppressionManager` | Remove an address from the provider suppression list | `ZeptoMailSuppressionManager` (OAuth) | — |
+| `SuppressionManager` | Remove an address from the provider suppression list | `ZeptoMailConsoleSuppressionManager`: no API is documented, the operator removes it in the console and confirms it (D19) | `ZeptoMailSuppressionManager` (API), if Zoho confirms one |
 | `ProgressNotifier` | Real-time progress | `SseProgressNotifier` | WebSocket |
 | `AlertNotifier` | Deliver persisted typed alerts | `UiAlertNotifier` | Email / Teams / Slack |
 | `SecretStore` | Credentials | Environment secrets manager | — |

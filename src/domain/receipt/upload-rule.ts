@@ -1,12 +1,14 @@
 import type { Block } from '../block/block';
 import type { Period } from '../period/period';
-import type { ReceiptState } from './receipt-state';
+import type { DeliveryState } from './delivery-state';
+import { canResend, type ReceiptState } from './receipt-state';
 
 export interface ExistingReceipt {
   readonly period: Period;
   readonly block: Block;
   readonly state: ReceiptState;
   readonly fileAvailable: boolean;
+  readonly deliveryState?: DeliveryState;
 }
 
 export const UploadDecision = {
@@ -16,6 +18,8 @@ export const UploadDecision = {
   RE_EVALUATE: 'RE_EVALUATE',
   /** Same hash REMOVED from another batch: that record moves to this batch and is re-evaluated (D8). */
   MOVE: 'MOVE',
+  /** Same hash SENT in this batch, bounced or complained about, without file: the file is kept again for Resend (A2). */
+  RESTORE_FILE: 'RESTORE_FILE',
   /** Same content already registered: discarded, not stored, not counted. */
   DUPLICATE: 'DUPLICATE',
 } as const;
@@ -26,6 +30,7 @@ export function decideUpload(existing: ExistingReceipt | undefined, period: Peri
   if (!existing) return UploadDecision.NEW;
   const sameBatch = existing.period.equals(period) && existing.block === block;
   if (!sameBatch) return existing.state === 'REMOVED' ? UploadDecision.MOVE : UploadDecision.DUPLICATE;
+  if (!existing.fileAvailable && canResend(existing.state, existing.deliveryState ?? 'UNCONFIRMED')) return UploadDecision.RESTORE_FILE;
   const reEvaluable =
     existing.state === 'INVALID' || existing.state === 'REMOVED' || (existing.state === 'FAILED' && !existing.fileAvailable);
   return reEvaluable ? UploadDecision.RE_EVALUATE : UploadDecision.DUPLICATE;

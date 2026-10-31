@@ -103,6 +103,18 @@ export class UploadReceipts {
         continue;
       }
 
+      if (decision === 'RESTORE_FILE' && existing) {
+        // A bounced SENT receipt gets its file back for Resend (A2); its state and name do not change.
+        if (evaluated.fileError) {
+          results.push({ fileName: evaluated.fileName, outcome: 'REJECTED', sha256: evaluated.sha256, errorType: evaluated.fileError, errorDetail: evaluated.errorDetail });
+          continue;
+        }
+        const receipt: Receipt = { ...existing, fileAvailable: true, updatedAt: now };
+        await fileStore.save({ period, block, sha256: receipt.sha256 }, file.content);
+        this.track(receipt, 'FILE_UPLOADED_FOR_RESEND', undefined, changed, history, seen, results);
+        continue;
+      }
+
       if (existing?.state === 'FAILED') {
         // A FAILED receipt whose file was purged gets its file back; it stays FAILED until the next execution.
         if (evaluated.fileError) {

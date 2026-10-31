@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, HttpException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, HttpException, NotFoundException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 
 import { type Block, isBlock } from '../../../domain/block/block';
 import { Period } from '../../../domain/period/period';
@@ -33,6 +33,19 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   MANIFEST_CHANGED: ConflictException,
   NOTHING_TO_SEND: ConflictException,
   ARCHIVE_COPY_NOT_CONFIGURED: ConflictException,
+  RECEIPT_NOT_UNCERTAIN: ConflictException,
+  RECEIPT_NOT_RESENDABLE: ConflictException,
+  FILE_NOT_AVAILABLE: ConflictException,
+  FILE_MODIFIED: ConflictException,
+  EMAIL_SUPPRESSED: ConflictException,
+  CONTRACT_NOT_FOUND: UnprocessableEntityException,
+  CONTRACT_INACTIVE: UnprocessableEntityException,
+  CONTRACT_WITHOUT_EMAIL: UnprocessableEntityException,
+  SOURCE_UNAVAILABLE: ServiceUnavailableException,
+  ADDRESS_NOT_SUPPRESSED: NotFoundException,
+  BUSINESS_CONFIRMATION_REQUIRED: UnprocessableEntityException,
+  PROVIDER_REMOVAL_NOT_CONFIRMED: UnprocessableEntityException,
+  SUPPRESSION_PROVIDER_FAILED: BadGatewayException,
 };
 
 /** Typed use-case errors → HTTP status with `{ error, ...details }` body. */

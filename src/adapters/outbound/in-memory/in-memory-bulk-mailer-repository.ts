@@ -6,6 +6,7 @@ import type { Block } from '../../../domain/block/block';
 import { INITIAL_CONCEPTS, type Concept } from '../../../domain/concept/concept';
 import type { Period } from '../../../domain/period/period';
 import type { DeliveryEvent } from '../../../domain/receipt/delivery-state';
+import type { DeliveryWebhook } from '../../../domain/receipt/delivery-webhook';
 import type { Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
 import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
@@ -27,6 +28,7 @@ interface State {
   attempts: Map<string, Attempt>;
   suppressions: Map<string, Suppression>;
   deliveryEvents: Map<string, DeliveryEvent>;
+  webhooks: Map<string, DeliveryWebhook>;
   alerts: Alert[];
   audit: AuditEntry[];
   concepts: Map<string, Concept>;
@@ -46,6 +48,7 @@ function snapshot(state: State): State {
     attempts: new Map(state.attempts),
     suppressions: new Map(state.suppressions),
     deliveryEvents: new Map(state.deliveryEvents),
+    webhooks: new Map(state.webhooks),
     alerts: [...state.alerts],
     audit: [...state.audit],
     concepts: new Map(state.concepts),
@@ -65,6 +68,7 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     attempts: new Map(),
     suppressions: new Map(),
     deliveryEvents: new Map(),
+    webhooks: new Map(),
     alerts: [],
     audit: [],
     concepts: new Map(INITIAL_CONCEPTS.map((c) => [c.key, c])),
@@ -111,6 +115,10 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     get: async (executionId) => this.state.executions.get(executionId),
     running: async () => [...this.state.executions.values()].find((e) => e.finishedAt === undefined),
     latest: async () => [...this.state.executions.values()].sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0],
+    listFinishedBetween: async (from, to) =>
+      [...this.state.executions.values()]
+        .filter((e) => e.finishedAt !== undefined && e.finishedAt >= from && e.finishedAt <= to)
+        .sort((a, b) => (a.finishedAt as Date).getTime() - (b.finishedAt as Date).getTime()),
   };
 
   readonly executionEvents: BulkMailerStores['executionEvents'] = {
@@ -134,6 +142,8 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     get: async (attemptId) => this.state.attempts.get(attemptId),
     listByReceipt: async (sha256) =>
       [...this.state.attempts.values()].filter((a) => a.sha256 === sha256).sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime()),
+    listByExecution: async (executionId) =>
+      [...this.state.attempts.values()].filter((a) => a.executionId === executionId).sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime()),
   };
 
   readonly suppressions: BulkMailerStores['suppressions'] = {
@@ -143,6 +153,20 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     },
     remove: async (email) => {
       this.state.suppressions.delete(email);
+    },
+    list: async () => [...this.state.suppressions.values()].sort((a, b) => a.email.localeCompare(b.email)),
+  };
+
+  readonly webhooks: BulkMailerStores['webhooks'] = {
+    record: async (webhook) => {
+      if (this.state.webhooks.has(webhook.webhookRequestId)) return false;
+      this.state.webhooks.set(webhook.webhookRequestId, webhook);
+      return true;
+    },
+    get: async (webhookRequestId) => this.state.webhooks.get(webhookRequestId),
+    markProcessed: async (webhookRequestId, at) => {
+      const webhook = this.state.webhooks.get(webhookRequestId);
+      if (webhook) this.state.webhooks.set(webhookRequestId, { ...webhook, processedAt: at });
     },
   };
 

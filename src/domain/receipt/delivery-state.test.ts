@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyDeliveryEvent } from './delivery-state';
+import { applyDeliveryEvent, eventRecipientRole } from './delivery-state';
 
 describe('applyDeliveryEvent', () => {
   it.each([
@@ -30,5 +30,19 @@ describe('applyDeliveryEvent', () => {
 
   it('ignores a late acceptance after a complaint', () => {
     expect(applyDeliveryEvent('COMPLAINT', 'ACCEPTED')).toEqual({ kind: 'IGNORED', state: 'COMPLAINT' });
+  });
+});
+
+describe('eventRecipientRole', () => {
+  it('matches the primary recipient and the archive copy, ignoring case', () => {
+    const attempt = { to: 'admin@altos.com', copyAddress: 'archivo@anutibara.com' };
+    expect(eventRecipientRole(attempt, 'Admin@Altos.com')).toBe('PRIMARY');
+    expect(eventRecipientRole(attempt, 'archivo@anutibara.com')).toBe('COPY');
+    expect(eventRecipientRole(attempt, 'otro@altos.com')).toBe('UNKNOWN');
+  });
+
+  it('without a recipient in the event, it is the primary one only when there was no copy', () => {
+    expect(eventRecipientRole({ to: 'admin@altos.com' }, undefined)).toBe('PRIMARY');
+    expect(eventRecipientRole({ to: 'admin@altos.com', copyAddress: 'archivo@anutibara.com' }, undefined)).toBe('UNKNOWN');
   });
 });

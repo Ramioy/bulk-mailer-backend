@@ -8,6 +8,13 @@ export const DomainEventType = {
   RECEIPT_UNCERTAIN: 'RECEIPT_UNCERTAIN',
   EXECUTION_FINISHED: 'EXECUTION_FINISHED',
   ALERT_RAISED: 'ALERT_RAISED',
+  /** A provider webhook was stored; its events are processed in the background. */
+  WEBHOOK_RECEIVED: 'WEBHOOK_RECEIVED',
+  DELIVERY_UPDATED: 'DELIVERY_UPDATED',
+  /** An UNCERTAIN receipt was resolved, by reconciliation or by the operator. */
+  RECEIPT_RESOLVED: 'RECEIPT_RESOLVED',
+  ADDRESS_SUPPRESSED: 'ADDRESS_SUPPRESSED',
+  ADDRESS_RELEASED: 'ADDRESS_RELEASED',
 } as const;
 export type DomainEventType = (typeof DomainEventType)[keyof typeof DomainEventType];
 

@@ -37,7 +37,20 @@ export interface AppConfig {
     readonly fromName?: string;
     readonly bounceAddress?: string;
     readonly timeoutMs: number;
+    /** Zoho Accounts of the account's data centre, for the OAuth token of the logs API. */
+    readonly accountsUrl: string;
   };
+  /** Name of the custom authorization header configured on the ZeptoMail webhook; default `authorization`. */
+  readonly webhookAuthHeader: string;
+  /** Maximum distance between the webhook signature timestamp and now; default 300 s. */
+  readonly webhookMaxSkewSeconds: number;
+  /** Lookups of an UNCERTAIN send, minutes after it; default 5,15,60 (§9.4). */
+  readonly reconcileDelaysMinutes: readonly number[];
+  /** SENT receipts without delivery events are looked up from N hours (default 6) up to 72 hours. */
+  readonly reconcileSweepAfterHours: number;
+  readonly reconcileSweepMaxHours: number;
+  /** How often the sweep runs; default 60 minutes. */
+  readonly reconcileSweepIntervalMinutes: number;
   /** Outside production every email goes to this test mailbox (§15). Required with ZeptoMail outside production. */
   readonly redirectAllEmailTo?: string;
   /** Pause between two sends; default 1000 ms. */
@@ -118,6 +131,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (nodeEnv !== 'production' && emailProvider === 'zeptomail' && !isEmail(redirect)) {
     problems.push('NONPROD_REDIRECT_TO (a valid email) is required to use ZeptoMail outside production');
   }
+  const webhookAuthHeader = (env.ZEPTOMAIL_WEBHOOK_AUTH_HEADER ?? 'authorization').toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(webhookAuthHeader)) problems.push('ZEPTOMAIL_WEBHOOK_AUTH_HEADER must be an HTTP header name');
+  const webhookMaxSkewSeconds = positiveInteger(env.WEBHOOK_MAX_SKEW_SECONDS ?? '300', 'WEBHOOK_MAX_SKEW_SECONDS', problems);
+  const reconcileDelaysMinutes = (env.RECONCILE_DELAYS_MINUTES ?? '5,15,60').split(',').map((d) => Number(d.trim()));
+  if (reconcileDelaysMinutes.some((d) => !Number.isInteger(d) || d < 1) || reconcileDelaysMinutes.some((d, i) => i > 0 && d <= (reconcileDelaysMinutes[i - 1] ?? 0))) {
+    problems.push('RECONCILE_DELAYS_MINUTES must be increasing positive integers, e.g. 5,15,60');
+  }
+  const reconcileSweepAfterHours = positiveInteger(env.RECONCILE_SWEEP_AFTER_HOURS ?? '6', 'RECONCILE_SWEEP_AFTER_HOURS', problems);
+  const reconcileSweepMaxHours = positiveInteger(env.RECONCILE_SWEEP_MAX_HOURS ?? '72', 'RECONCILE_SWEEP_MAX_HOURS', problems);
+  if (reconcileSweepMaxHours <= reconcileSweepAfterHours) problems.push('RECONCILE_SWEEP_MAX_HOURS must be greater than RECONCILE_SWEEP_AFTER_HOURS');
+  const reconcileSweepIntervalMinutes = positiveInteger(env.RECONCILE_SWEEP_INTERVAL_MINUTES ?? '60', 'RECONCILE_SWEEP_INTERVAL_MINUTES', problems);
   const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
   const incidentBaseWaitSeconds = positiveInteger(env.INCIDENT_BASE_WAIT_SECONDS ?? '30', 'INCIDENT_BASE_WAIT_SECONDS', problems);
   const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
@@ -156,10 +180,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
             ...(env.ZEPTOMAIL_FROM_NAME ? { fromName: env.ZEPTOMAIL_FROM_NAME } : {}),
             ...(bounceAddress === '' ? {} : { bounceAddress }),
             timeoutMs: zeptomailTimeoutMs,
+            accountsUrl: env.ZOHO_ACCOUNTS_URL ?? 'https://accounts.zoho.com',
           },
         }
       : {}),
     ...(redirect === '' ? {} : { redirectAllEmailTo: redirect }),
+    webhookAuthHeader,
+    webhookMaxSkewSeconds,
+    reconcileDelaysMinutes,
+    reconcileSweepAfterHours,
+    reconcileSweepMaxHours,
+    reconcileSweepIntervalMinutes,
     sendPauseMs,
     incidentBaseWaitSeconds,
     incidentMaxWaitSeconds,

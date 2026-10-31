@@ -69,6 +69,16 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect((await repo.executions.latest())?.executionId).toBe('e2');
       });
 
+      it('lists the executions finished within a time window', async () => {
+        const at = (s: number) => new Date(T0.getTime() + s * 1000);
+        for (const [id, finished] of [['e1', 10], ['e2', 20], ['e3', 30]] as const) {
+          await repo.executions.tryStart(anExecution({ executionId: id }));
+          await repo.executions.save({ ...anExecution({ executionId: id }), finishedAt: at(finished), result: 'COMPLETED' });
+        }
+        await repo.executions.tryStart(anExecution({ executionId: 'running' }));
+        expect((await repo.executions.listFinishedBetween(at(15), at(30))).map((e) => e.executionId)).toEqual(['e2', 'e3']);
+      });
+
       it('keeps the progress events of each execution in order, to resume from a sequence number', async () => {
         await repo.executions.tryStart(anExecution({ executionId: 'e1' }));
         await repo.executions.save({ ...anExecution({ executionId: 'e1' }), finishedAt: T0, result: 'STOPPED', stopReason: 'INTERRUPTED' });
@@ -96,6 +106,8 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         await repo.attempts.save({ ...anAttempt({ attemptId: 'a1' }), outcome: 'ACCEPTED', providerRequestId: 'r1', finishedAt: T0 });
         expect(await repo.attempts.get('a1')).toMatchObject({ outcome: 'ACCEPTED', providerRequestId: 'r1' });
         expect((await repo.attempts.listByReceipt(hashOf('a'))).map((a) => a.attemptId)).toEqual(['a1', 'a2']);
+        await repo.attempts.insert(anAttempt({ attemptId: 'resend', executionId: undefined, kind: 'RESEND' }));
+        expect((await repo.attempts.listByExecution('exec-1')).map((a) => a.attemptId)).toEqual(['a1', 'a2']);
       });
     });
 
@@ -103,6 +115,8 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
       it('saves, reads and removes an address', async () => {
         await repo.suppressions.save({ email: 'x@y.co', reason: 'HARD_BOUNCE', since: T0 });
         expect(await repo.suppressions.get('x@y.co')).toEqual({ email: 'x@y.co', reason: 'HARD_BOUNCE', since: T0 });
+        await repo.suppressions.save({ email: 'a@y.co', reason: 'COMPLAINT', since: T0, attemptId: 'a1' });
+        expect((await repo.suppressions.list()).map((s) => s.email)).toEqual(['a@y.co', 'x@y.co']);
         await repo.suppressions.remove('x@y.co');
         expect(await repo.suppressions.get('x@y.co')).toBeUndefined();
       });
@@ -117,10 +131,31 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
           isPrimaryRecipient: true,
           state: 'ACCEPTED' as const,
           occurredAt: T0,
+          source: 'WEBHOOK' as const,
         };
         expect(await repo.deliveryEvents.record(event)).toBe(true);
         expect(await repo.deliveryEvents.record(event)).toBe(false);
-        expect(await repo.deliveryEvents.listByAttempt('a1')).toEqual([event]);
+        const fromLogs = { ...event, eventId: 'logs:r1', state: 'HARD_BOUNCE' as const, source: 'LOGS' as const, providerRequestId: 'r1', emailReference: 'e1' };
+        await repo.deliveryEvents.record(fromLogs);
+        expect(await repo.deliveryEvents.listByAttempt('a1')).toEqual([event, fromLogs]);
+      });
+    });
+
+    describe('webhook inbox', () => {
+      it('keeps the raw webhook with its events, once per webhook_request_id, and marks it processed', async () => {
+        const webhook = {
+          webhookRequestId: 'wr1',
+          provider: 'ZEPTOMAIL',
+          receivedAt: T0,
+          body: '{"webhook_request_id":"wr1"}',
+          events: [{ eventId: 'wr1:0', attemptId: 'a1', recipient: 'x@y.co', state: 'HARD_BOUNCE' as const, occurredAt: T0, source: 'WEBHOOK' as const }],
+        };
+        expect(await repo.webhooks.record(webhook)).toBe(true);
+        expect(await repo.webhooks.record({ ...webhook, body: 'other' })).toBe(false);
+        expect(await repo.webhooks.get('wr1')).toEqual(webhook);
+        await repo.webhooks.markProcessed('wr1', T0);
+        expect(await repo.webhooks.get('wr1')).toEqual({ ...webhook, processedAt: T0 });
+        expect(await repo.webhooks.get('nope')).toBeUndefined();
       });
     });
 

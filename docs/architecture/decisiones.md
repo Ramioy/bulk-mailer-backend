@@ -176,10 +176,49 @@ Lectura de las páginas de `docs/context/19-references.md` (logs, autenticación
 
 ### Hallazgo que choca con lo acordado
 
-**No existe una API de supresiones documentada.** La página de autenticación nombra "Suppressions" entre las APIs con OAuth, pero no hay ruta, cuerpo, respuesta ni alcance; la supresión solo se gestiona desde la consola. §10.3 exige que la liberación se confirme con ZeptoMail antes de quitar la dirección de la lista local. Ver la propuesta al usuario (pendiente de aprobación).
+**No existe una API de supresiones documentada.** La página de autenticación nombra "Suppressions" entre las APIs con OAuth, pero no hay ruta, cuerpo, respuesta ni alcance; la supresión solo se gestiona desde la consola. §10.3 exige que la liberación se confirme con ZeptoMail antes de quitar la dirección de la lista local. Resuelto con **D19** (abajo).
 
 ### Simulador (`mocks/zeptomail-api.ts`)
 
 - Logs (`GET /v1.1/email`, `GET /v1.1/email/email-reference/{ref}`) con token OAuth, `EL_404` documentado, retraso y coincidencia parcial configurables.
 - Webhooks firmados hacia `MOCK_WEBHOOK_URL`, con el encabezado de autorización propio; `emit(clientReference, event)` en pruebas y `POST /__mock/events` en desarrollo.
 - Escenarios de entrega en la parte local del destinatario: `softbounce`, `softhard`, `softdelivered`, `hardbounce`, `complaint`, `processfailed`, `nowebhook` (webhook perdido), `nolog`. El escenario `timeout` sí acepta el correo (respuesta perdida): aparece en los logs.
+
+## Paso 9: entrega, conciliación, supresiones y reenvío (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D19 | ✅ **Liberación confirmada desde la consola.** Como ZeptoMail no documenta una API de supresiones, el operador quita la dirección en la consola (*Suppression list*) y lo confirma en Bulk Mailer (`removedInProviderConsole: true`) junto con la validación del negocio y la nota de evidencia. Recién entonces sale de la lista local; todo queda auditado (`ADDRESS_RELEASED`, valor `CONFIRMED_BY_OPERATOR`). El puerto `SuppressionManager` no cambia; el adaptador es `ZeptoMailConsoleSuppressionManager`. Si Zoho confirma una API, se cambia el adaptador sin tocar el núcleo. Riesgo aceptado: si el operador se equivoca, el reenvío puede quedar `SENT` sin llegar; el barrido de `SENT` sin confirmar lo deja a la vista |
+
+### Cómo quedó implementado
+
+- **Webhook** `POST /webhooks/zeptomail` (público): verifica el encabezado propio (`ZEPTOMAIL_WEBHOOK_AUTH_HEADER`, por defecto `authorization`), el algoritmo, `ts` (±`WEBHOOK_MAX_SKEW_SECONDS`, 300 s) y el HMAC; si algo falla responde `401` sin leer ni guardar el contenido. Si es válido guarda el evento crudo en `webhook_events` (único por `webhook_request_id`; sin id se usa el SHA-256 del cuerpo), responde `200` y deja el evento `WEBHOOK_RECEIVED` en el *outbox*; un consumidor encola `PROCESS_DELIVERY_EVENT`.
+- **`ProcessDeliveryEvent`**: cada evento se guarda en `delivery_events` (duplicados por id) y solo cambia el soporte si es del **destinatario principal** del **último intento**. El estado de entrega solo avanza; un conflicto queda en el historial como `DELIVERY_ANOMALY`. Un rebote duro o una queja agregan la dirección a la lista local y generan alerta. Un rebote o queja de la copia genera `COPY_BOUNCED` y no toca el soporte. Un evento de un `UNCERTAIN` prueba el envío: pasa a `SENT`.
+- **Conciliación**: el evento `RECEIPT_UNCERTAIN` (también el de la recuperación tras caída y el de un reenvío) programa `RECONCILE_ATTEMPT` a los 5, 15 y 60 min (`RECONCILE_DELAYS_MINUTES`). `NOT_FOUND_AT_PROVIDER` solo en la última; si la API de logs no responde, sigue `UNCERTAIN` (queda en el historial) y el operador puede resolverlo a mano. `Process failed` → `FAILED / PROVIDER_REJECTED`.
+- **Barrido** cada `RECONCILE_SWEEP_INTERVAL_MINUTES` (60): `SENT` en `UNCONFIRMED` entre `RECONCILE_SWEEP_AFTER_HOURS` (N = 6, **supuesto**: el contexto no fija N) y `RECONCILE_SWEEP_MAX_HOURS` (72). Alerta `WEBHOOKS_NOT_RECEIVED` una vez por ejecución, por pérdida probada o por silencio total.
+- Los trabajos se procesan **de a uno**: la conciliación nunca compite con una ejecución por el mismo soporte. Consecuencia: durante una ejecución larga, la conciliación y los webhooks esperan a que termine.
+- **`ZeptoMailSendLookup`**: lista por `client_reference`, toma solo la entrada del destinatario principal y la confirma con el detalle (`client_reference` exacto). Token OAuth con *refresh token* (`ZOHO_ACCOUNTS_URL`, por defecto `https://accounts.zoho.com`), en caché hasta 1 min antes de vencer; un `401` lo renueva una vez. Fuera de producción se consulta el buzón de prueba (`RedirectingSendLookup`).
+- **Fuera de producción**, el buzón de prueba no identifica al destinatario de un webhook: sin copia el evento cuenta como del principal; con copia queda registrado sin cambiar el soporte.
+- **Reenvío (A2)**: volver a subir el PDF de un `SENT` con `HARD_BOUNCE` o `COMPLAINT` y sin archivo, en el mismo lote, le devuelve el archivo sin cambiar su estado (decisión de carga `RESTORE_FILE`). `ResendReceipt` vuelve a consultar la fuente; la dirección suprimida (la misma que falló, salvo liberada, o una nueva también suprimida) se bloquea como `EMAIL_SUPPRESSED`. Un reenvío exitoso descarta el archivo; uno fallido queda `FAILED` y genera una versión de manifiesto nueva (D7c). El reenvío no exige que el periodo sea operable (los rebotes llegan días después), pero sí que no haya una ejecución en curso.
+- **Resolución manual**: `ResolveUncertain` con `SENT` deja la entrega en `UNCONFIRMED`; con `NOT_SENT` deja `FAILED / NOT_FOUND_AT_PROVIDER`.
+- **Límite conocido**: si el barrido encuentra un `SENT` como `Process failed` en los logs (por ejemplo, una dirección suprimida descartada en silencio, §12.7), solo se anota en el historial (`PROVIDER_PROCESS_FAILED`): el diagrama no tiene transición `SENT → FAILED`.
+
+Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADDRESS_SUPPRESSED`, `ADDRESS_RELEASED`.
+
+### Endpoints
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `POST` | `/webhooks/zeptomail` | Eventos de entrega (público; HMAC + encabezado propio) |
+| `POST` | `/receipts/{sha256}/resolve` | `{ "outcome": "SENT" \| "NOT_SENT", "note" }` |
+| `POST` | `/receipts/{sha256}/resend` | Reenvío (§10.4) |
+| `GET` | `/suppressions` | Lista local y modo de liberación (`OPERATOR` con D19) |
+| `POST` | `/suppressions/{email}/release` | `{ "businessConfirmed": true, "removedInProviderConsole": true, "note" }` |
+
+### Configuración nueva
+
+`ZOHO_ACCOUNTS_URL`, `ZEPTOMAIL_WEBHOOK_AUTH_HEADER`, `WEBHOOK_MAX_SKEW_SECONDS`, `RECONCILE_DELAYS_MINUTES`, `RECONCILE_SWEEP_AFTER_HOURS`, `RECONCILE_SWEEP_MAX_HOURS`, `RECONCILE_SWEEP_INTERVAL_MINUTES`; secretos `ZOHO_OAUTH_CLIENT_ID`, `ZOHO_OAUTH_CLIENT_SECRET`, `ZOHO_OAUTH_REFRESH_TOKEN` (alcance `Zeptomail.email.READ`), `ZEPTOMAIL_WEBHOOK_KEY` (*Authentication Key* del Agent) y `ZEPTOMAIL_WEBHOOK_AUTHORIZATION` (valor del encabezado propio). Con `EMAIL_PROVIDER=zeptomail` son obligatorios.
+
+### Por validar con la cuenta real (se suma a §12.7)
+
+JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones.

@@ -21,6 +21,12 @@ describe('loadConfig', () => {
       contractSource: 'fake',
       contractApiTimeoutMs: 5000,
       emailProvider: 'fake',
+      webhookAuthHeader: 'authorization',
+      webhookMaxSkewSeconds: 300,
+      reconcileDelaysMinutes: [5, 15, 60],
+      reconcileSweepAfterHours: 6,
+      reconcileSweepMaxHours: 72,
+      reconcileSweepIntervalMinutes: 60,
       sendPauseMs: 1000,
       incidentBaseWaitSeconds: 30,
       incidentMaxWaitSeconds: 600,
@@ -38,7 +44,7 @@ describe('loadConfig', () => {
   it('uses ZeptoMail in production and requires the test mailbox redirect to use it anywhere else', () => {
     expect(loadConfig({ ...PRODUCTION, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k' })).toMatchObject({
       emailProvider: 'zeptomail',
-      zeptomail: { baseUrl: 'https://cpaas.zoho.com/v1.1', fromAddress: 'soportes@anutibara.com', timeoutMs: 30000 },
+      zeptomail: { baseUrl: 'https://cpaas.zoho.com/v1.1', fromAddress: 'soportes@anutibara.com', timeoutMs: 30000, accountsUrl: 'https://accounts.zoho.com' },
     });
     expect(loadConfig({ ...PRODUCTION, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k' }).redirectAllEmailTo).toBeUndefined();
     expect(() => loadConfig({ ...PRODUCTION, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k', EMAIL_PROVIDER: 'fake' })).toThrow('EMAIL_PROVIDER=fake is not allowed');
@@ -52,6 +58,16 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...PRODUCTION, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k' })).toMatchObject({ contractSource: 'http', tayronaApiUrl: 'https://tayrona' });
     expect(() => loadConfig({ ...PRODUCTION, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k', CONTRACT_SOURCE: 'fake' })).toThrow('not allowed in production');
     expect(() => loadConfig({ ...REQUIRED, CONTRACT_SOURCE: 'http' })).toThrow('TAYRONA_API_URL and SAP_API_URL are required');
+  });
+
+  it('validates the reconciliation schedule and the webhook header', () => {
+    expect(loadConfig({ ...REQUIRED, RECONCILE_DELAYS_MINUTES: '10, 30', ZEPTOMAIL_WEBHOOK_AUTH_HEADER: 'X-Bulk-Mailer' })).toMatchObject({
+      reconcileDelaysMinutes: [10, 30],
+      webhookAuthHeader: 'x-bulk-mailer',
+    });
+    expect(() => loadConfig({ ...REQUIRED, RECONCILE_DELAYS_MINUTES: '15,5' })).toThrow('RECONCILE_DELAYS_MINUTES');
+    expect(() => loadConfig({ ...REQUIRED, RECONCILE_SWEEP_AFTER_HOURS: '80' })).toThrow('RECONCILE_SWEEP_MAX_HOURS');
+    expect(() => loadConfig({ ...REQUIRED, ZEPTOMAIL_WEBHOOK_AUTH_HEADER: 'bad header' })).toThrow('ZEPTOMAIL_WEBHOOK_AUTH_HEADER');
   });
 
   it('lists every problem at once', () => {

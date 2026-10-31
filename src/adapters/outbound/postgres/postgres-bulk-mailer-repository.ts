@@ -8,7 +8,8 @@ import type { Manifest, ManifestEntry } from '../../../domain/batch/manifest';
 import type { Block } from '../../../domain/block/block';
 import type { Concept } from '../../../domain/concept/concept';
 import { Period } from '../../../domain/period/period';
-import type { DeliveryEvent, DeliveryState } from '../../../domain/receipt/delivery-state';
+import type { DeliveryEvent, DeliveryState, IncomingDeliveryEvent } from '../../../domain/receipt/delivery-state';
+import type { DeliveryWebhook } from '../../../domain/receipt/delivery-webhook';
 import type { Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
 import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
@@ -32,6 +33,7 @@ import {
   type ReceiptStore,
   type SettingsStore,
   type SuppressionStore,
+  type WebhookInbox,
 } from '../../../ports/bulk-mailer-repository';
 import type { DomainEvent } from '../../../ports/event-bus';
 import type { ProgressEvent, StoredProgressEvent } from '../../../ports/progress-notifier';
@@ -107,8 +109,31 @@ function toDeliveryEvent(r: Row): DeliveryEvent {
     state: r.state as DeliveryEvent['state'],
     reason: opt(r.reason),
     occurredAt: r.occurred_at as Date,
+    source: r.source as DeliveryEvent['source'],
+    providerRequestId: opt(r.provider_request_id),
+    emailReference: opt(r.email_reference),
   };
 }
+
+type StoredIncomingEvent = Omit<IncomingDeliveryEvent, 'occurredAt'> & { occurredAt: string };
+
+function toWebhook(r: Row): DeliveryWebhook {
+  return {
+    webhookRequestId: r.webhook_request_id as string,
+    provider: r.provider as string,
+    receivedAt: r.received_at as Date,
+    body: r.body as string,
+    events: (r.events as StoredIncomingEvent[]).map((e) => ({ ...e, occurredAt: new Date(e.occurredAt) })),
+    processedAt: opt(r.processed_at),
+  };
+}
+
+const toSuppression = (r: Row): Suppression => ({
+  email: r.email as string,
+  reason: r.reason as Suppression['reason'],
+  since: r.since as Date,
+  attemptId: opt(r.attempt_id),
+});
 
 const attemptParams = (a: Attempt) => [
   a.attemptId, a.sha256, a.executionId ?? null, a.kind, a.to, a.copyAddress ?? null, a.startedAt,
@@ -239,6 +264,10 @@ function stores(db: Queryable): BulkMailerStores {
       const r = await firstRow(db, 'SELECT * FROM executions ORDER BY started_at DESC, execution_id DESC LIMIT 1');
       return r && toExecution(r);
     },
+    async listFinishedBetween(from, to) {
+      const found = await rows(db, 'SELECT * FROM executions WHERE finished_at BETWEEN $1 AND $2 ORDER BY finished_at, execution_id', [from, to]);
+      return found.map(toExecution);
+    },
   };
 
   const toStoredEvent = (r: Row): StoredProgressEvent => ({
@@ -291,12 +320,18 @@ function stores(db: Queryable): BulkMailerStores {
     async listByReceipt(sha256) {
       return (await rows(db, 'SELECT * FROM attempts WHERE sha256 = $1 ORDER BY started_at, attempt_id', [sha256])).map(toAttempt);
     },
+    async listByExecution(executionId) {
+      return (await rows(db, 'SELECT * FROM attempts WHERE execution_id = $1 ORDER BY started_at, attempt_id', [executionId])).map(toAttempt);
+    },
   };
 
   const suppressions: SuppressionStore = {
     async get(email) {
       const r = await firstRow(db, 'SELECT * FROM suppressions WHERE email = $1', [email]);
-      return r && ({ email: r.email as string, reason: r.reason as Suppression['reason'], since: r.since as Date, attemptId: opt(r.attempt_id) } satisfies Suppression);
+      return r && toSuppression(r);
+    },
+    async list() {
+      return (await rows(db, 'SELECT * FROM suppressions ORDER BY email')).map(toSuppression);
     },
     async save(s) {
       await db.query(
@@ -314,14 +349,37 @@ function stores(db: Queryable): BulkMailerStores {
     async record(e) {
       const inserted = await rows(
         db,
-        `INSERT INTO delivery_events (event_id, attempt_id, recipient, is_primary, state, reason, occurred_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
-        [e.eventId, e.attemptId, e.recipient, e.isPrimaryRecipient, e.state, e.reason ?? null, e.occurredAt],
+        `INSERT INTO delivery_events (event_id, attempt_id, recipient, is_primary, state, reason, occurred_at, source,
+           provider_request_id, email_reference)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
+        [
+          e.eventId, e.attemptId, e.recipient, e.isPrimaryRecipient, e.state, e.reason ?? null, e.occurredAt, e.source,
+          e.providerRequestId ?? null, e.emailReference ?? null,
+        ],
       );
       return inserted.length === 1;
     },
     async listByAttempt(attemptId) {
       return (await rows(db, 'SELECT * FROM delivery_events WHERE attempt_id = $1 ORDER BY seq', [attemptId])).map(toDeliveryEvent);
+    },
+  };
+
+  const webhooks: WebhookInbox = {
+    async record(w) {
+      const inserted = await rows(
+        db,
+        `INSERT INTO webhook_events (webhook_request_id, provider, received_at, body, events) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (webhook_request_id) DO NOTHING RETURNING webhook_request_id`,
+        [w.webhookRequestId, w.provider, w.receivedAt, w.body, JSON.stringify(w.events)],
+      );
+      return inserted.length === 1;
+    },
+    async get(webhookRequestId) {
+      const r = await firstRow(db, 'SELECT * FROM webhook_events WHERE webhook_request_id = $1', [webhookRequestId]);
+      return r && toWebhook(r);
+    },
+    async markProcessed(webhookRequestId, at) {
+      await db.query('UPDATE webhook_events SET processed_at = $2 WHERE webhook_request_id = $1', [webhookRequestId, at]);
     },
   };
 
@@ -421,7 +479,7 @@ function stores(db: Queryable): BulkMailerStores {
     },
   };
 
-  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, alerts, audit, concepts, settings };
+  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, webhooks, alerts, audit, concepts, settings };
 }
 
 export class PostgresBulkMailerRepository implements BulkMailerRepository {
@@ -432,6 +490,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
   readonly attempts: AttemptStore;
   readonly suppressions: SuppressionStore;
   readonly deliveryEvents: DeliveryEventStore;
+  readonly webhooks: WebhookInbox;
   readonly alerts: AlertStore;
   readonly audit: AuditLog;
   readonly concepts: ConceptStore;
@@ -447,6 +506,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
     this.attempts = s.attempts;
     this.suppressions = s.suppressions;
     this.deliveryEvents = s.deliveryEvents;
+    this.webhooks = s.webhooks;
     this.alerts = s.alerts;
     this.audit = s.audit;
     this.concepts = s.concepts;

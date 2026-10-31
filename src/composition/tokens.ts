@@ -7,3 +7,4 @@ export const EXECUTION_USE_CASES = Symbol('ExecutionUseCases');
 export const SSE_HUB = Symbol('SseProgressHub');
 export const JOB_RUNNER = Symbol('JobRunner');
 export const OUTBOX_RELAY = Symbol('OutboxRelay');
+export const DELIVERY_USE_CASES = Symbol('DeliveryUseCases');

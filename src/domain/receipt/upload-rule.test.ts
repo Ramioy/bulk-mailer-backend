@@ -39,4 +39,14 @@ describe('decideUpload (assumption A1)', () => {
     expect(decideUpload(existing(state), OCT, 'ANGLO')).toBe('DUPLICATE');
     expect(decideUpload(existing(state, { fileAvailable: false }), Period.of(2026, 9), 'CASH')).toBe('DUPLICATE');
   });
+
+  it.each(['HARD_BOUNCE', 'COMPLAINT'] as const)('gives the file back to a SENT receipt after %s, for Resend (A2)', (delivery) => {
+    expect(decideUpload(existing('SENT', { fileAvailable: false, deliveryState: delivery }), OCT, 'CASH')).toBe('RESTORE_FILE');
+    expect(decideUpload(existing('SENT', { fileAvailable: true, deliveryState: delivery }), OCT, 'CASH')).toBe('DUPLICATE');
+    expect(decideUpload(existing('SENT', { fileAvailable: false, deliveryState: delivery }), OCT, 'ANGLO')).toBe('DUPLICATE');
+  });
+
+  it.each(['UNCONFIRMED', 'ACCEPTED', 'SOFT_BOUNCE'] as const)('discards a SENT receipt with delivery %s', (delivery) => {
+    expect(decideUpload(existing('SENT', { fileAvailable: false, deliveryState: delivery }), OCT, 'CASH')).toBe('DUPLICATE');
+  });
 });

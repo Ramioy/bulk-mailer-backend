@@ -38,16 +38,44 @@ export function applyDeliveryEvent(current: DeliveryState, incoming: DeliverySta
   return { kind: 'ANOMALY', state: current };
 }
 
-/** Delivery event normalised by the inbound webhook adapter or by reconciliation. */
-export interface DeliveryEvent {
+/** Where the delivery state was learnt: a provider webhook or a lookup in the provider logs (reconciliation). */
+export type DeliveryEventSource = 'WEBHOOK' | 'LOGS';
+
+/** Delivery event as an inbound adapter or the provider logs report it, before it is matched to its attempt. */
+export interface IncomingDeliveryEvent {
   /** Provider id of the event, used to discard duplicates. */
   readonly eventId: string;
   /** `client_reference` of the send. */
   readonly attemptId: string;
-  readonly recipient: string;
-  /** Only the primary recipient's events change the receipt's delivery state. */
-  readonly isPrimaryRecipient: boolean;
+  /** Recipient the event is about; absent when the provider does not say it. */
+  readonly recipient?: string;
   readonly state: Exclude<DeliveryState, 'UNCONFIRMED'>;
   readonly reason?: string;
   readonly occurredAt: Date;
+  readonly source: DeliveryEventSource;
+  readonly providerRequestId?: string;
+  readonly emailReference?: string;
+}
+
+/** Delivery event as recorded, matched to its attempt. */
+export interface DeliveryEvent extends IncomingDeliveryEvent {
+  /** Empty when the provider did not say it. */
+  readonly recipient: string;
+  /** Only the primary recipient's events change the receipt's delivery state. */
+  readonly isPrimaryRecipient: boolean;
+}
+
+/**
+ * Which recipient of the attempt an event is about. Without a recipient in the event, it can only be the primary
+ * one when the email had no copy; otherwise it is unknown and the event does not change the receipt.
+ */
+export function eventRecipientRole(
+  attempt: { readonly to: string; readonly copyAddress?: string },
+  recipient: string | undefined,
+): 'PRIMARY' | 'COPY' | 'UNKNOWN' {
+  const same = (a: string | undefined, b: string | undefined) => a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
+  if (recipient === undefined || recipient === '') return attempt.copyAddress ? 'UNKNOWN' : 'PRIMARY';
+  if (same(recipient, attempt.to)) return 'PRIMARY';
+  if (same(recipient, attempt.copyAddress)) return 'COPY';
+  return 'UNKNOWN';
 }

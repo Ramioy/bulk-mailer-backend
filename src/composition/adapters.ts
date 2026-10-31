@@ -6,6 +6,13 @@ import { FakeContractSource, type FakeContract } from '../adapters/outbound/fake
 import { FakeEmailProvider } from '../adapters/outbound/fakes/fake-email-provider';
 import { RedirectingEmailProvider } from '../adapters/outbound/zeptomail/redirecting-email-provider';
 import { ZeptoMailEmailProvider } from '../adapters/outbound/zeptomail/zeptomail-email-provider';
+import { RedirectingSendLookup } from '../adapters/outbound/zeptomail/redirecting-send-lookup';
+import { ZeptoMailConsoleSuppressionManager } from '../adapters/outbound/zeptomail/zeptomail-console-suppression-manager';
+import { ZeptoMailSendLookup } from '../adapters/outbound/zeptomail/zeptomail-send-lookup';
+import { ZohoOAuthTokenProvider } from '../adapters/outbound/zeptomail/zoho-oauth';
+import { FakeSendLookup } from '../adapters/outbound/fakes/fake-send-lookup';
+import { FakeSuppressionManager } from '../adapters/outbound/fakes/fake-suppression-manager';
+import type { ZeptoMailWebhookSecrets } from '../adapters/inbound/webhooks/zeptomail-webhook';
 import { InProcessEventBus } from '../adapters/outbound/events/in-process-event-bus';
 import { PostgresJobQueue } from '../adapters/outbound/postgres/postgres-job-queue';
 import { SseProgressHub } from '../adapters/outbound/sse/sse-progress-hub';
@@ -29,7 +36,9 @@ import type { Clock } from '../ports/clock';
 import type { ContractSources } from '../ports/contract-source';
 import type { FileInspector } from '../ports/file-inspector';
 import type { ReceiptFileStore } from '../ports/receipt-file-store';
-import type { SecretStore } from '../ports/secret-store';
+import { MissingSecretError, type SecretStore } from '../ports/secret-store';
+import type { SendLookup } from '../ports/send-lookup';
+import type { SuppressionManager } from '../ports/suppression-manager';
 
 /** Every adapter the application uses. Tests build their own set; production uses `buildAdapters`. */
 export interface Adapters {
@@ -41,6 +50,10 @@ export interface Adapters {
   readonly fileInspector: FileInspector;
   readonly contractSources: ContractSources;
   readonly emailProvider: EmailProvider;
+  readonly sendLookup: SendLookup;
+  readonly suppressionManager: SuppressionManager;
+  /** Webhook authentication; without it the webhook endpoint answers 404. */
+  readonly webhookSecrets?: ZeptoMailWebhookSecrets;
   readonly jobQueue: JobQueue;
   /** Progress fan-out to SSE streams; also the ProgressNotifier adapter. */
   readonly progressHub: SseProgressHub;
@@ -87,6 +100,47 @@ async function emailProvider(config: AppConfig, secrets: SecretStore): Promise<E
   return config.redirectAllEmailTo ? new RedirectingEmailProvider(provider, config.redirectAllEmailTo) : provider;
 }
 
+export const ZOHO_OAUTH_CLIENT_ID_SECRET = 'ZOHO_OAUTH_CLIENT_ID';
+export const ZOHO_OAUTH_CLIENT_SECRET_SECRET = 'ZOHO_OAUTH_CLIENT_SECRET';
+export const ZOHO_OAUTH_REFRESH_TOKEN_SECRET = 'ZOHO_OAUTH_REFRESH_TOKEN';
+export const ZEPTOMAIL_WEBHOOK_KEY_SECRET = 'ZEPTOMAIL_WEBHOOK_KEY';
+export const ZEPTOMAIL_WEBHOOK_AUTHORIZATION_SECRET = 'ZEPTOMAIL_WEBHOOK_AUTHORIZATION';
+
+/**
+ * Delivery tracking (§9.4, §10.3): with ZeptoMail, the logs API over OAuth (looked up in the test mailbox outside
+ * production) and the console release confirmed by the operator (D19); simulated otherwise.
+ */
+async function deliveryTracking(config: AppConfig, secrets: SecretStore): Promise<Pick<Adapters, 'sendLookup' | 'suppressionManager'>> {
+  if (config.emailProvider !== 'zeptomail' || !config.zeptomail) return { sendLookup: new FakeSendLookup(), suppressionManager: new FakeSuppressionManager() };
+  const tokens = new ZohoOAuthTokenProvider({
+    accountsUrl: config.zeptomail.accountsUrl,
+    clientId: await secrets.get(ZOHO_OAUTH_CLIENT_ID_SECRET),
+    clientSecret: await secrets.get(ZOHO_OAUTH_CLIENT_SECRET_SECRET),
+    refreshToken: await secrets.get(ZOHO_OAUTH_REFRESH_TOKEN_SECRET),
+    timeoutMs: config.zeptomail.timeoutMs,
+  });
+  const lookup = new ZeptoMailSendLookup({ baseUrl: config.zeptomail.baseUrl, timeoutMs: config.zeptomail.timeoutMs }, tokens);
+  return {
+    sendLookup: config.redirectAllEmailTo ? new RedirectingSendLookup(lookup, config.redirectAllEmailTo) : lookup,
+    suppressionManager: new ZeptoMailConsoleSuppressionManager(),
+  };
+}
+
+/** Webhook secrets: required with ZeptoMail; optional otherwise (local tests against the simulator). */
+export async function webhookSecrets(config: AppConfig, secrets: SecretStore): Promise<ZeptoMailWebhookSecrets | undefined> {
+  try {
+    return {
+      authenticationKey: await secrets.get(ZEPTOMAIL_WEBHOOK_KEY_SECRET),
+      authorizationHeader: config.webhookAuthHeader,
+      authorizationValue: await secrets.get(ZEPTOMAIL_WEBHOOK_AUTHORIZATION_SECRET),
+      maxSkewSeconds: config.webhookMaxSkewSeconds,
+    };
+  } catch (error) {
+    if (error instanceof MissingSecretError && config.emailProvider !== 'zeptomail') return undefined;
+    throw error;
+  }
+}
+
 export const TAYRONA_API_TOKEN_SECRET = 'TAYRONA_API_TOKEN';
 export const SAP_API_TOKEN_SECRET = 'SAP_API_TOKEN';
 
@@ -126,6 +180,8 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates }),
     contractSources: sources,
     emailProvider: await emailProvider(config, secrets),
+    ...(await deliveryTracking(config, secrets)),
+    webhookSecrets: await webhookSecrets(config, secrets),
     jobQueue: new PostgresJobQueue(dataSource, () => clock.now()),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),

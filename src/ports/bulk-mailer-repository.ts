@@ -8,6 +8,7 @@ import type { Block } from '../domain/block/block';
 import type { Concept } from '../domain/concept/concept';
 import type { Period } from '../domain/period/period';
 import type { DeliveryEvent } from '../domain/receipt/delivery-state';
+import type { DeliveryWebhook } from '../domain/receipt/delivery-webhook';
 import type { Receipt, ReceiptHistoryEntry } from '../domain/receipt/receipt';
 import type { ReceiptState } from '../domain/receipt/receipt-state';
 import type { Sha256 } from '../domain/receipt/sha256';
@@ -46,6 +47,8 @@ export interface ExecutionStore {
   running(): Promise<Execution | undefined>;
   /** Most recently started execution, running or not. */
   latest(): Promise<Execution | undefined>;
+  /** Executions that finished within `[from, to]`. */
+  listFinishedBetween(from: Date, to: Date): Promise<Execution[]>;
 }
 
 /** Progress events of each execution, kept so a new session can catch up (D10, D11). */
@@ -61,19 +64,30 @@ export interface AttemptStore {
   insert(attempt: Attempt): Promise<void>;
   save(attempt: Attempt): Promise<void>;
   get(attemptId: string): Promise<Attempt | undefined>;
+  /** Oldest first. */
   listByReceipt(sha256: Sha256): Promise<Attempt[]>;
+  listByExecution(executionId: string): Promise<Attempt[]>;
 }
 
 export interface SuppressionStore {
   get(email: string): Promise<Suppression | undefined>;
   save(suppression: Suppression): Promise<void>;
   remove(email: string): Promise<void>;
+  list(): Promise<Suppression[]>;
 }
 
 export interface DeliveryEventStore {
   /** False when an event with the same id was already recorded (duplicate). */
   record(event: DeliveryEvent): Promise<boolean>;
   listByAttempt(attemptId: string): Promise<DeliveryEvent[]>;
+}
+
+/** Raw provider webhooks, kept permanently. */
+export interface WebhookInbox {
+  /** False when a webhook with the same id was already received (duplicate). */
+  record(webhook: DeliveryWebhook): Promise<boolean>;
+  get(webhookRequestId: string): Promise<DeliveryWebhook | undefined>;
+  markProcessed(webhookRequestId: string, at: Date): Promise<void>;
 }
 
 export interface AlertStore {
@@ -120,6 +134,7 @@ export interface BulkMailerStores {
   readonly attempts: AttemptStore;
   readonly suppressions: SuppressionStore;
   readonly deliveryEvents: DeliveryEventStore;
+  readonly webhooks: WebhookInbox;
   readonly alerts: AlertStore;
   readonly audit: AuditLog;
   readonly concepts: ConceptStore;

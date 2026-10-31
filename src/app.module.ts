@@ -3,7 +3,9 @@ import { APP_GUARD } from '@nestjs/core';
 
 import { AuthController } from './adapters/inbound/http/auth/auth.controller';
 import { BearerAuthGuard } from './adapters/inbound/http/auth/bearer-auth.guard';
+import { DeliveryController } from './adapters/inbound/http/delivery/delivery.controller';
 import { ExecutionsController } from './adapters/inbound/http/executions/executions.controller';
+import { WebhooksController } from './adapters/inbound/http/webhooks/webhooks.controller';
 import { HealthController } from './adapters/inbound/http/health.controller';
 import { BackgroundWork } from './adapters/inbound/jobs/background-work';
 import { JobRunner } from './adapters/inbound/jobs/job-runner';
@@ -13,9 +15,10 @@ import { AuthUseCases } from './application/auth/auth-use-cases';
 import { OutboxRelay } from './application/events/outbox-relay';
 import { SerialExecutor } from './application/shared/serial-executor';
 import { type Adapters, loadEmailTemplate } from './composition/adapters';
+import { deliveryUseCases } from './composition/delivery-use-cases';
 import { executionUseCases } from './composition/execution-use-cases';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, AUTH_USE_CASES, AUTHENTICATOR, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -27,6 +30,7 @@ export class AppModule {
   static register(config: AppConfig, adapters: Adapters): DynamicModule {
     // One executor for every command that changes a batch (and, in step 6, starts an execution).
     const serial = new SerialExecutor();
+    const emailTemplate = loadEmailTemplate(config);
     const executions = executionUseCases({
       repository: adapters.repository,
       fileStore: adapters.fileStore,
@@ -41,11 +45,42 @@ export class AppModule {
       pauseBetweenSendsMs: config.sendPauseMs,
       incidentPolicy: { baseWaitSeconds: config.incidentBaseWaitSeconds, maxWaitSeconds: config.incidentMaxWaitSeconds, stopAfter: 3 },
       archiveCopyAddress: config.archiveCopyAddress,
-      emailTemplate: loadEmailTemplate(config),
+      emailTemplate,
     });
+    const delivery = deliveryUseCases({
+      repository: adapters.repository,
+      jobQueue: adapters.jobQueue,
+      sendLookup: adapters.sendLookup,
+      suppressionManager: adapters.suppressionManager,
+      fileStore: adapters.fileStore,
+      contractSources: adapters.contractSources,
+      emailProvider: adapters.emailProvider,
+      clock: adapters.clock,
+      newId: adapters.newId,
+      serial,
+      reconciliation: {
+        uncertainDelaysMinutes: config.reconcileDelaysMinutes,
+        sweepAfterHours: config.reconcileSweepAfterHours,
+        sweepMaxHours: config.reconcileSweepMaxHours,
+      },
+      emailTemplate,
+      archiveCopyAddress: config.archiveCopyAddress,
+    });
+    // Background work runs one job at a time, so reconciliation never races an execution over a receipt.
     const runner = new JobRunner(
       adapters.jobQueue,
-      { EXECUTE_BATCH: (job) => executions.run.execute(String(job.payload.executionId)) },
+      {
+        EXECUTE_BATCH: (job) => executions.run.execute(String(job.payload.executionId)),
+        RECONCILE_ATTEMPT: async (job) => {
+          await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
+        },
+        PROCESS_DELIVERY_EVENT: async (job) => {
+          await delivery.processWebhook.execute(String(job.payload.webhookRequestId));
+        },
+        SWEEP_UNCONFIRMED: async () => {
+          await delivery.sweep.execute();
+        },
+      },
       adapters.clock,
       config.jobRunnerPollMs,
       new Logger('JobRunner'),
@@ -55,10 +90,12 @@ export class AppModule {
       const alert = alertFromEvent(event.payload);
       await Promise.all(adapters.alertNotifiers.map((notifier) => notifier.notify(alert)));
     });
+    adapters.eventBus.subscribe('RECEIPT_UNCERTAIN', (event) => delivery.followUps.onReceiptUncertain(event));
+    adapters.eventBus.subscribe('WEBHOOK_RECEIVED', (event) => delivery.followUps.onWebhookReceived(event));
     const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock);
     return {
       module: AppModule,
-      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController],
+      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: ADAPTERS, useValue: adapters },
@@ -87,6 +124,7 @@ export class AppModule {
           }),
         },
         { provide: EXECUTION_USE_CASES, useValue: executions },
+        { provide: DELIVERY_USE_CASES, useValue: delivery },
         { provide: SSE_HUB, useValue: adapters.progressHub },
         { provide: JOB_RUNNER, useValue: runner },
         { provide: OUTBOX_RELAY, useValue: relay },
