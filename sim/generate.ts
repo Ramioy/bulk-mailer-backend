@@ -40,6 +40,8 @@ export interface SimFile {
   readonly email?: string;
   readonly content: 'pdf' | 'not-pdf' | 'duplicate';
   readonly seed: string;
+  /** Duplicates only: the normal file whose content it repeats. */
+  readonly duplicateOf?: string;
   readonly expected: Expected;
 }
 
@@ -141,7 +143,6 @@ export function generate(): { files: SimFile[]; contracts: Record<'TAYRONA' | 'S
     }
 
     let newConceptUses = 0;
-    let previousPdf: SimFile | undefined;
     for (const [n, scenario] of scenarios.entries()) {
       const number = source === 'SAP' ? (sap += 1) : (tayrona += 1);
       const contractId = scenario === NOT_FOUND ? `9${number}` : scenario === SOURCE_DOWN ? '9990503' : String(number);
@@ -174,13 +175,21 @@ export function generate(): { files: SimFile[]; contracts: Record<'TAYRONA' | 'S
         contract: contractId,
         ...(contract.correo ? { email: contract.correo } : {}),
         content: scenario === NOT_PDF ? 'not-pdf' : scenario === DUPLICATE ? 'duplicate' : 'pdf',
-        // A duplicate carries the content of the previous valid PDF of the batch.
-        seed: scenario === DUPLICATE && previousPdf ? previousPdf.seed : `${block}-${n}-${number}`,
+        // A duplicate gets its content after the loop, from a normal file of the batch (see below).
+        seed: `${block}-${n}-${number}`,
         expected,
       };
-      if (file.content === 'pdf') previousPdf = file;
       files.push(file);
     }
+    // The duplicate copies a normal file (valid name, valid PDF, expected to be sent): the nearest one before it, else
+    // the next one. Copying an invalid file would make the app keep the duplicate under its valid name (A1).
+    const batch = files.filter((f) => f.block === block);
+    const position = batch.findIndex((f) => f.scenario === DUPLICATE.name);
+    const isNormal = (f: SimFile) => f.scenario === OK.name && f.expected.state === 'SENT';
+    const original = [...batch.slice(0, position)].reverse().find(isNormal) ?? batch.slice(position + 1).find(isNormal);
+    if (!original) throw new Error(`no normal file to duplicate in ${block}`);
+    const at = files.indexOf(batch[position] as SimFile);
+    files[at] = { ...(batch[position] as SimFile), seed: original.seed, duplicateOf: original.fileName };
   }
   return { files, contracts };
 }
@@ -195,8 +204,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   rmSync(join(out, 'pdfs'), { recursive: true, force: true });
   for (const { block } of BLOCKS) mkdirSync(join(out, 'pdfs', block), { recursive: true });
   for (const file of files) {
-    // A duplicate with no earlier PDF in its batch cannot happen with the fixed seed; fail loudly if it does.
-    if (file.content === 'duplicate' && !files.some((f) => f !== file && f.block === file.block && f.seed === file.seed)) throw new Error(`duplicate without original: ${file.fileName}`);
+    // Every duplicate must repeat exactly one normal file of its batch.
+    if (file.content === 'duplicate') {
+      const originals = files.filter((f) => f !== file && f.block === file.block && f.seed === file.seed);
+      if (originals.length !== 1 || originals[0]?.scenario !== 'ok' || originals[0]?.expected.state !== 'SENT') throw new Error(`bad duplicate: ${file.fileName}`);
+    }
     writeFileSync(join(out, 'pdfs', file.block, file.fileName), file.content === 'not-pdf' ? Buffer.from(`Hoja de cálculo ${file.seed}\n`) : pdf(file.seed));
   }
   mkdirSync(join(out, 'data'), { recursive: true });
