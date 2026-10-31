@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from './app-config';
 
 const REQUIRED = { DATA_DIR: './data', DATABASE_URL: 'postgres://localhost/bulk_mailer' };
-const PRODUCTION = { ...REQUIRED, NODE_ENV: 'production', TAYRONA_API_URL: 'https://tayrona', SAP_API_URL: 'https://sap', ZEPTOMAIL_FROM_ADDRESS: 'soportes@anutibara.com' };
+const PRODUCTION = {
+  ...REQUIRED,
+  NODE_ENV: 'production',
+  TAYRONA_API_URL: 'https://tayrona',
+  SAP_API_URL: 'https://sap',
+  ZEPTOMAIL_FROM_ADDRESS: 'soportes@anutibara.com',
+  CORS_ALLOWED_ORIGINS: 'https://bulk-mailer.anutibara.com',
+};
 
 describe('loadConfig', () => {
   it('applies defaults', () => {
@@ -14,6 +21,7 @@ describe('loadConfig', () => {
       timeZone: 'America/Bogota',
       dataDir: './data',
       databaseUrl: 'postgres://localhost/bulk_mailer',
+      corsAllowedOrigins: [],
       accessTokenMinutes: 15,
       sessionHours: 8,
       pdfMaxIncrementalUpdates: 0,
@@ -42,6 +50,17 @@ describe('loadConfig', () => {
       executionAbortAfterMinutes: 10,
       shutdownTimeoutSeconds: 25,
     });
+  });
+
+  it('D49: CORS origins are exact origins, required in production and never * there', () => {
+    expect(loadConfig({ ...REQUIRED, CORS_ALLOWED_ORIGINS: 'https://a.example.com, http://localhost:5173' }).corsAllowedOrigins).toEqual(['https://a.example.com', 'http://localhost:5173']);
+    expect(loadConfig({ ...REQUIRED, CORS_ALLOWED_ORIGINS: '*' }).corsAllowedOrigins).toEqual(['*']);
+    const { CORS_ALLOWED_ORIGINS: _cors, ...withoutCors } = PRODUCTION;
+    expect(() => loadConfig({ ...withoutCors, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k' })).toThrow('CORS_ALLOWED_ORIGINS is required in production');
+    expect(() => loadConfig({ ...PRODUCTION, TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k', CORS_ALLOWED_ORIGINS: '*' })).toThrow('CORS_ALLOWED_ORIGINS cannot be * in production');
+    for (const bad of ['https://a.example.com/', 'https://a.example.com/app', 'ftp://a.example.com', 'a.example.com']) {
+      expect(() => loadConfig({ ...REQUIRED, CORS_ALLOWED_ORIGINS: bad })).toThrow('is not an origin');
+    }
   });
 
   it('D44: the sweep budget is a positive integer', () => {

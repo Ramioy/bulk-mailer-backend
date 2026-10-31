@@ -2,6 +2,7 @@ import 'reflect-metadata';
 
 import { readFileSync } from 'node:fs';
 
+import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -28,6 +29,17 @@ export async function createApp(config: AppConfig, adapters?: Adapters): Promise
     limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: 300, fields: 10 },
   });
   // ZeptoMail posts the event as a single form-encoded parameter; the signature is checked over the raw body.
+  // D49: the web client runs on another origin; tokens travel in the Authorization header, never in cookies.
+  // A request without Origin (ZeptoMail's webhook, curl) is not a CORS request and is not affected.
+  if (config.corsAllowedOrigins.length > 0) {
+    await app.register(cors, {
+      origin: config.corsAllowedOrigins.includes('*') ? true : [...config.corsAllowedOrigins],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      allowedHeaders: ['authorization', 'content-type', 'last-event-id'],
+      credentials: false,
+      maxAge: 600,
+    });
+  }
   app.useBodyParser('application/x-www-form-urlencoded', { bodyLimit: 1024 * 1024 }, (_request, body, done) => done(null, body.toString('utf8')));
   app.enableShutdownHooks();
   app.getHttpAdapter().getInstance().addHook('onClose', async () => resolved.close());

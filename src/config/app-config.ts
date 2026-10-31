@@ -14,6 +14,11 @@ export interface AppConfig {
   readonly databaseUrl: string;
   /** Required in production. */
   readonly tls?: TlsConfig;
+  /**
+   * D49: exact origins of the web client allowed by CORS (`https://host[:port]`). Required in production, never `*`
+   * there; empty elsewhere means CORS is off (same-origin only).
+   */
+  readonly corsAllowedOrigins: readonly string[];
   readonly accessTokenMinutes: number;
   /** Absolute lifetime of a session (refresh credential). */
   readonly sessionHours: number;
@@ -118,6 +123,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if ((certFile === '') !== (keyFile === '')) problems.push('TLS_CERT_FILE and TLS_KEY_FILE go together');
   if (nodeEnv === 'production' && certFile === '') problems.push('TLS_CERT_FILE and TLS_KEY_FILE are required in production');
 
+  const corsAllowedOrigins = (env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter((o) => o !== '');
+  if (nodeEnv === 'production' && corsAllowedOrigins.length === 0) problems.push('CORS_ALLOWED_ORIGINS is required in production');
+  if (nodeEnv === 'production' && corsAllowedOrigins.includes('*')) problems.push('CORS_ALLOWED_ORIGINS cannot be * in production');
+  for (const origin of corsAllowedOrigins) {
+    if (origin !== '*' && !isOrigin(origin)) problems.push(`CORS_ALLOWED_ORIGINS: "${origin}" is not an origin (http(s)://host[:port], no path, no trailing slash)`);
+  }
   const accessTokenMinutes = positiveInteger(env.ACCESS_TOKEN_MINUTES ?? '15', 'ACCESS_TOKEN_MINUTES', problems);
   const sessionHours = positiveInteger(env.SESSION_HOURS ?? '8', 'SESSION_HOURS', problems);
   const pdfMaxIncrementalUpdates = Number(env.PDF_MAX_INCREMENTAL_UPDATES ?? '0');
@@ -188,6 +202,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataDir,
     databaseUrl,
     ...(certFile === '' ? {} : { tls: { certFile, keyFile } }),
+    corsAllowedOrigins,
     accessTokenMinutes,
     sessionHours,
     pdfMaxIncrementalUpdates,
@@ -250,6 +265,16 @@ function nonNegativeInteger(text: string, name: string, problems: string[]): num
   const value = Number(text);
   if (!Number.isInteger(value) || value < 0) problems.push(`${name} must be an integer >= 0`);
   return value;
+}
+
+/** `http(s)://host[:port]` exactly as a browser sends it in `Origin`. */
+function isOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value;
+  } catch {
+    return false;
+  }
 }
 
 function isNodeEnv(value: string): value is AppConfig['nodeEnv'] {
