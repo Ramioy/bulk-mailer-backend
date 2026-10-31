@@ -20,8 +20,10 @@ import { type Adapters, loadEmailTemplate } from './composition/adapters';
 import { adminUseCases } from './composition/admin-use-cases';
 import { deliveryUseCases } from './composition/delivery-use-cases';
 import { executionUseCases } from './composition/execution-use-cases';
+import { fileUseCases } from './composition/file-use-cases';
+import { fileKeyOf } from './application/files/delete-receipt-file';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -72,7 +74,17 @@ export class AppModule {
       emailTemplate,
       archiveCopyAddress: config.archiveCopyAddress,
     });
-    // Three lanes (D21, D38): one batch at a time in the whole system; webhooks one at a time, never behind a lookup;
+    const files = fileUseCases({
+      repository: adapters.repository,
+      fileStore: adapters.fileStore,
+      jobQueue: adapters.jobQueue,
+      clock: adapters.clock,
+      newId: adapters.newId,
+      serial,
+      orphanMinAgeMinutes: config.fileOrphanMinAgeMinutes,
+    });
+    const fileLogger = new Logger('FileLane');
+    // Four lanes (D21, D38, D41): one batch at a time in the whole system; webhooks one at a time, never behind a lookup;
     // lookups in the provider logs (reconciliation, sweep, per-minute check) one at a time. Every receipt change of
     // every lane still goes through the same serial executor.
     // On shutdown each lane signals its job and waits for it at most `shutdownTimeoutSeconds` (D33).
@@ -114,6 +126,26 @@ export class AppModule {
         adapters.clock,
         config.jobRunnerPollMs,
         new Logger('LookupLane'),
+        laneOptions,
+      ),
+      // D41: deleting receipt files is local I/O: its own small lane, so it never waits for the logs API.
+      new JobRunner(
+        adapters.jobQueue,
+        {
+          DELETE_RECEIPT_FILE: async (job) => {
+            await files.deleteFile.execute(fileKeyOf(job.payload));
+          },
+          PURGE_BATCH_FILES: async (job) => {
+            await files.purgeBatch.execute(job.payload);
+          },
+          PURGE_ORPHAN_FILES: async () => {
+            const result = await files.purgeOrphans.execute();
+            if (result.deleted > 0 || result.failed > 0) fileLogger.log(`Orphan files: ${result.deleted} deleted, ${result.failed} failed, ${result.tooRecent} too recent`);
+          },
+        },
+        adapters.clock,
+        config.jobRunnerPollMs,
+        fileLogger,
         laneOptions,
       ),
     ]);
@@ -169,6 +201,7 @@ export class AppModule {
         },
         { provide: SSE_HUB, useValue: adapters.progressHub },
         { provide: JOB_RUNNER, useValue: runner },
+        { provide: FILE_USE_CASES, useValue: files },
         { provide: OUTBOX_RELAY, useValue: relay },
         BackgroundWork,
         { provide: APP_GUARD, useClass: BearerAuthGuard },

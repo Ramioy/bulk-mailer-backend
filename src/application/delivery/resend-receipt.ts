@@ -13,6 +13,7 @@ import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import type { DomainEventType } from '../../ports/event-bus';
 import { domainEvent } from '../events/domain-events';
 import { applyPendingEvents } from './apply-delivery-event';
+import { retireFile } from '../files/retire-file';
 import { publishNextManifest } from '../receipts/receipt-dependencies';
 import { renderEmail } from '../sending/email-template';
 import type { DeliveryDependencies } from './delivery-dependencies';
@@ -135,7 +136,7 @@ export class ResendReceipt {
   }
 
   private async record(operator: string, started: Started, email: string, outcome: SendOutcome): Promise<Receipt['state']> {
-    const { repository, fileStore, clock, newId } = this.deps;
+    const { repository, clock, newId } = this.deps;
     const { attempt, previousEmail } = started;
     const sha256 = attempt.sha256;
     const resolution = resolveSendOutcome(outcome);
@@ -161,6 +162,8 @@ export class ResendReceipt {
         providerRequestId: outcome.kind === 'ACCEPTED' ? outcome.providerRequestId : undefined,
       });
       await tx.receipts.save(changed);
+      // Files are kept only until the receipt is processed (D4): deleted by a job after the commit (D41).
+      if (state === 'SENT') await retireFile(tx, current, now);
       await tx.receipts.appendHistory({ sha256, at: now, event: state, detail: detail ?? outcome.kind });
       // A resend that did not go out enters the next normal manifest (D7c).
       if (state === 'FAILED' || state === 'PENDING') await publishNextManifest(tx, current.period, current.block, now);
@@ -182,9 +185,7 @@ export class ResendReceipt {
       if (state === 'SENT' || state === 'UNCERTAIN') await applyPendingEvents(tx, newId, now, attempt.attemptId);
       return changed;
     });
-    // Files are kept only until the receipt is processed (D4).
-    if (state === 'SENT') await fileStore.delete({ period: updated.period, block: updated.block, sha256 });
-    return state;
+    return updated.state;
   }
 
   /**

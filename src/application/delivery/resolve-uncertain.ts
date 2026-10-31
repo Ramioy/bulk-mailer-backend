@@ -3,6 +3,9 @@ import type { Sha256 } from '../../domain/receipt/sha256';
 import { SendErrorType } from '../../domain/shared/error-types';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
+import { retireFile } from '../files/retire-file';
+import { settleBatchIfDone } from '../sending/batch-settlement';
+import { sentWithoutFile } from './apply-delivery-event';
 import type { DeliveryDependencies } from './delivery-dependencies';
 
 export type ResolveUncertainError = 'RECEIPT_NOT_FOUND' | 'RECEIPT_NOT_UNCERTAIN' | 'NOTE_REQUIRED';
@@ -26,9 +29,11 @@ export class ResolveUncertain {
         const now = clock.now();
         const resolved: Receipt =
           outcome === 'SENT'
-            ? { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now }
+            ? sentWithoutFile(receipt, now)
             : { ...receipt, state: 'FAILED', errorType: SendErrorType.NOT_FOUND_AT_PROVIDER, errorDetail: 'resolved by the operator', updatedAt: now };
         await tx.receipts.save(resolved);
+        // D41: a SENT receipt no longer needs its file; a FAILED one keeps it for the next execution.
+        if (resolved.state === 'SENT') await retireFile(tx, receipt, now);
         await tx.receipts.appendHistory({ sha256, at: now, event: resolved.state, detail: `resolved by ${operator}: ${note.trim()}` });
         await tx.audit.append({
           auditId: newId(),
@@ -41,6 +46,7 @@ export class ResolveUncertain {
           note: note.trim(),
         });
         await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256, state: resolved.state, errorType: resolved.errorType, by: 'operator' }));
+        await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
         return ok({ state: resolved.state });
       });
     });

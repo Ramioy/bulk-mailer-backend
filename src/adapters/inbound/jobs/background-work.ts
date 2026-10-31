@@ -3,7 +3,8 @@ import { type BeforeApplicationShutdown, Inject, Injectable, Logger, type OnAppl
 import type { Adapters } from '../../../composition/adapters';
 import type { DeliveryUseCases } from '../../../composition/delivery-use-cases';
 import type { ExecutionUseCases } from '../../../composition/execution-use-cases';
-import { ADAPTERS, DELIVERY_USE_CASES, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY } from '../../../composition/tokens';
+import type { FileUseCases } from '../../../composition/file-use-cases';
+import { ADAPTERS, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, JOB_RUNNER, OUTBOX_RELAY } from '../../../composition/tokens';
 import type { OutboxRelay } from '../../../application/events/outbox-relay';
 import { PollingLoop } from './polling-loop';
 import { APP_CONFIG, type AppConfig } from '../../../config/app-config';
@@ -20,6 +21,7 @@ export class BackgroundWork implements OnApplicationBootstrap, BeforeApplication
   private outboxLoop: PollingLoop | undefined;
   private sweepLoop: PollingLoop | undefined;
   private recentLoop: PollingLoop | undefined;
+  private orphanLoop: PollingLoop | undefined;
 
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -28,6 +30,7 @@ export class BackgroundWork implements OnApplicationBootstrap, BeforeApplication
     @Inject(JOB_RUNNER) private readonly runner: JobLanes,
     @Inject(OUTBOX_RELAY) private readonly relay: OutboxRelay,
     @Inject(DELIVERY_USE_CASES) private readonly delivery: DeliveryUseCases,
+    @Inject(FILE_USE_CASES) private readonly files: FileUseCases,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -50,6 +53,9 @@ export class BackgroundWork implements OnApplicationBootstrap, BeforeApplication
       this.logger,
     );
     this.recentLoop.start();
+    // D41: files no receipt needs, left by a crash or a failed deletion.
+    this.orphanLoop = new PollingLoop('Orphan file sweep', () => this.files.purgeOrphans.request(), this.config.fileOrphanSweepIntervalMinutes * 60_000, this.logger);
+    this.orphanLoop.start();
   }
 
   /**
@@ -59,6 +65,6 @@ export class BackgroundWork implements OnApplicationBootstrap, BeforeApplication
    */
   async beforeApplicationShutdown(): Promise<void> {
     await this.runner.stop();
-    await Promise.all([this.outboxLoop?.stop(), this.sweepLoop?.stop(), this.recentLoop?.stop()]);
+    await Promise.all([this.outboxLoop?.stop(), this.sweepLoop?.stop(), this.recentLoop?.stop(), this.orphanLoop?.stop()]);
   }
 }

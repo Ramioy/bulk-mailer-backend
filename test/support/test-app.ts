@@ -69,7 +69,7 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     authenticator,
     clock,
     newId: randomUUID,
-    fileStore: new InMemoryReceiptFileStore(),
+    fileStore: new InMemoryReceiptFileStore(() => clock.now()),
     fileInspector: new BasicPdfInspector(),
     contractSources: { TAYRONA: tayrona, SAP: new FakeContractSource() },
     emailProvider: email,

@@ -5,6 +5,12 @@ export const JobType = {
   PROCESS_DELIVERY_EVENT: 'PROCESS_DELIVERY_EVENT',
   /** Every minute while a batch runs and shortly after (D21). */
   CHECK_RECENT_SENDS: 'CHECK_RECENT_SENDS',
+  /** D41: deletes the file of a receipt once nothing needs it any more (queued in the transaction that decided it). */
+  DELETE_RECEIPT_FILE: 'DELETE_RECEIPT_FILE',
+  /** D41: deletes the files of a processed batch that are no longer needed (explicit list, D42). */
+  PURGE_BATCH_FILES: 'PURGE_BATCH_FILES',
+  /** D41: periodic; deletes files no receipt needs (left behind by a crash or a failed deletion). */
+  PURGE_ORPHAN_FILES: 'PURGE_ORPHAN_FILES',
 } as const;
 export type JobType = (typeof JobType)[keyof typeof JobType];
 

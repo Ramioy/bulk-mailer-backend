@@ -34,11 +34,19 @@ describe('loadConfig', () => {
       sendPauseMs: 1000,
       incidentBaseWaitSeconds: 30,
       incidentMaxWaitSeconds: 600,
+      fileOrphanSweepIntervalMinutes: 360,
+      fileOrphanMinAgeMinutes: 60,
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,
       executionAbortAfterMinutes: 10,
       shutdownTimeoutSeconds: 25,
     });
+  });
+
+  it('D41: the orphan sweep interval and minimum age are positive integers', () => {
+    expect(loadConfig({ ...REQUIRED, FILE_ORPHAN_SWEEP_INTERVAL_MINUTES: '30', FILE_ORPHAN_MIN_AGE_MINUTES: '5' })).toMatchObject({ fileOrphanSweepIntervalMinutes: 30, fileOrphanMinAgeMinutes: 5 });
+    expect(() => loadConfig({ ...REQUIRED, FILE_ORPHAN_SWEEP_INTERVAL_MINUTES: '0' })).toThrow('FILE_ORPHAN_SWEEP_INTERVAL_MINUTES must be a positive integer');
+    expect(() => loadConfig({ ...REQUIRED, FILE_ORPHAN_MIN_AGE_MINUTES: 'x' })).toThrow('FILE_ORPHAN_MIN_AGE_MINUTES must be a positive integer');
   });
 
   it('D38: the per-minute check budget is a positive integer and the backoff an integer >= 0', () => {

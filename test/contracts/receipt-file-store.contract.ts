@@ -26,6 +26,18 @@ export function receiptFileStoreContract(name: string, create: () => Promise<Rec
       await store.delete(key);
     });
 
+    it('D41: lists every stored file with its modification time', async () => {
+      expect(await store.list()).toEqual([]);
+      const before = Date.now() - 60_000;
+      await store.save(key, new Uint8Array([1]));
+      await store.save({ ...key, block: 'ANGLO', sha256: hashOf('b') }, new Uint8Array([2]));
+      const listed = await store.list();
+      expect(listed.map((f) => `${f.period.toString()}/${f.block}/${f.sha256}`).sort()).toEqual([`2026-10/ANGLO/${hashOf('b')}`, `2026-10/CASH/${hashOf('a')}`]);
+      expect(listed.every((f) => f.modifiedAt instanceof Date && f.modifiedAt.getTime() >= before)).toBe(true);
+      await store.delete(key);
+      expect((await store.list()).map((f) => f.sha256)).toEqual([hashOf('b')]);
+    });
+
     it('purges only the files of the given batch', async () => {
       await store.save(key, new Uint8Array([1]));
       await store.save({ ...key, sha256: hashOf('b') }, new Uint8Array([2]));

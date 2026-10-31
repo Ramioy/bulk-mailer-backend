@@ -19,6 +19,8 @@ import type { DomainEventType } from '../../ports/event-bus';
 import { renderEmail } from './email-template';
 import type { ExecutionDependencies } from './execution-dependencies';
 import { Counters, ProgressRecorder } from './progress-recorder';
+import { retireFile } from '../files/retire-file';
+import { retireProcessedFiles } from './batch-settlement';
 import { readyManifestEntries } from './ready-entries';
 
 type Step = {
@@ -311,9 +313,11 @@ export class RunExecution {
         state,
         errorType,
         errorDetail: detail,
-        ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const } : {}),
+        // D41: a SENT receipt no longer needs its file.
+        ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const, fileAvailable: false } : {}),
         updatedAt: now,
       });
+      if (state === 'SENT') await retireFile(tx, current, now);
       const historyDetail = detail ?? outcome.kind;
       await tx.receipts.appendHistory({
         sha256: saved.sha256,
@@ -374,7 +378,7 @@ export class RunExecution {
   }
 
   private async finish(execution: Execution, counters: Counters, stopReason?: BatchStopReason): Promise<void> {
-    const { fileStore, clock, newId } = this.deps;
+    const { clock, newId } = this.deps;
     const now = clock.now();
     const result = stopReason ? 'STOPPED' : 'COMPLETED';
 
@@ -399,18 +403,13 @@ export class RunExecution {
           raisedAt: now,
         });
       }
-      if (result === 'COMPLETED') {
-        // Files are discarded once the batch is processed (D4). FAILED receipts need them uploaded again (A2).
-        for (const receipt of await tx.receipts.listByBatch(execution.period, execution.block)) {
-          if (receipt.fileAvailable) await tx.receipts.save({ ...receipt, fileAvailable: false, updatedAt: now });
-        }
-      }
+      // Files are discarded once the batch is processed (D4). FAILED receipts need them uploaded again (A2).
+      // D41: deleted by a job queued here, after the commit; no crash window between the two.
+      if (result === 'COMPLETED') await retireProcessedFiles(tx, execution.period, execution.block, now);
       return true;
     });
     if (!finished) return;
     await this.progress.emit(execution.executionId, { type: 'FINISHED', batchState: result, stopReason, counters: counters.snapshot() });
-    // After FINISHED: the execution is over even if the volume fails here (D32 does not undo a finished batch).
-    if (result === 'COMPLETED') await fileStore.purgeBatch(execution.period, execution.block);
   }
 }
 

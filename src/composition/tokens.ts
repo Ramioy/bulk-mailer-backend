@@ -9,3 +9,4 @@ export const JOB_RUNNER = Symbol('JobRunner');
 export const OUTBOX_RELAY = Symbol('OutboxRelay');
 export const DELIVERY_USE_CASES = Symbol('DeliveryUseCases');
 export const ADMIN_USE_CASES = Symbol('AdminUseCases');
+export const FILE_USE_CASES = Symbol('FileUseCases');

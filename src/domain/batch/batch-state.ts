@@ -12,7 +12,8 @@ export type BatchState = (typeof BatchState)[keyof typeof BatchState];
 const TRANSITIONS: Readonly<Record<BatchState, readonly BatchState[]>> = {
   OPEN: ['OPEN', 'RUNNING'],
   RUNNING: ['COMPLETED', 'STOPPED'],
-  STOPPED: ['RUNNING', 'OPEN'],
+  // COMPLETED: only by settlement (D41): a stopped batch with nothing left to send or to resolve
+  STOPPED: ['RUNNING', 'OPEN', 'COMPLETED'],
   COMPLETED: ['OPEN'],
 };
 

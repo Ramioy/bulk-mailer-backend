@@ -5,6 +5,8 @@ import { assertTransition, awaitsLateEvidence } from '../../domain/receipt/recei
 import type { Attempt } from '../../domain/sending/attempt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { raiseAlert } from '../alerts/raise-alert';
+import { retireFile } from '../files/retire-file';
+import { settleBatchIfDone } from '../sending/batch-settlement';
 import { domainEvent } from '../events/domain-events';
 
 export type ApplyResult =
@@ -36,9 +38,11 @@ export async function confirmSent(
   evidence: string,
 ): Promise<Receipt> {
   assertTransition(receipt.state, 'SENT');
-  const sent = await tx.receipts.save({ ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now });
+  const sent = await tx.receipts.save(sentWithoutFile(receipt, now));
+  await retireFile(tx, receipt, now);
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `confirmed by ${evidence} (attempt ${attempt.attemptId})` });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence }));
+  await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
   return sent;
 }
 
@@ -59,7 +63,8 @@ export async function confirmLateSent(
   if (!awaitsLateEvidence(receipt.state, receipt.errorType)) throw new DomainError(`Receipt ${receipt.sha256} cannot be confirmed late from ${receipt.state}`);
   assertTransition(receipt.state, 'SENT');
   const failedAt = (await tx.receipts.history(receipt.sha256)).filter((h) => h.event === 'FAILED').at(-1)?.at ?? receipt.updatedAt;
-  const sent = await tx.receipts.save({ ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now });
+  const sent = await tx.receipts.save(sentWithoutFile(receipt, now));
+  await retireFile(tx, receipt, now);
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `SENT confirmed late by ${evidence} (attempt ${attempt.attemptId})` });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence, late: true }));
   await raiseAlert(tx, newId, {
@@ -71,7 +76,16 @@ export async function confirmLateSent(
       `did go out: ${what} from the ${evidence}. It is SENT now; if it was sent again meanwhile, the client received it twice.`,
     raisedAt: now,
   });
+  await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
   return sent;
+}
+
+/**
+ * The receipt confirmed SENT: delivery UNCONFIRMED, no error, and its file no longer needed (D41; the caller queues
+ * its deletion with `retireFile` in the same transaction).
+ */
+export function sentWithoutFile(receipt: Receipt, now: Date): Receipt {
+  return { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, fileAvailable: false, updatedAt: now };
 }
 
 /** A process failure (M2, logs only) says the provider did not deliver it: it is no proof that the email went out. */

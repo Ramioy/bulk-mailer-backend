@@ -69,6 +69,10 @@ export interface AppConfig {
   readonly archiveCopyAddress?: string;
   /** JSON file `{ "subject": "…", "body": "…" }` replacing the default email template. */
   readonly emailTemplateFile?: string;
+  /** How often the orphan file sweep runs (D41); default 360 minutes. */
+  readonly fileOrphanSweepIntervalMinutes: number;
+  /** The sweep leaves alone files younger than this (D41); default 60 minutes. */
+  readonly fileOrphanMinAgeMinutes: number;
   readonly jobRunnerEnabled: boolean;
   readonly jobRunnerPollMs: number;
   /** The operator may abort a running execution after this many minutes without progress, or by forcing it; default 10 (D32). */
@@ -166,6 +170,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const runner = env.JOB_RUNNER_ENABLED ?? 'true';
   if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
   const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
+  const fileOrphanSweepIntervalMinutes = positiveInteger(env.FILE_ORPHAN_SWEEP_INTERVAL_MINUTES ?? '360', 'FILE_ORPHAN_SWEEP_INTERVAL_MINUTES', problems);
+  const fileOrphanMinAgeMinutes = positiveInteger(env.FILE_ORPHAN_MIN_AGE_MINUTES ?? '60', 'FILE_ORPHAN_MIN_AGE_MINUTES', problems);
   const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
   const shutdownTimeoutSeconds = positiveInteger(env.SHUTDOWN_TIMEOUT_SECONDS ?? '25', 'SHUTDOWN_TIMEOUT_SECONDS', problems);
 
@@ -217,6 +223,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     incidentMaxWaitSeconds,
     ...(archiveCopyAddress === '' ? {} : { archiveCopyAddress }),
     ...(emailTemplateFile === '' ? {} : { emailTemplateFile }),
+    fileOrphanSweepIntervalMinutes,
+    fileOrphanMinAgeMinutes,
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,
     executionAbortAfterMinutes,

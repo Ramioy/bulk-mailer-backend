@@ -5,6 +5,7 @@ import { SendErrorType } from '../../domain/shared/error-types';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import type { ProviderSendStatus } from '../../ports/send-lookup';
 import { raiseAlert } from '../alerts/raise-alert';
+import { settleBatchIfDone } from '../sending/batch-settlement';
 import { domainEvent } from '../events/domain-events';
 import { awaitsLateEvidence } from '../../domain/receipt/receipt-state';
 import { applyIncomingEvent, applyPendingEvents, confirmLateSent, confirmSent, latestAttempt } from './apply-delivery-event';
@@ -305,4 +306,6 @@ async function fail(
   await tx.receipts.save({ ...receipt, state: 'FAILED', errorType, errorDetail: detail, updatedAt: now });
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'FAILED', detail: `${errorType} (reconciliation of attempt ${attempt.attemptId})` });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'FAILED', errorType, by: 'provider logs' }));
+  // The last UNCERTAIN of a stopped batch may have been this one (D41).
+  await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
 }

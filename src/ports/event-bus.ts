@@ -19,6 +19,8 @@ export const DomainEventType = {
   /** A concept was added, retired, reactivated or got a new subject. */
   CONCEPT_CHANGED: 'CONCEPT_CHANGED',
   ARCHIVE_COPY_CHANGED: 'ARCHIVE_COPY_CHANGED',
+  /** D41: a stopped batch completed because nothing was left to send or to resolve. */
+  BATCH_COMPLETED: 'BATCH_COMPLETED',
 } as const;
 export type DomainEventType = (typeof DomainEventType)[keyof typeof DomainEventType];
 

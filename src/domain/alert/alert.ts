@@ -21,6 +21,8 @@ export const AlertType = {
   DUPLICATE_SEND_DETECTED: 'DUPLICATE_SEND_DETECTED',
   /** D39: a domain event could not be delivered after the maximum attempts; its consumers did not run. */
   OUTBOX_EVENT_DEAD: 'OUTBOX_EVENT_DEAD',
+  /** D41: receipt files that should have been deleted could not be (Ley 1581: they must not be kept). */
+  FILE_PURGE_FAILED: 'FILE_PURGE_FAILED',
 } as const;
 export type AlertType = (typeof AlertType)[keyof typeof AlertType];
 

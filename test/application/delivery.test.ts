@@ -369,6 +369,9 @@ describe('ResendReceipt (§10.4)', () => {
     expect(await fx.repository.attempts.get(resent?.attemptId as string)).toMatchObject({ kind: 'RESEND', outcome: 'ACCEPTED' });
     expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'UNCONFIRMED', fileAvailable: false, attempts: 2, recipient: { email: 'nuevo@altos.com' } });
     expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'RECEIPT_RESENT', previousValue: 'admin@altos.com', newValue: 'nuevo@altos.com' });
+    // D41: deleted by the job queued with the outcome, once the file lane runs it.
+    expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: receipt.sha256 })).toBeDefined();
+    expect(await fx.runFileJobs()).toBe(1);
     expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: receipt.sha256 })).toBeUndefined();
 
     // A late event of the first attempt no longer changes the receipt.

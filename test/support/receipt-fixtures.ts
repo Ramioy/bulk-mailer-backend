@@ -26,7 +26,6 @@ let ids = 0;
 
 export function receiptFixture(): ReceiptFixture {
   const repository = new InMemoryBulkMailerRepository();
-  const files = new InMemoryReceiptFileStore();
   const tayrona = new FakeContractSource({
     '104522': { complexName: 'Edificio Altos', email: 'admin@altos.com' },
     '98765': { complexName: 'Conjunto Las Palmas', email: 'palmas@correo.co' },
@@ -35,6 +34,7 @@ export function receiptFixture(): ReceiptFixture {
   const sap = new FakeContractSource({ '7001': { complexName: 'Anglo Torre', email: 'anglo@sap.co' } });
   // Mid-October 2026 in Bogota: operable periods are 2026-10 and 2026-09.
   const clock = new FixedClock('2026-10-15T15:00:00Z');
+  const files = new InMemoryReceiptFileStore(() => clock.now());
   const deps: ReceiptDependencies = {
     repository,
     fileStore: files,
