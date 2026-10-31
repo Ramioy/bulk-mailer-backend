@@ -793,8 +793,10 @@ async function releaseFiles(): Promise<void> {
   const after = (await api.call('GET', `/batches/${PERIOD}/${block}`)).body;
   const rowsAfter = await receiptsOf(block);
   checks.check('los registros se conservan', rowsAfter.length === (await receiptsOf(block)).length && rowsAfter.length > 0 && after.needsCorrection.length === before.needsCorrection.length, `${rowsAfter.length} soportes, por corregir ${after.needsCorrection.length}`);
+  // The summary flags every receipt the operator may still act on (PENDING or FAILED) whose file is gone (D51).
   const flagged = after.needsCorrection.filter((r: any) => r.fileError === 'FILE_NOT_AVAILABLE');
-  checks.check('el resumen marca fileError FILE_NOT_AVAILABLE en los soportes por corregir, aparte de errorType', flagged.length === after.needsCorrection.filter((r: any) => r.state === 'PENDING').length && flagged.every((r: any) => r.errorType), `${flagged.length} marcados: ${tally(flagged.map((r: any) => r.errorType)).map(([t, n]) => `${t} ×${n}`).join(', ')}`);
+  const expectedFlagged = after.needsCorrection.filter((r: any) => (r.state === 'PENDING' || r.state === 'FAILED') && !r.fileAvailable);
+  checks.check('el resumen marca fileError FILE_NOT_AVAILABLE en los soportes por corregir sin archivo (PENDING y FAILED), aparte de errorType', flagged.length === expectedFlagged.length && flagged.length > 0 && flagged.every((r: any) => r.errorType), `${flagged.length} marcados: ${tally(flagged.map((r: any) => r.errorType)).map(([t, n]) => `${t} ×${n}`).join(', ')}`);
   checks.check('el manifiesto avanzó (versión nueva)', released.body?.manifestVersion > before.manifestVersion, `${before.manifestVersion} → ${released.body?.manifestVersion}`);
   const again = await api.call('POST', `/batches/${PERIOD}/${block}/release-files`, { note: 'Simulación: segunda vez' });
   checks.note(`liberar de nuevo: HTTP ${again.status} ${JSON.stringify(again.body)}`);
@@ -819,8 +821,10 @@ async function sweepLostWebhook(): Promise<void> {
   checks.check(`\`${lostWebhook.fileName}\` pasa de SOFT_BOUNCE a ACCEPTED sin webhook`, after?.state === 'SENT' && after?.delivery_state === 'ACCEPTED', `${after?.state} / ${after?.delivery_state}`);
   const events = (await db.query<{ source: string; state: string }>('SELECT source, state FROM delivery_events WHERE attempt_id = $1 ORDER BY seq', [lostWebhook.attemptId])).rows;
   checks.check('la entrega llegó por los logs (source LOGS), no por webhook', events.some((e) => e.source === 'LOGS' && e.state === 'ACCEPTED'), events.map((e) => `${e.source}:${e.state}`).join(', ') || 'sin eventos');
+  // D44/D46: the only WEBHOOKS_NOT_RECEIVED must be the true one: batch 1 has a `nowebhook` scenario (its delivery was
+  // found in the logs, never by webhook), and this is the only execution old enough for the sweep's judgement.
   const silence = (await api.call('GET', '/alerts?type=WEBHOOKS_NOT_RECEIVED&limit=10')).body as any[];
-  checks.check('sin falsa alarma de silencio de webhooks (D46)', Array.isArray(silence) && silence.length === 0, `${silence?.length} alertas WEBHOOKS_NOT_RECEIVED`);
+  checks.check('una sola alerta WEBHOOKS_NOT_RECEIVED, la verdadera: 1 soporte del lote 1 entregado según los logs sin webhook (escenario nowebhook), ninguna falsa alarma de silencio total (D46)', Array.isArray(silence) && silence.length === 1 && /1 receipt\(s\) of \S+\/CASH but no webhook arrived/.test(silence[0].detail), JSON.stringify(silence?.map((a) => a.detail)));
   checks.finish();
 }
 
@@ -831,8 +835,8 @@ async function monthEnd(): Promise<void> {
   checks.check('GET /health → 200 ok (BD y volumen)', h.status === 200 && h.body?.status === 'ok', `HTTP ${h.status} ${JSON.stringify(h.body)}`);
   const dead = await api.call('GET', '/outbox/dead');
   checks.check('GET /outbox/dead: ningún evento muerto', dead.status === 200 && Array.isArray(dead.body?.events) && dead.body.events.length === 0, `HTTP ${dead.status} ${JSON.stringify(dead.body)}`);
-  const outbox = (await db.query<{ n: string }>('SELECT count(*) AS n FROM outbox_events WHERE dispatched_at IS NULL')).rows[0]?.n;
-  checks.check('outbox sin eventos por despachar', Number(outbox) === 0, `${outbox} pendientes`);
+  const outbox = await until(async () => Number((await db.query<{ n: string }>('SELECT count(*) AS n FROM outbox_events WHERE dispatched_at IS NULL')).rows[0]?.n), (n) => n === 0, 15_000, 1000);
+  checks.check('outbox sin eventos por despachar (hasta 15 s después del último cambio)', outbox === 0, `${outbox} pendientes`);
   const jobs = (await db.query<{ status: string; type: string; n: string }>('SELECT status, type, count(*) AS n FROM jobs GROUP BY status, type ORDER BY status, type')).rows;
   checks.check('ningún trabajo FAILED ni CLAIMED', !jobs.some((j) => j.status === 'FAILED' || j.status === 'CLAIMED'), jobs.map((j) => `${j.type} ${j.status} ×${j.n}`).join(', '));
   const leftovers = (await db.query<{ state: string; n: string }>("SELECT state, count(*) AS n FROM receipts WHERE period = $1 AND state IN ('SENDING','UNCERTAIN') GROUP BY state", [PERIOD])).rows;

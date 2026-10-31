@@ -36,17 +36,11 @@ Hechos y en `main`: pasos 0 a 11 (el 10 quedó cubierto por el 7), plantilla de 
 
 Preguntas abiertas de la auditoría: **ninguna**. Pendiente: fusión de `audita` a `main` (CI solo corre en `main` o en PR) y las validaciones de §12.7 con la cuenta real.
 
-### 🎯 PRIORIDAD de la sesión siguiente: probar `main` con la simulación
+### ✅ Hecho: tercer mes simulado contra `main` auditado (rama `simulacion`, 2026-10-31)
 
-Decisión del usuario (2026-10-31, tras fusionar el PR #1 de la auditoría): **tomar `main` en su estado actual y llevarlo a la rama `simulacion` para correr el mes simulado contra el código auditado.** Hacer esto antes que cualquier otra cosa.
+`main` (`6951bc3`) fusionado en `simulacion` (merge, nunca al revés). `sim/` adaptado a la auditoría y ampliado con los escenarios de D32–D53 (S6–S11 en `decisiones.md`). Informe: `sim/reports/2026-10-31-mes-simulado-3.md`. Resultado: los 300 soportes igual que en el segundo mes; 10 de 12 escenarios de la auditoría comprobados de punta a punta; **ningún defecto funcional en `main`**. Dos propuestas menores para `main`, pendientes de aprobación del usuario: **D54** (`lastCounters` debe leer el último evento *con contadores*) y **D55** (`release-files` no debe reabrir un lote `COMPLETED`). Pendiente: repetir el mes para comprobar S10 (apagado cooperativo con la espera de entrega atendiendo la señal) con las expectativas ya corregidas.
 
-Cómo está hoy: `simulacion` nació de `130a30f` y tiene 6 commits propios (`sim/`: `Dockerfile`, `docker-compose.yml`, `up.sh`/`run.sh`/`down.sh`, `generate.ts`, `provision.ts`, `run.ts`, informes en `sim/reports/`, *scripts* `sim:up`/`sim:run`/`sim:down` en `package.json`, decisiones S1–S5). `main` le lleva 41 commits (D32–D53). `simulacion` **nunca se fusiona hacia `main`**; la dirección permitida es `main → simulacion`.
-
-Plan sugerido (confirmar con el usuario al empezar):
-1. `git checkout simulacion && git merge main` (merge, no rebase: conserva los informes y S1–S5). Resolver conflictos esperables en `package.json` (*scripts*), `.env.example`, `docs/architecture/decisiones.md` (S1–S5 al final) y `CLAUDE.md`.
-2. Adaptar `sim/` a lo nuevo de la auditoría: variables obligatorias en producción (`CORS_ALLOWED_ORIGINS`), nuevas de operación (`SHUTDOWN_TIMEOUT_SECONDS`, `INSTANCE_LEASE_TTL_SECONDS`, presupuestos `DELIVERY_CHECK_BATCH_SIZE`/`RECONCILE_SWEEP_BATCH_SIZE`, `UPLOAD_MAX_*`, `WORK_RETENTION_DAYS`, `FILE_ORPHAN_*`), `stop_grace_period: 40s` en el compose de la simulación, 8 migraciones nuevas (`pnpm db:migrate`), y el *lease* de instancia (una sola réplica; si el *runner* de la simulación arranca la app más de una vez, la segunda queda en espera).
-3. Ampliar los escenarios del mes simulado con lo que la auditoría corrigió, para comprobarlo de punta a punta y no solo con pruebas unitarias: excepción en medio del lote y `abort`; apagado durante un lote (SIGTERM) → `INTERRUPTED` limpio; evidencia tardía de un `UNCERTAIN` dado por no encontrado (`LATE_SEND_EVIDENCE`, sin duplicado); webhook ilegible (`WEBHOOK_UNPARSED`); barrido con `SOFT_BOUNCE` perdido; lote `STOPPED` que se asienta a `COMPLETED` y purga; `release-files`; alertas resueltas vs. reconocidas; carga de muchos archivos (presupuesto 413); dos instancias (la segunda inerte).
-4. Correr el mes completo, comparar con los dos informes anteriores (`sim/reports/2026-10-31-mes-simulado*.md`) y escribir el tercero. Toda diferencia se reporta con honestidad; lo que exija cambiar `main` se propone como decisión (D54…) y se corrige en `main`, nunca en `simulacion`.
+Cómo correrlo: `pnpm sim:up` (construye la imagen, migra, aprovisiona), `pnpm sim:run` (el guion pide al anfitrión parar/arrancar contenedores vía `sim/out/control`; `sim/run.sh` lo atiende), `pnpm sim:down`. `sim/out/` no se rastrea en git (S9).
 
 ### ⏸ EN ESPERA: paso 12
 
