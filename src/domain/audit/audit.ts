@@ -20,6 +20,8 @@ export const AuditAction = {
   ADDRESS_RELEASED: 'ADDRESS_RELEASED',
   CONCEPT_CHANGED: 'CONCEPT_CHANGED',
   ARCHIVE_COPY_CHANGED: 'ARCHIVE_COPY_CHANGED',
+  /** D39: the operator asked the relay to try a dead outbox event again. */
+  OUTBOX_EVENT_RETRIED: 'OUTBOX_EVENT_RETRIED',
 } as const;
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];
 

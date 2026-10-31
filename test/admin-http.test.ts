@@ -105,4 +105,34 @@ describe('administration over HTTP (§13)', () => {
     await sendBatch();
     expect(ctx.email.calls.map((c) => c.copyTo)).toEqual(['archivo@empresa.co']);
   });
+
+  it('D39: lists dead outbox events and retries one (JWT), audited', async () => {
+    await start();
+    // A poisoned consumer of RECEIPTS_UPLOADED.
+    let down = true;
+    (ctx.adapters.eventBus as { subscribe(type: string, c: () => Promise<void>): void }).subscribe('RECEIPTS_UPLOADED', async () => {
+      if (down) throw new Error('consumer down');
+    });
+    await upload('a', 'MULTA');
+    for (let i = 0; i < 10; i += 1) await ctx.relay.drain();
+
+    expect((await ctx.app.inject({ method: 'GET', url: '/outbox/dead' })).statusCode).toBe(401);
+    const listed = await call('GET', '/outbox/dead?limit=5');
+    expect(listed.statusCode).toBe(200);
+    const [dead] = listed.json().events;
+    expect(dead).toMatchObject({ type: 'RECEIPTS_UPLOADED', attempts: 10, lastError: 'Error: consumer down' });
+    expect((await call('GET', '/outbox/dead?limit=0')).statusCode).toBe(400);
+    expect((await call('GET', '/alerts')).json().map((a: { type: string }) => a.type)).toContain('OUTBOX_EVENT_DEAD');
+
+    expect((await ctx.app.inject({ method: 'POST', url: `/outbox/dead/${dead.eventId}/retry` })).statusCode).toBe(401);
+    const unknown = await call('POST', '/outbox/dead/nope/retry');
+    expect([unknown.statusCode, unknown.json()]).toEqual([404, { error: 'OUTBOX_EVENT_NOT_DEAD' }]);
+    expect((await call('POST', `/outbox/dead/${dead.eventId}/retry`, { note: 7 } as object)).statusCode).toBe(400);
+    down = false;
+    const retried = await call('POST', `/outbox/dead/${dead.eventId}/retry`, { note: 'consumer fixed' });
+    expect([retried.statusCode, retried.json()]).toEqual([200, { eventId: dead.eventId }]);
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'OUTBOX_EVENT_RETRIED', subject: dead.eventId, note: 'consumer fixed' });
+    await ctx.relay.drain();
+    expect((await call('GET', '/outbox/dead')).json().events).toEqual([]);
+  });
 });

@@ -510,7 +510,7 @@ function stores(db: Queryable): BulkMailerStores {
     async lockPending(limit) {
       const found = await rows(
         db,
-        'SELECT * FROM outbox_events WHERE dispatched_at IS NULL ORDER BY seq LIMIT $1 FOR UPDATE SKIP LOCKED',
+        'SELECT * FROM outbox_events WHERE dispatched_at IS NULL AND dead_at IS NULL ORDER BY seq LIMIT $1 FOR UPDATE SKIP LOCKED',
         [limit],
       );
       return found.map((r) => ({
@@ -526,8 +526,29 @@ function stores(db: Queryable): BulkMailerStores {
     async markDispatched(eventId, at) {
       await db.query('UPDATE outbox_events SET dispatched_at = $2 WHERE event_id = $1', [eventId, at]);
     },
-    async markFailed(eventId, error) {
-      await db.query('UPDATE outbox_events SET attempts = attempts + 1, last_error = $2 WHERE event_id = $1', [eventId, error]);
+    async markFailed(eventId, error, deadAt) {
+      await db.query('UPDATE outbox_events SET attempts = attempts + 1, last_error = $2, dead_at = $3 WHERE event_id = $1', [eventId, error, deadAt ?? null]);
+    },
+    async listDead(limit) {
+      const found = await rows(
+        db,
+        'SELECT * FROM outbox_events WHERE dead_at IS NOT NULL AND dispatched_at IS NULL ORDER BY dead_at DESC, seq DESC LIMIT $1',
+        [limit],
+      );
+      return found.map((r) => ({
+        event: { eventId: r.event_id as string, type: r.type as DomainEvent['type'], occurredAt: r.occurred_at as Date, payload: r.payload as DomainEvent['payload'] },
+        attempts: r.attempts as number,
+        lastError: opt<string>(r.last_error),
+        deadAt: r.dead_at as Date,
+      }));
+    },
+    async revive(eventId) {
+      const revived = await rows(
+        db,
+        'UPDATE outbox_events SET dead_at = NULL, attempts = 0 WHERE event_id = $1 AND dead_at IS NOT NULL AND dispatched_at IS NULL RETURNING event_id',
+        [eventId],
+      );
+      return revived.length > 0;
     },
   };
 

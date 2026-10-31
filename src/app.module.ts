@@ -2,6 +2,7 @@ import { type DynamicModule, Logger, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 
 import { AdminController } from './adapters/inbound/http/admin/admin.controller';
+import { OutboxController } from './adapters/inbound/http/outbox/outbox.controller';
 import { AuthController } from './adapters/inbound/http/auth/auth.controller';
 import { BearerAuthGuard } from './adapters/inbound/http/auth/bearer-auth.guard';
 import { DeliveryController } from './adapters/inbound/http/delivery/delivery.controller';
@@ -124,10 +125,10 @@ export class AppModule {
     });
     adapters.eventBus.subscribe('RECEIPT_UNCERTAIN', (event) => delivery.followUps.onReceiptUncertain(event));
     adapters.eventBus.subscribe('WEBHOOK_RECEIVED', (event) => delivery.followUps.onWebhookReceived(event));
-    const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock);
+    const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock, { newId: adapters.newId, logger: new Logger('OutboxRelay') });
     return {
       module: AppModule,
-      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController],
+      controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController, DeliveryController, WebhooksController, AdminController, OutboxController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: ADAPTERS, useValue: adapters },

@@ -19,6 +19,8 @@ export const AlertType = {
    * the email twice.
    */
   DUPLICATE_SEND_DETECTED: 'DUPLICATE_SEND_DETECTED',
+  /** D39: a domain event could not be delivered after the maximum attempts; its consumers did not run. */
+  OUTBOX_EVENT_DEAD: 'OUTBOX_EVENT_DEAD',
 } as const;
 export type AlertType = (typeof AlertType)[keyof typeof AlertType];
 

@@ -268,6 +268,27 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect(await repo.transaction((tx) => tx.outbox.lockPending(10))).toEqual([{ event: event('ev2'), attempts: 1 }]);
       });
 
+      it('D39: dead events leave the pending window: 60 dead and 1 live → the live one is locked; they are listed and revived', async () => {
+        for (let i = 0; i < 60; i += 1) {
+          await repo.outbox.add(event(`dead-${i}`));
+          await repo.outbox.markFailed(`dead-${i}`, 'poisoned', new Date(T0.getTime() + i));
+        }
+        await repo.outbox.add(event('live'));
+        expect(await repo.transaction((tx) => tx.outbox.lockPending(50))).toEqual([{ event: event('live'), attempts: 0 }]);
+        const dead = await repo.outbox.listDead(500);
+        expect(dead).toHaveLength(60);
+        expect(dead[0]).toEqual({ event: event('dead-59'), attempts: 1, lastError: 'poisoned', deadAt: new Date(T0.getTime() + 59) });
+        expect(await repo.outbox.listDead(2)).toHaveLength(2);
+
+        expect(await repo.outbox.revive('dead-0')).toBe(true);
+        expect(await repo.outbox.revive('dead-0')).toBe(false);
+        expect(await repo.outbox.revive('live')).toBe(false);
+        expect(await repo.transaction((tx) => tx.outbox.lockPending(50))).toEqual([
+          { event: event('dead-0'), attempts: 0 },
+          { event: event('live'), attempts: 0 },
+        ]);
+      });
+
       it('discards events of a transaction that fails', async () => {
         await expect(
           repo.transaction(async (tx) => {

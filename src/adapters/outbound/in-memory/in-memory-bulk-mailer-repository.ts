@@ -39,7 +39,7 @@ interface State {
   audit: AuditEntry[];
   concepts: Map<string, Concept>;
   archiveCopyEnabled: boolean;
-  outbox: Array<{ event: DomainEvent; attempts: number; dispatchedAt?: Date; lastError?: string }>;
+  outbox: Array<{ event: DomainEvent; attempts: number; dispatchedAt?: Date; lastError?: string; deadAt?: Date }>;
 }
 
 function snapshot(state: State): State {
@@ -237,19 +237,33 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     },
     lockPending: async (limit) =>
       this.state.outbox
-        .filter((e) => !e.dispatchedAt)
+        .filter((e) => !e.dispatchedAt && !e.deadAt)
         .slice(0, limit)
         .map((e) => ({ event: e.event, attempts: e.attempts })),
     markDispatched: async (eventId, at) => {
       const entry = this.state.outbox.find((e) => e.event.eventId === eventId);
       if (entry) entry.dispatchedAt = at;
     },
-    markFailed: async (eventId, error) => {
+    markFailed: async (eventId, error, deadAt) => {
       const entry = this.state.outbox.find((e) => e.event.eventId === eventId);
       if (entry) {
         entry.attempts += 1;
         entry.lastError = error;
+        if (deadAt) entry.deadAt = deadAt;
       }
+    },
+    listDead: async (limit) =>
+      this.state.outbox
+        .filter((e) => e.deadAt && !e.dispatchedAt)
+        .sort((a, b) => (b.deadAt as Date).getTime() - (a.deadAt as Date).getTime())
+        .slice(0, limit)
+        .map((e) => ({ event: e.event, attempts: e.attempts, lastError: e.lastError, deadAt: e.deadAt as Date })),
+    revive: async (eventId) => {
+      const entry = this.state.outbox.find((e) => e.event.eventId === eventId && e.deadAt && !e.dispatchedAt);
+      if (!entry) return false;
+      entry.deadAt = undefined;
+      entry.attempts = 0;
+      return true;
     },
   };
 

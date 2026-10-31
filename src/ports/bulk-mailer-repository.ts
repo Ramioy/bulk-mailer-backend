@@ -146,13 +146,26 @@ export interface PendingEvent {
   readonly attempts: number;
 }
 
+/** An event the relay gave up on (D39): kept, with why, until the operator asks to try again. */
+export interface DeadEvent {
+  readonly event: DomainEvent;
+  readonly attempts: number;
+  readonly lastError?: string;
+  readonly deadAt: Date;
+}
+
 /** Outbox: domain events written in the same transaction as the changes they describe. */
 export interface OutboxStore {
   add(event: DomainEvent): Promise<void>;
-  /** Oldest undelivered events, locked for this transaction (other relays skip them). */
+  /** Oldest undelivered events that are not dead, locked for this transaction (other relays skip them). */
   lockPending(limit: number): Promise<PendingEvent[]>;
   markDispatched(eventId: string, at: Date): Promise<void>;
-  markFailed(eventId: string, error: string): Promise<void>;
+  /** One more failed delivery; with `deadAt`, the event is dead and no longer pending (D39). */
+  markFailed(eventId: string, error: string, deadAt?: Date): Promise<void>;
+  /** Dead events, most recently dead first. */
+  listDead(limit: number): Promise<DeadEvent[]>;
+  /** Makes a dead event pending again with its attempts reset; false when there is no dead event with that id. */
+  revive(eventId: string): Promise<boolean>;
 }
 
 export interface SettingsStore {
