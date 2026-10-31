@@ -55,7 +55,7 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### A2 — Una excepción dentro del trabajo `EXECUTE_BATCH` deja el sistema bloqueado hasta reiniciar el proceso
 
-**Estado:** corregido en `audita` (D32, commit `0dca3db`).
+**Estado:** corregido en `audita` (D32, commit `0dca3db`). La misma falla en el reenvío (una excepción dejaba el soporte `SENDING` hasta reiniciar) quedó corregida con D36 (commit `483b66e`).
 
 - **Clasificación:** adaptador de entrada (`JobRunner`) + núcleo (no hay ruta de "abortar/desbloquear").
 - **Evidencia:** `src/adapters/inbound/jobs/job-runner.ts:44-49` — el trabajo se marca `FAILED` y "no se reintenta". Nada toca la ejecución ni el lote. `refuseBatchCommand` (`receipt-dependencies.ts:36-41`) y `ResendReceipt` rechazan todo mientras `executions.running()` devuelva algo. `RecoverAfterCrash` solo corre en `onApplicationBootstrap` (`background-work.ts:33-38`).
@@ -68,6 +68,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
   4. Prueba: "una excepción en medio del lote lo detiene como `INTERNAL_ERROR` y libera el bloqueo global".
 
 ### A3 — Cuatro casos de uso hacen llamadas externas **dentro** del `SerialExecutor`, en contra de D21
+
+**Estado:** corregido en `audita` (D36, commit `483b66e`).
 
 - **Clasificación:** núcleo (orquestación de los casos de uso).
 - **Evidencia:** `upload-receipts.ts:97` (todo `run` dentro de `serial.run`, y `evaluate` → `cachedResolver` → `receipt-dependencies.ts:48` consulta Tayrona/SAP, hasta 5 s por contrato); `refresh-recipients.ts:20-31` (ídem, un contrato por soporte); `resolve-duplicate-conflict.ts:53` (consulta la fuente); **`resend-receipt.ts:48, 63, 92`: la consulta a la fuente y el envío al proveedor (hasta 30 s de timeout) ocurren con el ejecutor tomado.**
@@ -175,6 +177,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** límite total por petición (p. ej. 200 MB) en el adaptador HTTP; procesar por archivo (hash, inspección, guardado en disco temporal) antes de leer el siguiente.
 
 ### M11 — Lecturas fuera de la sección crítica y *upserts* de fila completa: "último escritor gana"
+
+**Estado:** corregido en `audita` (D37, commit `6e1c72d`).
 
 - **Evidencia:** `run-execution.ts:68,81` lee el soporte **fuera** de `write()` y lo guarda dentro con `{...receipt}`; `recordOutcome` guarda `{...sending}` leído minutos antes (tras la espera creciente); `finish` lee `batch` fuera (línea 239) y lo guarda dentro; `receipts.save` es un `INSERT … ON CONFLICT DO UPDATE` de **todas** las columnas sin versión de fila; `saveManifest` hace `ON CONFLICT (period, block, version) DO UPDATE` (`postgres-bulk-mailer-repository.ts:245`): la "nunca dos manifiestos con la misma versión" de D-paso 5 **no está protegida por la BD**, solo por el `SerialExecutor` en memoria (que M8 anula).
 - **Impacto hoy:** acotado, porque mientras un soporte está `SENDING` el carril de entrega solo escribe `PENDING_SEND` (D21) y los uploads están bloqueados. Pero es una fragilidad estructural que M8, A2 y cualquier caso de uso nuevo convierten en pérdida de datos silenciosa.

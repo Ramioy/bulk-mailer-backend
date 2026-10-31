@@ -66,7 +66,7 @@ flowchart LR
 | Port | Responsibility | Initial adapter | Future adapter |
 |---|---|---|---|
 | `Authenticator` | Sign in, issue and verify JWT (access 15 min, refresh 8 h), one role `operator` | `LocalJwtAuthenticator` (Argon2, accounts provisioned in DB) | AD / Entra ID |
-| `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit | PostgreSQL 18 | — |
+| `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit. Receipts and batches carry a row version: a save based on a stale version fails (`ConcurrentModificationError`); manifests are insert-only (`DuplicateManifestVersionError`) (D37) | PostgreSQL 18 | — |
 | `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash | Jobs table + outbox in PostgreSQL | Kafka / RabbitMQ |
 | `EventBus` | Domain and progress events | Outbox in PostgreSQL | Kafka |
 | `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)` | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
@@ -111,25 +111,31 @@ sequenceDiagram
     Op->>W: Chooses period + block, selects files from the host
     W->>API: POST /batches/{period}/{block}/receipts (Bearer JWT, multipart)
     API->>API: Verify JWT
+    Note over API,SRC: Phase (a), outside the serial executor (D36)
     loop per file
-        API->>API: NFC name + regex + catalog + length (§4 of context)
+        API->>API: sha256(content) · NFC name + regex + catalog + length (§4 of context)
         API->>INS: inspect(bytes)
-        API->>API: sha256(content)
-        API->>DB: Does the hash already exist?
+        opt Name and file valid
+            API->>SRC: GET /contratos/{contract} (once per contract)
+        end
+    end
+    Note over API,DB: Phase (b), inside the serial executor, one transaction (D36, D37)
+    API->>DB: No execution running (checked again)
+    loop per file
+        API->>DB: Does the hash already exist? (read now)
         alt Duplicate (rule §9 A1)
             API->>API: Discarded, not stored, not counted
         else New or re-evaluated
+            API->>DB: Check local suppression list
             API->>FS: save(period, block, sha256)
-            opt Name and file valid
-                API->>SRC: GET /contratos/{contract}
-                API->>DB: Check local suppression list
-            end
-            API->>DB: Receipt PENDING or INVALID (+ error type)
+            API->>DB: Receipt PENDING or INVALID (+ error type), optimistic version
         end
     end
-    API->>DB: Batch OPEN · new manifest version
+    API->>DB: Batch OPEN · new manifest version (insert-only)
     API-->>W: Summary: accepted · invalid · discarded duplicates · manifest version
 ```
+
+Every command follows the same two phases (D36): what calls an external service (contract sources, the inspector, the provider) runs outside the serial executor; inside it, one short transaction reads again the state the decision depends on, decides and writes. Refresh recipients, conflict resolution and resend work the same way; resend and the execution have three sections (record the attempt · call the provider outside · record the outcome).
 
 ## 4. Secuencia — Envío
 
