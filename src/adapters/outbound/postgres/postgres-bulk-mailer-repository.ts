@@ -26,11 +26,13 @@ import {
   type BulkMailerStores,
   type ConceptStore,
   type DeliveryEventStore,
+  type ExecutionEventStore,
   type ExecutionStore,
   type ReceiptStore,
   type SettingsStore,
   type SuppressionStore,
 } from '../../../ports/bulk-mailer-repository';
+import type { ProgressEvent, StoredProgressEvent } from '../../../ports/progress-notifier';
 import { autocommit, firstRow, inTransaction, isUniqueViolation, opt, rows, type Queryable, type Row } from './queryable';
 
 const period = (row: Row): Period => {
@@ -231,6 +233,36 @@ function stores(db: Queryable): BulkMailerStores {
       const r = await firstRow(db, 'SELECT * FROM executions WHERE finished_at IS NULL');
       return r && toExecution(r);
     },
+    async latest() {
+      const r = await firstRow(db, 'SELECT * FROM executions ORDER BY started_at DESC, execution_id DESC LIMIT 1');
+      return r && toExecution(r);
+    },
+  };
+
+  const toStoredEvent = (r: Row): StoredProgressEvent => ({
+    seq: Number(r.seq),
+    executionId: r.execution_id as string,
+    at: r.at as Date,
+    event: r.payload as ProgressEvent,
+  });
+
+  const executionEvents: ExecutionEventStore = {
+    async append(executionId, at, event) {
+      const inserted = await rows(
+        db,
+        'INSERT INTO execution_events (execution_id, at, type, payload) VALUES ($1, $2, $3, $4) RETURNING *',
+        [executionId, at, event.type, JSON.stringify(event)],
+      );
+      return toStoredEvent(inserted[0] as Row);
+    },
+    async listAfter(executionId, afterSeq) {
+      const found = await rows(db, 'SELECT * FROM execution_events WHERE execution_id = $1 AND seq > $2 ORDER BY seq', [executionId, afterSeq]);
+      return found.map(toStoredEvent);
+    },
+    async last(executionId) {
+      const r = await firstRow(db, 'SELECT * FROM execution_events WHERE execution_id = $1 ORDER BY seq DESC LIMIT 1', [executionId]);
+      return r && toStoredEvent(r);
+    },
   };
 
   const attempts: AttemptStore = {
@@ -357,13 +389,14 @@ function stores(db: Queryable): BulkMailerStores {
     },
   };
 
-  return { receipts, batches, executions, attempts, suppressions, deliveryEvents, alerts, audit, concepts, settings };
+  return { receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, alerts, audit, concepts, settings };
 }
 
 export class PostgresBulkMailerRepository implements BulkMailerRepository {
   readonly receipts: ReceiptStore;
   readonly batches: BatchStore;
   readonly executions: ExecutionStore;
+  readonly executionEvents: ExecutionEventStore;
   readonly attempts: AttemptStore;
   readonly suppressions: SuppressionStore;
   readonly deliveryEvents: DeliveryEventStore;
@@ -377,6 +410,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
     this.receipts = s.receipts;
     this.batches = s.batches;
     this.executions = s.executions;
+    this.executionEvents = s.executionEvents;
     this.attempts = s.attempts;
     this.suppressions = s.suppressions;
     this.deliveryEvents = s.deliveryEvents;

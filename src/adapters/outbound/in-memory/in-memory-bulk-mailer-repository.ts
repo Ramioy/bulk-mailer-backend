@@ -12,6 +12,7 @@ import type { Sha256 } from '../../../domain/receipt/sha256';
 import type { Attempt } from '../../../domain/sending/attempt';
 import type { Suppression } from '../../../domain/suppression/suppression';
 import { DuplicateAttemptError, type BulkMailerRepository, type BulkMailerStores } from '../../../ports/bulk-mailer-repository';
+import type { StoredProgressEvent } from '../../../ports/progress-notifier';
 
 const batchKey = (period: Period, block: Block) => `${period.toString()}|${block}`;
 
@@ -21,6 +22,7 @@ interface State {
   batches: Map<string, Batch>;
   manifests: Map<string, Manifest>;
   executions: Map<string, Execution>;
+  executionEvents: StoredProgressEvent[];
   attempts: Map<string, Attempt>;
   suppressions: Map<string, Suppression>;
   deliveryEvents: Map<string, DeliveryEvent>;
@@ -38,6 +40,7 @@ function snapshot(state: State): State {
     batches: new Map(state.batches),
     manifests: new Map(state.manifests),
     executions: new Map(state.executions),
+    executionEvents: [...state.executionEvents],
     attempts: new Map(state.attempts),
     suppressions: new Map(state.suppressions),
     deliveryEvents: new Map(state.deliveryEvents),
@@ -55,6 +58,7 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     batches: new Map(),
     manifests: new Map(),
     executions: new Map(),
+    executionEvents: [],
     attempts: new Map(),
     suppressions: new Map(),
     deliveryEvents: new Map(),
@@ -102,6 +106,17 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     },
     get: async (executionId) => this.state.executions.get(executionId),
     running: async () => [...this.state.executions.values()].find((e) => e.finishedAt === undefined),
+    latest: async () => [...this.state.executions.values()].sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0],
+  };
+
+  readonly executionEvents: BulkMailerStores['executionEvents'] = {
+    append: async (executionId, at, event) => {
+      const stored = { seq: this.state.executionEvents.length + 1, executionId, at, event };
+      this.state.executionEvents.push(stored);
+      return stored;
+    },
+    listAfter: async (executionId, afterSeq) => this.state.executionEvents.filter((e) => e.executionId === executionId && e.seq > afterSeq),
+    last: async (executionId) => this.state.executionEvents.filter((e) => e.executionId === executionId).at(-1),
   };
 
   readonly attempts: BulkMailerStores['attempts'] = {

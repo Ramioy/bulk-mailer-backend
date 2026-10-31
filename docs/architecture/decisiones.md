@@ -83,3 +83,30 @@ P1 a P4: ✅ **aprobados** el 2026-10-31.
 | `GET` | `/batches/{YYYY-MM}/{BLOCK}` | Resumen para revisión (auditado como `BATCH_REVIEWED`) |
 | `POST` | `/batches/{YYYY-MM}/{BLOCK}/refresh-recipients` | *Refresh recipients* |
 | `DELETE` | `/receipts/{sha256}` | Retirar un soporte no enviado |
+
+## Detalles de implementación del paso 6
+
+- **Comprobaciones antes de llamar al proveedor:** archivo presente, mismo hash, mismo correo que el manifiesto y dirección no suprimida. Si alguna falla, el soporte queda `FAILED` con su tipo (`FILE_MODIFIED`, `RECIPIENT_CHANGED`, `EMAIL_SUPPRESSED`, `SOURCE_UNAVAILABLE`…) y el intento queda registrado sin llamada al proveedor.
+- **Volver a enviar la misma versión tras una detención** procesa solo los soportes que siguen listos; un `SENT` nunca vuelve a entrar.
+- **El `409` después de una ejecución** muestra como `REMOVED` los soportes que ya se enviaron (dejaron de estar listos), junto a los nuevos `ADDED`. Coincide con la definición de "excluido".
+- **Contadores:** el total de una ejecución son los soportes listos al iniciarla.
+- **Bus de eventos (*outbox*):** no se implementa todavía. D11 se resuelve con la tabla `execution_events`. El puerto `EventBus` se mantiene para cuando exista un consumidor (Kafka a futuro).
+- **Texto del correo provisional** (`src/application/sending/email-template.ts`): pendiente de aprobación del área de negocio.
+- **Si el proceso cae justo entre registrar la ejecución y encolarla,** la recuperación al reiniciar la detiene como `INTERRUPTED`.
+- **Alertas:** se guardan siempre y la interfaz las lee con `GET /alerts`; `UiAlertNotifier` es el único proveedor registrado.
+
+### Endpoints
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `POST` | `/batches/{YYYY-MM}/{BLOCK}/executions` | *Send*, cuerpo `{ "manifestVersion": n }`. `202 { executionId }`; `409 MANIFEST_CHANGED` con `differences` |
+| `GET` | `/executions/current` | Ejecución en curso o la última (D10) |
+| `GET` | `/executions/{id}` | Estado de una ejecución |
+| `GET` | `/executions/{id}/events` | SSE. Reanuda con `Last-Event-ID` (D11); se cierra con `FINISHED` o con `TOKEN_EXPIRED` (D12) |
+| `GET` | `/alerts` | Alertas persistidas |
+
+### Requisitos para el cliente web
+
+- Abrir el SSE con `fetch` y `Authorization: Bearer` (D12), no con `EventSource`.
+- Al recibir `TOKEN_EXPIRED` o perder la conexión: renovar el token y reconectar enviando `Last-Event-ID` con el último `id` recibido.
+- Al iniciar sesión: consultar `GET /executions/current` y, si hay una en curso, abrir el SSE con `Last-Event-ID = lastEventSeq`.

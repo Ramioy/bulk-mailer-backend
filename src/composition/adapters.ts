@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { FakeContractSource, type FakeContract } from '../adapters/outbound/fakes/fake-contract-source';
+import { FakeEmailProvider } from '../adapters/outbound/fakes/fake-email-provider';
+import { PostgresJobQueue } from '../adapters/outbound/postgres/postgres-job-queue';
+import { SseProgressHub } from '../adapters/outbound/sse/sse-progress-hub';
+import { UiAlertNotifier } from '../adapters/outbound/ui-alert-notifier';
 import { BasicPdfInspector } from '../adapters/outbound/pdf/basic-pdf-inspector';
 import { LocalVolumeFileStore } from '../adapters/outbound/volume/local-volume-file-store';
 import { LocalJwtAuthenticator } from '../adapters/outbound/auth/local-jwt-authenticator';
@@ -11,7 +15,10 @@ import { PostgresBulkMailerRepository } from '../adapters/outbound/postgres/post
 import { EnvSecretStore } from '../adapters/outbound/system/env-secret-store';
 import { SystemClock } from '../adapters/outbound/system/system-clock';
 import type { AppConfig } from '../config/app-config';
+import type { AlertNotifier } from '../ports/alert-notifier';
 import type { Authenticator } from '../ports/authenticator';
+import type { EmailProvider } from '../ports/email-provider';
+import type { JobQueue } from '../ports/job-queue';
 import type { BulkMailerRepository } from '../ports/bulk-mailer-repository';
 import type { Clock } from '../ports/clock';
 import type { ContractSources } from '../ports/contract-source';
@@ -28,6 +35,12 @@ export interface Adapters {
   readonly fileStore: ReceiptFileStore;
   readonly fileInspector: FileInspector;
   readonly contractSources: ContractSources;
+  readonly emailProvider: EmailProvider;
+  readonly jobQueue: JobQueue;
+  /** Progress fan-out to SSE streams; also the ProgressNotifier adapter. */
+  readonly progressHub: SseProgressHub;
+  /** Registered alert providers; the interface is the only one for now. */
+  readonly alertNotifiers: readonly AlertNotifier[];
   /** Releases connections on shutdown. */
   close(): Promise<void>;
 }
@@ -73,6 +86,11 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     fileStore: new LocalVolumeFileStore(config.dataDir),
     fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates }),
     contractSources: sources,
+    // The ZeptoMail adapter arrives in step 8; until then (non-production only) emails are simulated.
+    emailProvider: new FakeEmailProvider(),
+    jobQueue: new PostgresJobQueue(dataSource, () => clock.now()),
+    progressHub: new SseProgressHub(),
+    alertNotifiers: [new UiAlertNotifier()],
     close: () => dataSource.destroy(),
   };
 }

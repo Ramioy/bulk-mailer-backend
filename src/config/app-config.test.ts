@@ -17,6 +17,11 @@ describe('loadConfig', () => {
       sessionHours: 8,
       pdfMaxIncrementalUpdates: 0,
       contractAllowLeadingZeros: false,
+      sendPauseMs: 1000,
+      incidentBaseWaitSeconds: 30,
+      incidentMaxWaitSeconds: 600,
+      jobRunnerEnabled: true,
+      jobRunnerPollMs: 1000,
     });
   });
 

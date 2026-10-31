@@ -23,6 +23,15 @@ export interface AppConfig {
   readonly contractAllowLeadingZeros: boolean;
   /** Non-production only: data for the simulated contract sources. */
   readonly fakeContractsFile?: string;
+  /** Pause between two sends; default 1000 ms. */
+  readonly sendPauseMs: number;
+  /** Growing wait after uncertain responses: base (30 s) and ceiling for Retry-After (600 s). */
+  readonly incidentBaseWaitSeconds: number;
+  readonly incidentMaxWaitSeconds: number;
+  /** Archive copy (bcc) address; needed only while the copy setting is enabled. */
+  readonly archiveCopyAddress?: string;
+  readonly jobRunnerEnabled: boolean;
+  readonly jobRunnerPollMs: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -70,6 +79,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (leadingZeros !== 'true' && leadingZeros !== 'false') problems.push('CONTRACT_ALLOW_LEADING_ZEROS must be true or false');
   const fakeContractsFile = env.FAKE_CONTRACTS_FILE ?? '';
   if (nodeEnv === 'production' && fakeContractsFile !== '') problems.push('FAKE_CONTRACTS_FILE is not allowed in production');
+  const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
+  const incidentBaseWaitSeconds = positiveInteger(env.INCIDENT_BASE_WAIT_SECONDS ?? '30', 'INCIDENT_BASE_WAIT_SECONDS', problems);
+  const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
+  const archiveCopyAddress = env.ARCHIVE_COPY_ADDRESS ?? '';
+  if (archiveCopyAddress !== '' && !/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(archiveCopyAddress)) problems.push('ARCHIVE_COPY_ADDRESS is not a valid email');
+  const runner = env.JOB_RUNNER_ENABLED ?? 'true';
+  if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
+  const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -86,12 +103,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     pdfMaxIncrementalUpdates,
     contractAllowLeadingZeros: leadingZeros === 'true',
     ...(fakeContractsFile === '' ? {} : { fakeContractsFile }),
+    sendPauseMs,
+    incidentBaseWaitSeconds,
+    incidentMaxWaitSeconds,
+    ...(archiveCopyAddress === '' ? {} : { archiveCopyAddress }),
+    jobRunnerEnabled: runner === 'true',
+    jobRunnerPollMs,
   };
 }
 
 function positiveInteger(text: string, name: string, problems: string[]): number {
   const value = Number(text);
   if (!Number.isInteger(value) || value < 1) problems.push(`${name} must be a positive integer`);
+  return value;
+}
+
+function nonNegativeInteger(text: string, name: string, problems: string[]): number {
+  const value = Number(text);
+  if (!Number.isInteger(value) || value < 0) problems.push(`${name} must be an integer >= 0`);
   return value;
 }
 

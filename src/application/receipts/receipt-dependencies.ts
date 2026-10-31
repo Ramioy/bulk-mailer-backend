@@ -27,7 +27,10 @@ export interface ReceiptDependencies {
 /** Refusals shared by every command that changes a batch. */
 export type BatchCommandError = 'PERIOD_NOT_OPERABLE' | 'EXECUTION_IN_PROGRESS';
 
-export async function refuseBatchCommand(deps: ReceiptDependencies, period: Period): Promise<BatchCommandError | undefined> {
+export async function refuseBatchCommand(
+  deps: Pick<ReceiptDependencies, 'repository' | 'clock' | 'timeZone'>,
+  period: Period,
+): Promise<BatchCommandError | undefined> {
   if (!Period.isOperable(period, deps.clock.now(), deps.timeZone)) return 'PERIOD_NOT_OPERABLE';
   // While an execution runs, upload, remove, send and resend are disabled in the whole system.
   if (await deps.repository.executions.running()) return 'EXECUTION_IN_PROGRESS';

@@ -2,6 +2,7 @@ import type { Alert } from '../domain/alert/alert';
 import type { AuditEntry } from '../domain/audit/audit';
 import type { Batch, Execution } from '../domain/batch/batch';
 import type { Manifest } from '../domain/batch/manifest';
+import type { ProgressEvent, StoredProgressEvent } from './progress-notifier';
 import type { Block } from '../domain/block/block';
 import type { Concept } from '../domain/concept/concept';
 import type { Period } from '../domain/period/period';
@@ -42,6 +43,16 @@ export interface ExecutionStore {
   save(execution: Execution): Promise<void>;
   get(executionId: string): Promise<Execution | undefined>;
   running(): Promise<Execution | undefined>;
+  /** Most recently started execution, running or not. */
+  latest(): Promise<Execution | undefined>;
+}
+
+/** Progress events of each execution, kept so a new session can catch up (D10, D11). */
+export interface ExecutionEventStore {
+  append(executionId: string, at: Date, event: ProgressEvent): Promise<StoredProgressEvent>;
+  /** Events with `seq` greater than `afterSeq`, in order. */
+  listAfter(executionId: string, afterSeq: number): Promise<StoredProgressEvent[]>;
+  last(executionId: string): Promise<StoredProgressEvent | undefined>;
 }
 
 export interface AttemptStore {
@@ -89,6 +100,7 @@ export interface BulkMailerStores {
   readonly receipts: ReceiptStore;
   readonly batches: BatchStore;
   readonly executions: ExecutionStore;
+  readonly executionEvents: ExecutionEventStore;
   readonly attempts: AttemptStore;
   readonly suppressions: SuppressionStore;
   readonly deliveryEvents: DeliveryEventStore;

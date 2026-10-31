@@ -1,4 +1,5 @@
 import type { BatchState } from '../../domain/batch/batch-state';
+import { readyManifestEntries } from '../sending/ready-entries';
 import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
 import type { DeliveryState } from '../../domain/receipt/delivery-state';
@@ -67,7 +68,8 @@ export class GetBatchSummary {
     const { repository, clock } = this.deps;
     const batch = await repository.batches.get(period, block);
     const manifest = batch && (await repository.batches.getManifest(period, block, batch.manifestVersion));
-    const inManifest = new Set(manifest?.entries.map((e) => e.sha256));
+    // In the manifest and still ready now: after an execution, SENT receipts are no longer "ready".
+    const inManifest = new Set((manifest ? await readyManifestEntries(repository, manifest) : []).map((e) => e.sha256));
     const receipts = await repository.receipts.listByBatch(period, block);
     const of = (...states: ReceiptState[]) => receipts.filter((r) => states.includes(r.state)).map(view);
 

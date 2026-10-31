@@ -29,10 +29,14 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   RECEIPT_NOT_REMOVABLE: ConflictException,
   RECEIPT_NOT_FOUND: NotFoundException,
   BATCH_NOT_FOUND: NotFoundException,
+  BATCH_NOT_EXECUTABLE: ConflictException,
+  MANIFEST_CHANGED: ConflictException,
+  NOTHING_TO_SEND: ConflictException,
+  ARCHIVE_COPY_NOT_CONFIGURED: ConflictException,
 };
 
-/** Typed use-case errors → HTTP status with `{ error }` body. */
-export function httpError(error: string): HttpException {
+/** Typed use-case errors → HTTP status with `{ error, ...details }` body. */
+export function httpError(error: string, details: object = {}): HttpException {
   const Exception = STATUS[error] ?? BadRequestException;
-  return new Exception({ error });
+  return new Exception({ error, ...details });
 }

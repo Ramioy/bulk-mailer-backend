@@ -11,6 +11,8 @@ export interface ProgressCounters {
 }
 
 export type ProgressEvent =
+  /** First event of an execution: how many receipts it will process. */
+  | { readonly type: 'STARTED'; readonly counters: ProgressCounters }
   | {
       readonly type: 'RECEIPT_PROCESSED';
       readonly sha256: Sha256;
@@ -25,7 +27,7 @@ export type ProgressEvent =
       readonly reason: string;
       readonly seconds: number;
       readonly consecutiveIncidents: number;
-      readonly nextSendAt: Date;
+      readonly nextSendAt: string;
     }
   | {
       readonly type: 'FINISHED';
@@ -34,6 +36,15 @@ export type ProgressEvent =
       readonly counters: ProgressCounters;
     };
 
+/** A progress event as stored: `seq` is its position, used as SSE `id` to resume (`Last-Event-ID`). */
+export interface StoredProgressEvent {
+  readonly seq: number;
+  readonly executionId: string;
+  readonly at: Date;
+  readonly event: ProgressEvent;
+}
+
+/** Pushes already stored events to whoever is watching live (SSE). Never throws. */
 export interface ProgressNotifier {
-  publish(executionId: string, event: ProgressEvent): void;
+  publish(event: StoredProgressEvent): void;
 }

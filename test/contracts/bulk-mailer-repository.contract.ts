@@ -65,7 +65,23 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
 
         await repo.executions.save({ ...anExecution({ executionId: 'e1' }), finishedAt: T0, result: 'COMPLETED' });
         expect(await repo.executions.running()).toBeUndefined();
-        expect(await repo.executions.tryStart(anExecution({ executionId: 'e2' }))).toBe(true);
+        expect(await repo.executions.tryStart(anExecution({ executionId: 'e2', startedAt: new Date(T0.getTime() + 1000) }))).toBe(true);
+        expect((await repo.executions.latest())?.executionId).toBe('e2');
+      });
+
+      it('keeps the progress events of each execution in order, to resume from a sequence number', async () => {
+        await repo.executions.tryStart(anExecution({ executionId: 'e1' }));
+        await repo.executions.save({ ...anExecution({ executionId: 'e1' }), finishedAt: T0, result: 'STOPPED', stopReason: 'INTERRUPTED' });
+        await repo.executions.tryStart(anExecution({ executionId: 'e2' }));
+        const waiting = { type: 'WAITING' as const, reason: 'timeout', seconds: 30, consecutiveIncidents: 1, nextSendAt: T0.toISOString() };
+        const first = await repo.executionEvents.append('e1', T0, waiting);
+        await repo.executionEvents.append('e2', T0, waiting);
+        const third = await repo.executionEvents.append('e1', T0, { ...waiting, seconds: 60 });
+        expect(third.seq).toBeGreaterThan(first.seq);
+        expect(await repo.executionEvents.listAfter('e1', first.seq)).toEqual([third]);
+        expect((await repo.executionEvents.listAfter('e1', 0)).map((e) => e.event)).toEqual([waiting, { ...waiting, seconds: 60 }]);
+        expect(await repo.executionEvents.last('e1')).toEqual(third);
+        expect(await repo.executionEvents.last('nope')).toBeUndefined();
       });
     });
 
