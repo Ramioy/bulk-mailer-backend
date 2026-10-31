@@ -53,6 +53,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### A2 — Una excepción dentro del trabajo `EXECUTE_BATCH` deja el sistema bloqueado hasta reiniciar el proceso
 
+**Estado:** corregido en `audita` (D32, commit `0dca3db`).
+
 - **Clasificación:** adaptador de entrada (`JobRunner`) + núcleo (no hay ruta de "abortar/desbloquear").
 - **Evidencia:** `src/adapters/inbound/jobs/job-runner.ts:44-49` — el trabajo se marca `FAILED` y "no se reintenta". Nada toca la ejecución ni el lote. `refuseBatchCommand` (`receipt-dependencies.ts:36-41`) y `ResendReceipt` rechazan todo mientras `executions.running()` devuelva algo. `RecoverAfterCrash` solo corre en `onApplicationBootstrap` (`background-work.ts:33-38`).
 - **Escenario:** error de disco al leer el PDF (`fileStore.read` lanza algo distinto de `ENOENT`), BD caída un instante, `DomainError` por una transición inesperada (p. ej. M11), un `undefined` no previsto. La ejecución queda `RUNNING` para siempre: **ningún operador puede cargar, retirar, enviar, reenviar ni resolver conflictos en ningún lote**, el soporte que estaba en curso queda `SENDING` (ni `UNCERTAIN` ni nada) y el SSE nunca recibe `FINISHED`. Único remedio: reiniciar el contenedor.
@@ -155,6 +157,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 - **Propuesta:** *lease* de instancia en BD (`pg_advisory_lock` al arrancar el `BackgroundWork`, o fila `instance_lease` con latido); la segunda instancia arranca sin carriles y lo registra; la recuperación solo actúa si el *lease* anterior expiró. Documentar en `deploy/` que la estrategia es *recreate*, no *rolling*.
 
 ### M9 — El apagado no es cooperativo: todo despliegue en medio de un lote produce `INTERRUPTED` + `UNCERTAIN`
+
+**Estado:** corregido en `audita` (D33, commit `b908cf9`).
 
 - **Evidencia:** `background-work.ts:55` espera `runner.stop()`, que espera el `drain()` **completo** (`job-runner.ts:60-62`); `RunExecution` no consulta ninguna señal de parada en su bucle (`run-execution.ts:52-56`). Docker envía `SIGKILL` 10 s después de `SIGTERM`.
 - **Impacto:** cada reinicio durante un lote de 300 (que con pausas de 1 s y esperas de 30-60 s dura varios minutos) deja un soporte `UNCERTAIN` y el lote detenido; es decir, el flujo de "caída" se convierte en el flujo **normal** de despliegue.

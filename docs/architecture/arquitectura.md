@@ -178,9 +178,17 @@ sequenceDiagram
         R->>FS: PurgeBatchFiles(period, block)
     else Batch error
         R->>DB: Batch STOPPED (+ reason) — files kept
+    else Unexpected exception (D32)
+        R->>DB: Receipt in progress UNCERTAIN (provider maybe called) or PENDING (not called)
+        R->>DB: Batch STOPPED (INTERNAL_ERROR) — files kept, job marked failed
+    else Shutdown signal, checked between receipts (D33)
+        R->>DB: Receipt in progress recorded first, then Batch STOPPED (INTERRUPTED)
     end
     R-->>W: Final summary, failures grouped by type
 ```
+
+- **Operator abort (D32):** `POST /executions/{executionId}/abort` `{ note, force? }` does for one execution what the recovery at startup does: its `SENDING` receipts become `UNCERTAIN` and it stops as `INTERRUPTED`. Refused (`409 EXECUTION_STILL_ACTIVE`) while the last progress event is younger than `EXECUTION_ABORT_AFTER_MINUTES` (a growing wait counts until its next send), unless forced. A run that was still alive notices it at its next write and takes no other receipt.
+- **Shutdown (D33):** the job lanes stop before the HTTP server and the database close; each waits for its job in progress at most `SHUTDOWN_TIMEOUT_SECONDS`. Past that, the recovery at the next start covers what was left `SENDING`.
 
 ## 5. Estados del soporte (envío)
 
@@ -198,8 +206,8 @@ stateDiagram-v2
     FAILED --> SENDING: new execution
     SENDING --> SENT: ZeptoMail accepts (EM_104)
     SENDING --> FAILED: error with certainty of no send (also a 400 with an unknown code, D28)
-    SENDING --> PENDING: batch stopped before calling the provider, or provider account rejection
-    SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented non-400 response, crash
+    SENDING --> PENDING: batch stopped before calling the provider, provider account rejection, or unexpected exception before calling it (D32)
+    SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented non-400 response, crash, unexpected exception after calling the provider, operator abort (D32)
     UNCERTAIN --> SENT: provider confirms (logs or webhook)
     UNCERTAIN --> FAILED: not found at the provider
     SENT --> SENDING: Resend (manual, after HARD_BOUNCE, COMPLAINT or PROCESS_FAILED, new email)
@@ -234,7 +242,7 @@ stateDiagram-v2
     OPEN --> OPEN: upload / remove (new manifest version)
     OPEN --> RUNNING: send (current version)
     RUNNING --> COMPLETED: whole manifest processed → files purged
-    RUNNING --> STOPPED: batch error (files kept)
+    RUNNING --> STOPPED: batch error, unexpected exception (INTERNAL_ERROR), shutdown or operator abort (INTERRUPTED); files kept
     STOPPED --> RUNNING: send (current version)
     STOPPED --> OPEN: upload / remove
     COMPLETED --> OPEN: upload / remove
