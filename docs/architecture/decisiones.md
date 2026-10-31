@@ -676,3 +676,14 @@ Hallazgos M8, M10 y M13 de `docs/audit/auditoria-2026-10-31.md`, corregidos en l
 2. **Reconocer solas las alertas** cuando su causa se resuelve (por ejemplo, un `UNCERTAIN_UNRESOLVED` que el barrido confirma después). Hoy el operador las reconoce (D46).
 3. **B2**: corregir el contrato de un soporte subiéndolo con el nombre arreglado produce un `DUPLICATE_CONFLICT` con nota obligatoria (consecuencia de D31). ¿Se acepta esa fricción o se permite reemplazar el nombre en la misma carga?
 
+## B2 cerrado por decisión: sin reemplazo de nombre en la misma carga (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D53 | ✅ **(B2, pregunta 3 de D50) No se reemplaza el nombre en la misma carga.** Si el operador sube con el nombre corregido un archivo que ya estaba registrado con un nombre equivocado, el sistema sigue tratándolo como `DUPLICATE_CONFLICT` (D31). Para corregirlo, el operador **retira el soporte con el nombre equivocado** (`DELETE /receipts/{sha256}`, que termina el conflicto) y **sube el archivo con el nombre corregido**. Decisión del usuario del 2026-10-31 |
+
+### Cómo quedó implementado
+
+- **Sin cambios de código.** Los dos pasos ya existen: retirar un soporte termina su conflicto (D31) y libera su contenido, y volver a subirlo con el nombre correcto lo registra de nuevo en ese lote (o lo mueve, D8). Retirar es una corrección: se permite en cualquier periodo y solo lo rechaza una ejecución en curso (D50, B3).
+- **Para el cliente web**: cuando una carga devuelve `DUPLICATE_CONFLICT`, ofrecer las dos salidas: elegir el nombre correcto (`POST /receipts/{sha256}/resolve-conflict`, con nota) o retirar el soporte y subirlo de nuevo.
+

@@ -251,7 +251,7 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 | B11 | `SweepUnconfirmed` carga **todos** los `SENT` del historial permanente cada hora | `reconciliation.ts:180` | Consulta por ventana de tiempo en el puerto (`listSentUnconfirmedBetween`) |
 | B12 | `latestAttempt` ordena por `started_at, attempt_id`; dos intentos en el mismo milisegundo (reloj fijo en pruebas, posible en producción con reenvío inmediato) pueden invertirse | `postgres-bulk-mailer-repository.ts:listByReceipt` | Ordenar por `seq` (añadir `bigserial` a `attempts`) |
 
-**Estado de §5:** corregidos en `audita` (D50): B1 y B6 (commit `078ccbc`), B3, B5, B7 y B8 (commit `722b330`), B4 (commit `612ae1e`), B9, B10, B11 y B12 (commit `e150ce1`). **B2 queda abierto** como decisión de producto (pregunta al usuario en D50).
+**Estado de §5:** corregidos en `audita` (D50): B1 y B6 (commit `078ccbc`), B3, B5, B7 y B8 (commit `722b330`), B4 (commit `612ae1e`), B9, B10, B11 y B12 (commit `e150ce1`). **B2: cerrado por decisión** (D53): no se reemplaza el nombre en la misma carga; el operador retira el soporte con el nombre equivocado (`DELETE /receipts/{sha256}`, que termina el conflicto) y sube el archivo con el nombre corregido.
 
 **Observaciones sin acción propuesta (para que consten):**
 - `ResendReceipt` no exige periodo operable (documentado) ni comprueba que el lote del soporte no esté `RUNNING` por **otra** ejecución: no hace falta, el bloqueo es global.
