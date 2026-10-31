@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Job, JobQueue, NewJob } from '../../../ports/job-queue';
+import type { Job, JobQueue, JobType, NewJob } from '../../../ports/job-queue';
 
 type Status = 'READY' | 'CLAIMED' | 'DONE' | 'FAILED';
 
@@ -16,9 +16,9 @@ export class InMemoryJobQueue implements JobQueue {
     return jobId;
   }
 
-  async claimNext(now: Date): Promise<Job | undefined> {
+  async claimNext(now: Date, types?: readonly JobType[]): Promise<Job | undefined> {
     const next = [...this.jobs.values()]
-      .filter((e) => e.status === 'READY' && e.job.runAt.getTime() <= now.getTime())
+      .filter((e) => e.status === 'READY' && e.job.runAt.getTime() <= now.getTime() && (!types || types.includes(e.job.type)))
       .sort((a, b) => a.job.runAt.getTime() - b.job.runAt.getTime() || a.seq - b.seq)[0];
     if (!next) return undefined;
     next.status = 'CLAIMED';

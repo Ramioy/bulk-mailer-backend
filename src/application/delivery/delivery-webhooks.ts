@@ -23,18 +23,18 @@ export class RecordDeliveryWebhook {
 
 /** ProcessDeliveryEvent: applies the events of a stored webhook. Safe to run twice (events are unique by id). */
 export class ProcessDeliveryEvent {
-  constructor(private readonly deps: Pick<DeliveryDependencies, 'repository' | 'clock' | 'newId'>) {}
+  constructor(private readonly deps: Pick<DeliveryDependencies, 'repository' | 'clock' | 'newId' | 'serial'>) {}
 
   async execute(webhookRequestId: string): Promise<ApplyResult[]> {
-    const { repository, clock, newId } = this.deps;
+    const { repository, clock, newId, serial } = this.deps;
     const webhook = await repository.webhooks.get(webhookRequestId);
     if (!webhook || webhook.processedAt) return [];
     const now = clock.now();
-    return repository.transaction(async (tx) => {
+    return serial.run(() => repository.transaction(async (tx) => {
       const results: ApplyResult[] = [];
       for (const event of webhook.events) results.push(await applyIncomingEvent(tx, newId, now, event));
       await tx.webhooks.markProcessed(webhookRequestId, now);
       return results;
-    });
+    }));
   }
 }

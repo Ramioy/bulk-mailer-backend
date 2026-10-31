@@ -21,6 +21,14 @@ export function jobQueueContract(name: string, create: () => Promise<JobQueue>):
       expect(await queue.claimNext(later(20))).toBeUndefined();
     });
 
+    it('claims only the given types when asked (one lane per kind of work)', async () => {
+      const batch = await queue.enqueue({ type: 'EXECUTE_BATCH', payload: {}, runAt: T0 });
+      const webhook = await queue.enqueue({ type: 'PROCESS_DELIVERY_EVENT', payload: {}, runAt: later(1) });
+      expect((await queue.claimNext(later(5), ['PROCESS_DELIVERY_EVENT', 'RECONCILE_ATTEMPT']))?.jobId).toBe(webhook);
+      expect(await queue.claimNext(later(5), ['RECONCILE_ATTEMPT'])).toBeUndefined();
+      expect((await queue.claimNext(later(5), ['EXECUTE_BATCH']))?.jobId).toBe(batch);
+    });
+
     it('does not claim a job before its runAt', async () => {
       await queue.enqueue({ type: 'RECONCILE_ATTEMPT', payload: {}, runAt: later(5 * 60_000) });
       expect(await queue.claimNext(T0)).toBeUndefined();

@@ -33,16 +33,16 @@ export class PostgresJobQueue implements JobQueue {
     return jobId;
   }
 
-  async claimNext(now: Date): Promise<Job | undefined> {
+  async claimNext(now: Date, types?: readonly JobType[]): Promise<Job | undefined> {
     const claimed = await rows(
       this.db,
       `UPDATE jobs SET status = 'CLAIMED', attempts = attempts + 1, updated_at = $1
        WHERE job_id = (
-         SELECT job_id FROM jobs WHERE status = 'READY' AND run_at <= $1
+         SELECT job_id FROM jobs WHERE status = 'READY' AND run_at <= $1 AND ($2::text[] IS NULL OR type = ANY($2))
          ORDER BY run_at, seq LIMIT 1 FOR UPDATE SKIP LOCKED
        )
        RETURNING *`,
-      [now],
+      [now, types ? [...types] : null],
     );
     return claimed[0] && toJob(claimed[0]);
   }

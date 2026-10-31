@@ -17,9 +17,16 @@ export interface ReconciliationPolicy {
   readonly sweepAfterHours: number;
   /** …and up to this many hours. Default 72. */
   readonly sweepMaxHours: number;
+  /** The sends of a running execution are checked every minute while it runs and this many minutes after (D21). */
+  readonly recentCheckTailMinutes: number;
 }
 
-export const DEFAULT_RECONCILIATION_POLICY: ReconciliationPolicy = { uncertainDelaysMinutes: [5, 15, 60], sweepAfterHours: 6, sweepMaxHours: 72 };
+export const DEFAULT_RECONCILIATION_POLICY: ReconciliationPolicy = {
+  uncertainDelaysMinutes: [5, 15, 60],
+  sweepAfterHours: 6,
+  sweepMaxHours: 72,
+  recentCheckTailMinutes: 30,
+};
 
 export interface DeliveryDependencies {
   readonly repository: BulkMailerRepository;
@@ -31,6 +38,10 @@ export interface DeliveryDependencies {
   readonly emailProvider: EmailProvider;
   readonly clock: Clock;
   readonly newId: () => string;
+  /**
+   * The same executor as the batch commands: every change to receipts runs through it in short sections, so the
+   * delivery lane, the HTTP commands and the running execution never overwrite each other (D21).
+   */
   readonly serial: SerialExecutor;
   readonly reconciliation: ReconciliationPolicy;
   readonly emailTemplate: EmailTemplate;

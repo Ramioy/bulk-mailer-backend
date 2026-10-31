@@ -4,7 +4,7 @@ import type { Adapters } from '../../../../composition/adapters';
 import type { DeliveryUseCases } from '../../../../composition/delivery-use-cases';
 import { ADAPTERS, DELIVERY_USE_CASES } from '../../../../composition/tokens';
 import type { AuthenticatedRequest } from '../auth/bearer-auth.guard';
-import { httpError, sha256Param } from '../http-params';
+import { blockParam, httpError, periodParam, sha256Param } from '../http-params';
 
 const actor = (request: AuthenticatedRequest) => request.operator?.username ?? 'unknown';
 const field = (body: unknown, name: string): unknown => (body as Record<string, unknown> | undefined)?.[name];
@@ -34,6 +34,24 @@ export class DeliveryController {
   @HttpCode(200)
   async resend(@Param('sha256') sha256: string, @Req() request: AuthenticatedRequest) {
     const result = await this.useCases.resend.execute(actor(request), sha256Param(sha256));
+    if (!result.ok) throw httpError(result.error);
+    return result.value;
+  }
+
+  /** Manual verification of one receipt in the provider logs (D22). */
+  @Post('receipts/:sha256/verify-delivery')
+  @HttpCode(200)
+  async verifyReceipt(@Param('sha256') sha256: string, @Req() request: AuthenticatedRequest) {
+    const result = await this.useCases.verify.receipt(actor(request), sha256Param(sha256));
+    if (!result.ok) throw httpError(result.error);
+    return result.value;
+  }
+
+  /** Manual verification of every receipt of a batch whose delivery can still change (D22). */
+  @Post('batches/:period/:block/verify-delivery')
+  @HttpCode(200)
+  async verifyBatch(@Param('period') period: string, @Param('block') block: string, @Req() request: AuthenticatedRequest) {
+    const result = await this.useCases.verify.batch(actor(request), periodParam(period), blockParam(block));
     if (!result.ok) throw httpError(result.error);
     return result.value;
   }

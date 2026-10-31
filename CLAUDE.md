@@ -19,7 +19,7 @@ Responde al usuario en **español**. El código, los identificadores y los mensa
 
 ## Estado al 2026-10-31
 
-Hechos y en `main`: pasos 0 a 9 (el 10 quedó cubierto por el 7), plantilla de correo configurable (D14), bus de eventos con *outbox* (D15, D16). Los pasos 7, 8 y 9 están construidos **contra simuladores** (`mocks/`, D17) porque las APIs reales y la cuenta de ZeptoMail aún no están disponibles. El paso 9 dejó supuestos por validar con la cuenta real (ver `decisiones.md`, "Paso 9") y la liberación de direcciones confirmada desde la consola (D19), porque Zoho no documenta API de supresiones.
+Hechos y en `main`: pasos 0 a 9 (el 10 quedó cubierto por el 7), plantilla de correo configurable (D14), bus de eventos con *outbox* (D15, D16). Los pasos 7, 8 y 9 están construidos **contra simuladores** (`mocks/`, D17) porque las APIs reales y la cuenta de ZeptoMail aún no están disponibles. El paso 9 dejó supuestos por validar con la cuenta real (ver `decisiones.md`, "Paso 9") y la liberación de direcciones confirmada desde la consola (D19), porque Zoho no documenta API de supresiones. Después se agregaron D20 (toda consulta exige JWT; el webhook solo recibe), D21 (seguimiento cada minuto durante el lote y 30 min después; dos carriles de trabajo) y D22 (verificación manual de entrega).
 
 **Siguiente: paso 11** (administración: catálogo de conceptos y copia `bcc`, auditados). Antes de empezar, el usuario debe dar el visto bueno.
 
@@ -49,5 +49,6 @@ pnpm install
 - `src/domain`: TypeScript puro. `src/ports`: interfaces. `src/application`: casos de uso. `src/adapters`: entrada (HTTP, trabajos) y salida. `src/app.module.ts` es el **único** punto de composición. `test/architecture.test.ts` hace cumplir las capas.
 - Errores esperados como `Result` con tipos en inglés (`SOURCE_UNAVAILABLE`, `PROVIDER_ACCOUNT`…), nunca excepciones.
 - Los adaptadores nuevos pasan las pruebas de contrato de `test/contracts/` cuando existen.
-- Los comandos que cambian un lote pasan por `SerialExecutor`; los cambios de BD van en `repository.transaction`, junto con sus eventos de dominio en `tx.outbox`.
+- Los comandos que cambian un lote pasan por `SerialExecutor`; los cambios de BD van en `repository.transaction`, junto con sus eventos de dominio en `tx.outbox`. Todo cambio sobre soportes (también desde el carril de entrega y desde la ejecución en curso) pasa por el mismo `SerialExecutor` en tramos cortos, sin llamadas externas dentro (D21).
+- Toda ruta nueva exige JWT salvo que se agregue a la lista explícita de `test/route-authentication.test.ts` con aprobación del usuario (D20).
 - Sin reintentos automáticos de envíos de correo (C2). El reintento de entrega del *outbox* es interno y no envía correos.

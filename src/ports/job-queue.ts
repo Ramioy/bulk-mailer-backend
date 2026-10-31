@@ -3,6 +3,8 @@ export const JobType = {
   RECONCILE_ATTEMPT: 'RECONCILE_ATTEMPT',
   SWEEP_UNCONFIRMED: 'SWEEP_UNCONFIRMED',
   PROCESS_DELIVERY_EVENT: 'PROCESS_DELIVERY_EVENT',
+  /** Every minute while a batch runs and shortly after (D21). */
+  CHECK_RECENT_SENDS: 'CHECK_RECENT_SENDS',
 } as const;
 export type JobType = (typeof JobType)[keyof typeof JobType];
 
@@ -25,8 +27,8 @@ export interface Job extends NewJob {
  */
 export interface JobQueue {
   enqueue(job: NewJob): Promise<string>;
-  /** Claims the oldest due job, or `undefined` when none is due. */
-  claimNext(now: Date): Promise<Job | undefined>;
+  /** Claims the oldest due job (of these types, when given), or `undefined` when none is due. */
+  claimNext(now: Date, types?: readonly JobType[]): Promise<Job | undefined>;
   complete(jobId: string): Promise<void>;
   fail(jobId: string, error: string): Promise<void>;
   /** Called at startup: releases jobs claimed by a process that died. */

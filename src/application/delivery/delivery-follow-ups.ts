@@ -31,6 +31,13 @@ export class DeliveryFollowUps {
     await this.deps.jobQueue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {} });
   }
 
+  /** Every minute: queues the recent-sends check only while there is something to follow (D21). */
+  async requestRecentCheck(active: () => Promise<boolean>): Promise<boolean> {
+    if (!(await active())) return false;
+    await this.deps.jobQueue.enqueue({ type: 'CHECK_RECENT_SENDS', payload: {} });
+    return true;
+  }
+
   private async attemptOf(event: DomainEvent): Promise<string | undefined> {
     if (typeof event.payload.attemptId === 'string') return event.payload.attemptId;
     if (typeof event.payload.sha256 !== 'string') return undefined;

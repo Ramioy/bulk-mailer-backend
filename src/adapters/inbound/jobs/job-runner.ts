@@ -8,7 +8,7 @@ export interface JobRunnerLogger {
 }
 
 /**
- * Inbound adapter that takes jobs from the queue and hands them to use cases, one at a time.
+ * Inbound adapter that takes jobs of its lane from the queue and hands them to use cases, one at a time.
  * A job that throws is marked failed and is not retried automatically.
  */
 export class JobRunner {
@@ -22,6 +22,8 @@ export class JobRunner {
     private readonly clock: Clock,
     private readonly pollMs: number,
     private readonly logger: JobRunnerLogger,
+    /** Job types of this lane; every handler's type by default. */
+    private readonly types: readonly JobType[] = Object.keys(handlers) as JobType[],
   ) {}
 
   /** Processes every due job; returns how many were processed. Tests call it directly. */
@@ -33,7 +35,7 @@ export class JobRunner {
 
   /** Claims and processes one due job; false when there was none. */
   async tick(): Promise<boolean> {
-    const job = await this.queue.claimNext(this.clock.now());
+    const job = await this.queue.claimNext(this.clock.now(), this.types);
     if (!job) return false;
     const handler = this.handlers[job.type];
     try {
@@ -67,5 +69,32 @@ export class JobRunner {
         .catch((error: unknown) => this.logger.error(`Job runner: ${String(error)}`))
         .finally(() => this.schedule());
     }, this.pollMs);
+  }
+}
+
+/**
+ * The background lanes (D21): `execution` runs one batch at a time in the whole system (C5); `delivery` runs
+ * webhooks, reconciliation, sweeps and checks one at a time, in parallel to the batch, so they do not wait for it.
+ */
+export class JobLanes {
+  constructor(readonly lanes: readonly JobRunner[]) {}
+
+  /** Processes every due job of every lane until all are idle; returns how many were processed. Tests call it. */
+  async drain(): Promise<number> {
+    let total = 0;
+    for (;;) {
+      let round = 0;
+      for (const lane of this.lanes) round += await lane.drain();
+      total += round;
+      if (round === 0) return total;
+    }
+  }
+
+  start(): void {
+    for (const lane of this.lanes) lane.start();
+  }
+
+  async stop(): Promise<void> {
+    await Promise.all(this.lanes.map((lane) => lane.stop()));
   }
 }

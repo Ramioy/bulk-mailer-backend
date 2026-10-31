@@ -12,7 +12,9 @@ import { ProviderIncidentTracker, SourceIncidentTracker } from '../../domain/sen
 import { resolveSendOutcome, type SendOutcome } from '../../domain/sending/send-outcome';
 import { BatchStopReason, SendErrorType, type ReceiptErrorType } from '../../domain/shared/error-types';
 import { raiseAlert } from '../alerts/raise-alert';
+import { applyPendingEvents } from '../delivery/apply-delivery-event';
 import { domainEvent } from '../events/domain-events';
+import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import type { DomainEventType } from '../../ports/event-bus';
 import { renderEmail } from './email-template';
 import type { ExecutionDependencies } from './execution-dependencies';
@@ -77,7 +79,7 @@ export class RunExecution {
     };
     assertTransition(receipt.state, 'SENDING');
     const sending: Receipt = { ...receipt, state: 'SENDING', attempts: receipt.attempts + 1, updatedAt: clock.now() };
-    await repository.transaction(async (tx) => {
+    await this.write(async (tx) => {
       await tx.attempts.insert(attempt);
       await tx.receipts.save(sending);
       await tx.receipts.appendHistory({ sha256: entry.sha256, at: clock.now(), event: 'SENDING', detail: `attempt ${attempt.attemptId}` });
@@ -141,6 +143,14 @@ export class RunExecution {
     return {};
   }
 
+  /**
+   * Changes to receipts go through the serial executor in short sections: the execution itself runs outside it,
+   * in parallel to the delivery lane (D21), and must not overwrite what that lane records.
+   */
+  private write(work: (tx: BulkMailerStores) => Promise<void>): Promise<void> {
+    return this.deps.serial.run(() => this.deps.repository.transaction(work));
+  }
+
   private async failBeforeSending(
     execution: Execution,
     sending: Receipt,
@@ -151,7 +161,7 @@ export class RunExecution {
   ): Promise<Step> {
     const now = this.deps.clock.now();
     const failed: Receipt = { ...sending, state: 'FAILED', errorType, errorDetail: detail, updatedAt: now };
-    await this.deps.repository.transaction(async (tx) => {
+    await this.write(async (tx) => {
       await tx.attempts.save({ ...attempt, finishedAt: now, detail: `not sent: ${errorType}${detail ? ` (${detail})` : ''}` });
       await tx.receipts.save(failed);
       await tx.receipts.appendHistory({ sha256: failed.sha256, at: now, event: 'FAILED', detail: errorType });
@@ -182,7 +192,7 @@ export class RunExecution {
       ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const } : {}),
       updatedAt: now,
     };
-    await this.deps.repository.transaction(async (tx) => {
+    await this.write(async (tx) => {
       await tx.attempts.save({
         ...attempt,
         finishedAt: now,
@@ -194,6 +204,8 @@ export class RunExecution {
       await tx.receipts.appendHistory({ sha256: updated.sha256, at: now, event: state, detail: detail ?? outcome.kind });
       const type: DomainEventType = state === 'SENT' ? 'RECEIPT_SENT' : state === 'UNCERTAIN' ? 'RECEIPT_UNCERTAIN' : 'RECEIPT_SEND_FAILED';
       await tx.outbox.add(this.receiptEvent(type, now, execution, attempt, { state, outcome: outcome.kind, errorType, providerCalled: true }));
+      // Delivery events that arrived while it was SENDING (D21).
+      if (state === 'SENT' || state === 'UNCERTAIN') await applyPendingEvents(tx, this.deps.newId, now, attempt.attemptId);
     });
     counters.record(state, errorType);
     await this.emitProcessed(execution, updated, counters);
@@ -225,7 +237,7 @@ export class RunExecution {
     const result = stopReason ? 'STOPPED' : 'COMPLETED';
     const batch = await repository.batches.get(execution.period, execution.block);
 
-    await repository.transaction(async (tx) => {
+    await this.write(async (tx) => {
       await tx.executions.save({ ...execution, finishedAt: now, result, stopReason });
       if (batch) {
         assertBatchTransition(batch.state, result);

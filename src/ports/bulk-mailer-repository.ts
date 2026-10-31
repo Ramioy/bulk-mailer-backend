@@ -88,6 +88,8 @@ export interface WebhookInbox {
   record(webhook: DeliveryWebhook): Promise<boolean>;
   get(webhookRequestId: string): Promise<DeliveryWebhook | undefined>;
   markProcessed(webhookRequestId: string, at: Date): Promise<void>;
+  /** Most recently received first. */
+  listRecent(limit: number): Promise<DeliveryWebhook[]>;
 }
 
 export interface AlertStore {

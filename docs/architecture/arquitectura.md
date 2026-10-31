@@ -17,12 +17,12 @@ flowchart LR
         direction LR
         subgraph IN["Inbound adapters"]
             REST["REST API<br/>(Bearer JWT)"]
-            WH["Webhook endpoint<br/>POST /webhooks/zeptomail<br/>(HMAC, no JWT)"]
-            RUN["Job runner<br/>(background loop)"]
+            WH["Webhook reception<br/>POST /webhooks/zeptomail<br/>(ZeptoMail credentials: HMAC + header;<br/>no operator session, returns no data — D20)"]
+            RUN["Job runner, two lanes (D21)<br/>execution: one batch at a time<br/>delivery: webhooks · reconciliation · checks"]
         end
 
         subgraph CORE["🧠 Core — domain + use cases (no infrastructure)"]
-            UC["SignIn · UploadReceipts · RemoveReceipt<br/>GetBatchSummary · ExecuteBatch · ResendReceipt<br/>ResolveUncertain · ReleaseSuppressedAddress<br/>ReconcileSends · ProcessDeliveryEvent · PurgeBatchFiles"]
+            UC["SignIn · UploadReceipts · RemoveReceipt<br/>GetBatchSummary · ExecuteBatch · ResendReceipt<br/>ResolveUncertain · ReleaseSuppressedAddress<br/>ReconcileSends · ProcessDeliveryEvent · VerifyDelivery · PurgeBatchFiles"]
             PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock"}}
         end
 
@@ -80,7 +80,7 @@ flowchart LR
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
 
-Inbound adapters: REST API (JWT), webhook endpoint (HMAC + custom `Authorization`), job runner.
+Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with two lanes (D21).
 
 ### 2.1 `BasicPdfInspector` (verificación sencilla)
 

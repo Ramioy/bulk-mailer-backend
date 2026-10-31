@@ -8,7 +8,7 @@ import { ExecutionsController } from './adapters/inbound/http/executions/executi
 import { WebhooksController } from './adapters/inbound/http/webhooks/webhooks.controller';
 import { HealthController } from './adapters/inbound/http/health.controller';
 import { BackgroundWork } from './adapters/inbound/jobs/background-work';
-import { JobRunner } from './adapters/inbound/jobs/job-runner';
+import { JobLanes, JobRunner } from './adapters/inbound/jobs/job-runner';
 import { ReceiptsController } from './adapters/inbound/http/receipts/receipts.controller';
 import { alertFromEvent } from './application/alerts/raise-alert';
 import { AuthUseCases } from './application/auth/auth-use-cases';
@@ -62,29 +62,41 @@ export class AppModule {
         uncertainDelaysMinutes: config.reconcileDelaysMinutes,
         sweepAfterHours: config.reconcileSweepAfterHours,
         sweepMaxHours: config.reconcileSweepMaxHours,
+        recentCheckTailMinutes: config.deliveryCheckTailMinutes,
       },
       emailTemplate,
       archiveCopyAddress: config.archiveCopyAddress,
     });
-    // Background work runs one job at a time, so reconciliation never races an execution over a receipt.
-    const runner = new JobRunner(
-      adapters.jobQueue,
-      {
-        EXECUTE_BATCH: (job) => executions.run.execute(String(job.payload.executionId)),
-        RECONCILE_ATTEMPT: async (job) => {
-          await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
+    // Two lanes (D21): one batch at a time in the whole system; delivery work one at a time, in parallel to it.
+    const runner = new JobLanes([
+      new JobRunner(
+        adapters.jobQueue,
+        { EXECUTE_BATCH: (job) => executions.run.execute(String(job.payload.executionId)) },
+        adapters.clock,
+        config.jobRunnerPollMs,
+        new Logger('ExecutionLane'),
+      ),
+      new JobRunner(
+        adapters.jobQueue,
+        {
+          RECONCILE_ATTEMPT: async (job) => {
+            await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
+          },
+          PROCESS_DELIVERY_EVENT: async (job) => {
+            await delivery.processWebhook.execute(String(job.payload.webhookRequestId));
+          },
+          SWEEP_UNCONFIRMED: async () => {
+            await delivery.sweep.execute();
+          },
+          CHECK_RECENT_SENDS: async () => {
+            await delivery.recentSends.execute();
+          },
         },
-        PROCESS_DELIVERY_EVENT: async (job) => {
-          await delivery.processWebhook.execute(String(job.payload.webhookRequestId));
-        },
-        SWEEP_UNCONFIRMED: async () => {
-          await delivery.sweep.execute();
-        },
-      },
-      adapters.clock,
-      config.jobRunnerPollMs,
-      new Logger('JobRunner'),
-    );
+        adapters.clock,
+        config.jobRunnerPollMs,
+        new Logger('DeliveryLane'),
+      ),
+    ]);
     // Consumers of domain events. Registered alert providers receive every raised alert.
     adapters.eventBus.subscribe('ALERT_RAISED', async (event) => {
       const alert = alertFromEvent(event.payload);

@@ -34,6 +34,7 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   NOTHING_TO_SEND: ConflictException,
   ARCHIVE_COPY_NOT_CONFIGURED: ConflictException,
   RECEIPT_NOT_UNCERTAIN: ConflictException,
+  RECEIPT_NOT_VERIFIABLE: ConflictException,
   RECEIPT_NOT_RESENDABLE: ConflictException,
   FILE_NOT_AVAILABLE: ConflictException,
   FILE_MODIFIED: ConflictException,

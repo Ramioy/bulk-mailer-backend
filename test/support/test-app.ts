@@ -15,7 +15,7 @@ import { SseProgressHub } from '../../src/adapters/outbound/sse/sse-progress-hub
 import { InProcessEventBus } from '../../src/adapters/outbound/events/in-process-event-bus';
 import type { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { UiAlertNotifier } from '../../src/adapters/outbound/ui-alert-notifier';
-import type { JobRunner } from '../../src/adapters/inbound/jobs/job-runner';
+import type { JobLanes } from '../../src/adapters/inbound/jobs/job-runner';
 import { JOB_RUNNER, OUTBOX_RELAY } from '../../src/composition/tokens';
 import { FixedClock } from '../../src/adapters/outbound/fakes/fixed-clock';
 import { InMemoryReceiptFileStore } from '../../src/adapters/outbound/in-memory/in-memory-receipt-file-store';
@@ -38,7 +38,7 @@ export interface TestContext {
   readonly lookup: FakeSendLookup;
   readonly suppressionManager: FakeSuppressionManager;
   /** The background runner is not started in tests: call `runner.drain()` to process queued jobs. */
-  readonly runner: JobRunner;
+  readonly runner: JobLanes;
   /** Not started in tests either: call `relay.drain()` to deliver outbox events. */
   readonly relay: OutboxRelay;
 }
@@ -51,7 +51,7 @@ export const WEBHOOK_SECRETS: ZeptoMailWebhookSecrets = {
   maxSkewSeconds: 300,
 };
 
-export async function startTestApp(env: Record<string, string> = {}, options: { readonly suppressionConfirmation?: 'PROVIDER_API' | 'OPERATOR'; readonly adapters?: Partial<Adapters> } = {}): Promise<TestContext> {
+export async function startTestApp(env: Record<string, string> = {}, options: { readonly suppressionConfirmation?: 'PROVIDER_API' | 'OPERATOR'; readonly adapters?: Partial<Adapters>; readonly beforeInit?: (app: NestFastifyApplication) => void } = {}): Promise<TestContext> {
   const clock = new FixedClock();
   const repository = new InMemoryBulkMailerRepository();
   const account: OperatorAccount = { operatorId: 'op-1', username: 'operador', passwordHash: await hashPassword(TEST_PASSWORD) };
@@ -91,7 +91,8 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     ...env,
   });
   const app = await createApp(config, adapters);
+  options.beforeInit?.(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { app, adapters, repository, clock, tayrona, email, lookup, suppressionManager, runner: app.get<JobRunner>(JOB_RUNNER), relay: app.get<OutboxRelay>(OUTBOX_RELAY) };
+  return { app, adapters, repository, clock, tayrona, email, lookup, suppressionManager, runner: app.get<JobLanes>(JOB_RUNNER), relay: app.get<OutboxRelay>(OUTBOX_RELAY) };
 }

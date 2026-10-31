@@ -383,3 +383,128 @@ describe('ResendReceipt (§10.4)', () => {
     expect(await fx.resend.execute('operador', receipt.sha256)).toEqual({ ok: false, error: 'EXECUTION_IN_PROGRESS' });
   });
 });
+
+describe('per-minute check of the sends of a running batch (D21)', () => {
+  it('is active while an execution runs and 30 minutes after it, and applies what the logs show', async () => {
+    const fx = deliveryFixture();
+    expect(await fx.recentSends.active()).toBe(false);
+    const { receipt, attempt } = await fx.sendOne();
+    expect(await fx.recentSends.active()).toBe(true);
+
+    expect(await fx.recentSends.execute()).toEqual({ checked: 1, updated: 0 });
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'SOFT_BOUNCE' });
+    fx.clock.advance(60_000);
+    expect(await fx.recentSends.execute()).toEqual({ checked: 1, updated: 1 });
+    expect((await fx.receipt(receipt.sha256)).deliveryState).toBe('SOFT_BOUNCE');
+
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'DELIVERED' });
+    fx.clock.advance(60_000);
+    expect(await fx.recentSends.execute()).toEqual({ checked: 1, updated: 1 });
+    expect((await fx.receipt(receipt.sha256)).deliveryState).toBe('ACCEPTED');
+    // Final: no more lookups for it.
+    expect(await fx.recentSends.execute()).toEqual({ checked: 0, updated: 0 });
+
+    fx.clock.advance(31 * 60_000);
+    expect(await fx.recentSends.active()).toBe(false);
+  });
+
+  it('is active as soon as an execution is running, and the job is queued only then', async () => {
+    const fx = deliveryFixture();
+    expect(await fx.followUps.requestRecentCheck(() => fx.recentSends.active())).toBe(false);
+    const version = await fx.uploadValid(1);
+    await fx.start.execute('operador', OCT_2026, 'CASH', version);
+    expect(await fx.followUps.requestRecentCheck(() => fx.recentSends.active())).toBe(true);
+    expect(await fx.jobs.claimNext(fx.clock.now(), ['CHECK_RECENT_SENDS'])).toMatchObject({ type: 'CHECK_RECENT_SENDS' });
+  });
+
+  it('confirms an UNCERTAIN send found in the logs but never fails it before the last scheduled lookup', async () => {
+    const fx = deliveryFixture();
+    const { receipt, attempt } = await uncertainOne(fx);
+    expect(await fx.recentSends.execute()).toEqual({ checked: 1, updated: 0 });
+    expect((await fx.receipt(receipt.sha256)).state).toBe('UNCERTAIN');
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'PROCESSED' });
+    expect(await fx.recentSends.execute()).toEqual({ checked: 1, updated: 1 });
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'UNCONFIRMED' });
+  });
+
+  it('does not raise WEBHOOKS_NOT_RECEIVED at once; after N hours it does, for a state only the logs reported', async () => {
+    const fx = deliveryFixture();
+    await fx.uploadValid(2);
+    await fx.startAndRun();
+    const [first, second] = fx.email.calls.map((c) => c.attemptId);
+    fx.lookup.setResult(first as string, { kind: 'FOUND', status: 'DELIVERED' });
+    await fx.deliver('w-2', { attemptId: second as string, recipient: 'admin@altos.com', state: 'ACCEPTED' });
+    await fx.recentSends.execute();
+    expect(await alertTypes(fx)).not.toContain('WEBHOOKS_NOT_RECEIVED');
+
+    fx.clock.advance(7 * HOUR);
+    expect(await fx.sweep.execute()).toMatchObject({ alerts: 1 });
+    expect((await fx.repository.alerts.list()).find((a) => a.type === 'WEBHOOKS_NOT_RECEIVED')?.detail).toContain('1 receipt(s)');
+    expect(await fx.sweep.execute()).toMatchObject({ alerts: 0 });
+  });
+});
+
+describe('events that arrive while the send is being recorded (D21)', () => {
+  it('keeps a webhook received while the receipt is SENDING and applies it with the outcome', async () => {
+    let fx: DeliveryFixture | undefined;
+    const results: string[][] = [];
+    const provider = {
+      send: async (email: { attemptId: string }) => {
+        // The provider accepted and its webhook arrives before we record the response.
+        results.push(await (fx as DeliveryFixture).deliver('w-early', { attemptId: email.attemptId, recipient: 'admin@altos.com', state: 'HARD_BOUNCE' }));
+        return { kind: 'ACCEPTED' as const, providerRequestId: 'req-early' };
+      },
+    };
+    fx = deliveryFixture({ execution: { emailProvider: provider } });
+    const { receipt } = await fx.sendOne();
+    expect(results).toEqual([['PENDING_SEND']]);
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'HARD_BOUNCE' });
+    expect(await fx.repository.suppressions.get('admin@altos.com')).toBeDefined();
+  });
+});
+
+describe('manual delivery verification (D22)', () => {
+  it('checks one receipt now, applies what the logs show and audits it', async () => {
+    const fx = deliveryFixture();
+    const { receipt, attempt } = await fx.sendOne();
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'HARD_BOUNCE', detail: 'hard bounce' });
+    expect(await fx.verify.receipt('operador', receipt.sha256)).toEqual({
+      ok: true,
+      value: { sha256: receipt.sha256, fileName: receipt.fileName, result: 'UPDATED', providerStatus: 'HARD_BOUNCE', state: 'SENT', deliveryState: 'HARD_BOUNCE' },
+    });
+    expect(await fx.repository.suppressions.get('admin@altos.com')).toBeDefined();
+    expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'DELIVERY_VERIFIED', actor: 'operador', subject: receipt.sha256, newValue: 'UPDATED (HARD_BOUNCE): SENT/HARD_BOUNCE' });
+    // Final state: nothing left to verify.
+    expect(await fx.verify.receipt('operador', receipt.sha256)).toEqual({ ok: false, error: 'RECEIPT_NOT_VERIFIABLE' });
+  });
+
+  it('reports a send the logs do not show yet without failing it, and an unavailable logs API', async () => {
+    const fx = deliveryFixture();
+    const { receipt } = await uncertainOne(fx);
+    expect(await fx.verify.receipt('operador', receipt.sha256)).toMatchObject({ ok: true, value: { result: 'NOT_FOUND', state: 'UNCERTAIN' } });
+    fx.lookup.setUnavailable(true);
+    expect(await fx.verify.receipt('operador', receipt.sha256)).toMatchObject({ ok: true, value: { result: 'UNAVAILABLE', detail: 'simulated outage', state: 'UNCERTAIN' } });
+  });
+
+  it('checks every pending receipt of a batch, also while another execution runs', async () => {
+    const fx = deliveryFixture();
+    await fx.uploadValid(3);
+    await fx.startAndRun();
+    const [a, b, c] = fx.email.calls.map((call) => call.attemptId as string);
+    fx.lookup.setResult(a as string, { kind: 'FOUND', status: 'DELIVERED' });
+    fx.lookup.setResult(b as string, { kind: 'FOUND', status: 'PROCESSED' });
+    await fx.deliver('w-c', { attemptId: c as string, recipient: 'admin@altos.com', state: 'ACCEPTED' });
+    // Another batch running does not block the verification.
+    const other = await fx.upload.execute('operador', OCT_2026, 'ANGLO', [{ name: fileName('Anglo', 'MULTA', '7001'), content: pdfBytes('anglo') }]);
+    expect((await fx.start.execute('operador', OCT_2026, 'ANGLO', other.ok ? other.value.manifestVersion : 0)).ok).toBe(true);
+    expect(await fx.repository.executions.running()).toBeDefined();
+
+    const result = await fx.verify.batch('operador', OCT_2026, 'CASH');
+    expect(result.ok && result.value.receipts.map((r) => [r.result, r.deliveryState])).toEqual([
+      ['UPDATED', 'ACCEPTED'],
+      ['NO_CHANGE', 'UNCONFIRMED'],
+    ]);
+    expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'DELIVERY_VERIFIED', subject: '2026-10/CASH', newValue: '2 checked, 1 updated' });
+    expect(await fx.verify.batch('operador', OCT_2026, 'DAVIVIENDA')).toEqual({ ok: false, error: 'BATCH_NOT_FOUND' });
+  });
+});

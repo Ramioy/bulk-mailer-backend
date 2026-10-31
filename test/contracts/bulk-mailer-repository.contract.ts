@@ -156,6 +156,10 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         await repo.webhooks.markProcessed('wr1', T0);
         expect(await repo.webhooks.get('wr1')).toEqual({ ...webhook, processedAt: T0 });
         expect(await repo.webhooks.get('nope')).toBeUndefined();
+
+        await repo.webhooks.record({ ...webhook, webhookRequestId: 'wr2', receivedAt: new Date(T0.getTime() + 1000) });
+        await repo.webhooks.record({ ...webhook, webhookRequestId: 'wr0', receivedAt: new Date(T0.getTime() - 1000) });
+        expect((await repo.webhooks.listRecent(2)).map((w) => w.webhookRequestId)).toEqual(['wr2', 'wr1']);
       });
     });
 

@@ -381,6 +381,9 @@ function stores(db: Queryable): BulkMailerStores {
     async markProcessed(webhookRequestId, at) {
       await db.query('UPDATE webhook_events SET processed_at = $2 WHERE webhook_request_id = $1', [webhookRequestId, at]);
     },
+    async listRecent(limit) {
+      return (await rows(db, 'SELECT * FROM webhook_events ORDER BY received_at DESC, webhook_request_id DESC LIMIT $1', [limit])).map(toWebhook);
+    },
   };
 
   const alerts: AlertStore = {

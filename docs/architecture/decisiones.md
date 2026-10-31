@@ -192,11 +192,11 @@ Lectura de las páginas de `docs/context/19-references.md` (logs, autenticación
 
 ### Cómo quedó implementado
 
-- **Webhook** `POST /webhooks/zeptomail` (público): verifica el encabezado propio (`ZEPTOMAIL_WEBHOOK_AUTH_HEADER`, por defecto `authorization`), el algoritmo, `ts` (±`WEBHOOK_MAX_SKEW_SECONDS`, 300 s) y el HMAC; si algo falla responde `401` sin leer ni guardar el contenido. Si es válido guarda el evento crudo en `webhook_events` (único por `webhook_request_id`; sin id se usa el SHA-256 del cuerpo), responde `200` y deja el evento `WEBHOOK_RECEIVED` en el *outbox*; un consumidor encola `PROCESS_DELIVERY_EVENT`.
+- **Webhook** `POST /webhooks/zeptomail` (sin sesión de operador; autenticado con las credenciales de ZeptoMail, D20): verifica el encabezado propio (`ZEPTOMAIL_WEBHOOK_AUTH_HEADER`, por defecto `authorization`), el algoritmo, `ts` (±`WEBHOOK_MAX_SKEW_SECONDS`, 300 s) y el HMAC; si algo falla responde `401` sin leer ni guardar el contenido. Si es válido guarda el evento crudo en `webhook_events` (único por `webhook_request_id`; sin id se usa el SHA-256 del cuerpo), responde `200` y deja el evento `WEBHOOK_RECEIVED` en el *outbox*; un consumidor encola `PROCESS_DELIVERY_EVENT`.
 - **`ProcessDeliveryEvent`**: cada evento se guarda en `delivery_events` (duplicados por id) y solo cambia el soporte si es del **destinatario principal** del **último intento**. El estado de entrega solo avanza; un conflicto queda en el historial como `DELIVERY_ANOMALY`. Un rebote duro o una queja agregan la dirección a la lista local y generan alerta. Un rebote o queja de la copia genera `COPY_BOUNCED` y no toca el soporte. Un evento de un `UNCERTAIN` prueba el envío: pasa a `SENT`.
 - **Conciliación**: el evento `RECEIPT_UNCERTAIN` (también el de la recuperación tras caída y el de un reenvío) programa `RECONCILE_ATTEMPT` a los 5, 15 y 60 min (`RECONCILE_DELAYS_MINUTES`). `NOT_FOUND_AT_PROVIDER` solo en la última; si la API de logs no responde, sigue `UNCERTAIN` (queda en el historial) y el operador puede resolverlo a mano. `Process failed` → `FAILED / PROVIDER_REJECTED`.
 - **Barrido** cada `RECONCILE_SWEEP_INTERVAL_MINUTES` (60): `SENT` en `UNCONFIRMED` entre `RECONCILE_SWEEP_AFTER_HOURS` (N = 6, **supuesto**: el contexto no fija N) y `RECONCILE_SWEEP_MAX_HOURS` (72). Alerta `WEBHOOKS_NOT_RECEIVED` una vez por ejecución, por pérdida probada o por silencio total.
-- Los trabajos se procesan **de a uno**: la conciliación nunca compite con una ejecución por el mismo soporte. Consecuencia: durante una ejecución larga, la conciliación y los webhooks esperan a que termine.
+- ~~Los trabajos se procesan de a uno; durante una ejecución, la conciliación y los webhooks esperan a que termine.~~ Reemplazado por los dos carriles de D21.
 - **`ZeptoMailSendLookup`**: lista por `client_reference`, toma solo la entrada del destinatario principal y la confirma con el detalle (`client_reference` exacto). Token OAuth con *refresh token* (`ZOHO_ACCOUNTS_URL`, por defecto `https://accounts.zoho.com`), en caché hasta 1 min antes de vencer; un `401` lo renueva una vez. Fuera de producción se consulta el buzón de prueba (`RedirectingSendLookup`).
 - **Fuera de producción**, el buzón de prueba no identifica al destinatario de un webhook: sin copia el evento cuenta como del principal; con copia queda registrado sin cambiar el soporte.
 - **Reenvío (A2)**: volver a subir el PDF de un `SENT` con `HARD_BOUNCE` o `COMPLAINT` y sin archivo, en el mismo lote, le devuelve el archivo sin cambiar su estado (decisión de carga `RESTORE_FILE`). `ResendReceipt` vuelve a consultar la fuente; la dirección suprimida (la misma que falló, salvo liberada, o una nueva también suprimida) se bloquea como `EMAIL_SUPPRESSED`. Un reenvío exitoso descarta el archivo; uno fallido queda `FAILED` y genera una versión de manifiesto nueva (D7c). El reenvío no exige que el periodo sea operable (los rebotes llegan días después), pero sí que no haya una ejecución en curso.
@@ -209,7 +209,7 @@ Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADD
 
 | Método | Ruta | Uso |
 |---|---|---|
-| `POST` | `/webhooks/zeptomail` | Eventos de entrega (público; HMAC + encabezado propio) |
+| `POST` | `/webhooks/zeptomail` | Recepción de eventos de entrega: sin sesión de operador, con las credenciales de ZeptoMail (HMAC + encabezado propio); no devuelve datos (D20) |
 | `POST` | `/receipts/{sha256}/resolve` | `{ "outcome": "SENT" \| "NOT_SENT", "note" }` |
 | `POST` | `/receipts/{sha256}/resend` | Reenvío (§10.4) |
 | `GET` | `/suppressions` | Lista local y modo de liberación (`OPERATOR` con D19) |
@@ -217,8 +217,35 @@ Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADD
 
 ### Configuración nueva
 
-`ZOHO_ACCOUNTS_URL`, `ZEPTOMAIL_WEBHOOK_AUTH_HEADER`, `WEBHOOK_MAX_SKEW_SECONDS`, `RECONCILE_DELAYS_MINUTES`, `RECONCILE_SWEEP_AFTER_HOURS`, `RECONCILE_SWEEP_MAX_HOURS`, `RECONCILE_SWEEP_INTERVAL_MINUTES`; secretos `ZOHO_OAUTH_CLIENT_ID`, `ZOHO_OAUTH_CLIENT_SECRET`, `ZOHO_OAUTH_REFRESH_TOKEN` (alcance `Zeptomail.email.READ`), `ZEPTOMAIL_WEBHOOK_KEY` (*Authentication Key* del Agent) y `ZEPTOMAIL_WEBHOOK_AUTHORIZATION` (valor del encabezado propio). Con `EMAIL_PROVIDER=zeptomail` son obligatorios.
+`ZOHO_ACCOUNTS_URL`, `DELIVERY_CHECK_INTERVAL_SECONDS` (60), `DELIVERY_CHECK_TAIL_MINUTES` (30), `ZEPTOMAIL_WEBHOOK_AUTH_HEADER`, `WEBHOOK_MAX_SKEW_SECONDS`, `RECONCILE_DELAYS_MINUTES`, `RECONCILE_SWEEP_AFTER_HOURS`, `RECONCILE_SWEEP_MAX_HOURS`, `RECONCILE_SWEEP_INTERVAL_MINUTES`; secretos `ZOHO_OAUTH_CLIENT_ID`, `ZOHO_OAUTH_CLIENT_SECRET`, `ZOHO_OAUTH_REFRESH_TOKEN` (alcance `Zeptomail.email.READ`), `ZEPTOMAIL_WEBHOOK_KEY` (*Authentication Key* del Agent) y `ZEPTOMAIL_WEBHOOK_AUTHORIZATION` (valor del encabezado propio). Con `EMAIL_PROVIDER=zeptomail` son obligatorios.
 
 ### Por validar con la cuenta real (se suma a §12.7)
 
 JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones.
+
+## Webhook, seguimiento por minuto y verificación manual (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D20 | ✅ **El webhook no expone datos.** `POST /webhooks/zeptomail` solo recibe; no tiene sesión de operador porque ZeptoMail no puede iniciarla, y se autentica con las credenciales de ZeptoMail (encabezado secreto + HMAC + `ts`). **Toda consulta exige el JWT del operador**, incluida la nueva `GET /webhooks/zeptomail/events` (eventos recibidos y si se procesaron). Una prueba recorre todas las rutas y falla si alguna responde sin JWT fuera de la lista explícita (salud, inicio de sesión, renovación, cierre y la recepción del webhook) |
+| D21 | ✅ **Seguimiento cada minuto mientras un lote se ejecuta y 30 minutos después** (`DELIVERY_CHECK_INTERVAL_SECONDS` = 60, `DELIVERY_CHECK_TAIL_MINUTES` = 30): se consultan en los logs los soportes de esa ejecución en `UNCONFIRMED`, `SOFT_BOUNCE` o `UNCERTAIN` hasta que llegan a un estado final. Un `UNCERTAIN` no encontrado no se marca fallido antes de la consulta de los 60 min. Para hacerlo posible, los trabajos en segundo plano tienen **dos carriles**: *ejecución* (un lote a la vez en todo el sistema, C5 sin cambios) y *entrega* (webhooks, conciliaciones, barridos y verificaciones, de a uno, en paralelo al lote). Un evento que llega mientras el soporte aún está `SENDING` se guarda y se aplica en cuanto se registra el resultado del envío. La alerta `WEBHOOKS_NOT_RECEIVED` se sigue evaluando a las N horas, para no dar falsas alarmas |
+| D22 | ✅ **Verificación manual** con JWT y auditada (`DELIVERY_VERIFIED`): `POST /receipts/{sha256}/verify-delivery` y `POST /batches/{periodo}/{bloque}/verify-delivery` consultan ZeptoMail en el momento, aplican lo que encuentran y devuelven el resultado por soporte. Funcionan también durante un lote. Como la conciliación automática, nunca marcan fallido un `UNCERTAIN` (eso queda para la última consulta programada o la resolución manual con evidencia) |
+
+### Cómo quedó implementado (D20 a D22)
+
+- **Rutas sin JWT**, únicas y verificadas por `test/route-authentication.test.ts`: `GET /health`, `POST /auth/sign-in`, `POST /auth/refresh`, `POST /auth/sign-out` y la recepción `POST /webhooks/zeptomail`. Cualquier ruta nueva queda protegida o la prueba falla.
+- **Dos carriles** (`JobLanes`): la cola filtra por tipo de trabajo (`claimNext(now, types)`). Carril de ejecución: `EXECUTE_BATCH`. Carril de entrega: `PROCESS_DELIVERY_EVENT`, `RECONCILE_ATTEMPT`, `SWEEP_UNCONFIRMED`, `CHECK_RECENT_SENDS`.
+- **Sin pisarse**: todo cambio sobre soportes pasa por el mismo `SerialExecutor` de los comandos del lote, en tramos cortos (la consulta a ZeptoMail queda fuera). La ejecución en curso también escribe por él; solo el envío al proveedor y las pausas quedan fuera.
+- **Eventos durante `SENDING`**: se guardan (`PENDING_SEND`) y se aplican al registrar el resultado del envío (también en el reenvío) o en la siguiente consulta.
+- **Seguimiento por minuto**: un ciclo cada `DELIVERY_CHECK_INTERVAL_SECONDS` encola `CHECK_RECENT_SENDS` solo si hay una ejecución en curso o terminada hace menos de `DELIVERY_CHECK_TAIL_MINUTES`.
+- **Alerta a las N horas** por ejecución: pérdida probada (algún soporte con estado conocido solo por los logs) o silencio total. Para un reenvío (sin ejecución), la pérdida probada se juzga en el barrido.
+- **Verificación manual**: respuesta por soporte con `result` (`UPDATED`, `NO_CHANGE`, `NOT_FOUND`, `UNAVAILABLE`), el estado que muestra ZeptoMail y el estado resultante. Un soporte ya en estado final responde `409 RECEIPT_NOT_VERIFIABLE`.
+- **Consulta de webhooks**: `GET /webhooks/zeptomail/events?limit=50` (máximo 500; sin el cuerpo crudo) y `GET /webhooks/zeptomail/events/{webhookRequestId}` (con el cuerpo).
+- **Costo**: cada consulta son 2 llamadas a la API de logs por soporte pendiente; los límites de uso de Zoho no están documentados (§12.7).
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `GET` | `/webhooks/zeptomail/events` | Webhooks recibidos (JWT) |
+| `GET` | `/webhooks/zeptomail/events/{webhookRequestId}` | Un webhook con su cuerpo crudo (JWT) |
+| `POST` | `/receipts/{sha256}/verify-delivery` | Verificación manual de un soporte (D22) |
+| `POST` | `/batches/{YYYY-MM}/{BLOCK}/verify-delivery` | Verificación manual de un lote (D22) |

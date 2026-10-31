@@ -3,10 +3,11 @@ import { FakeSuppressionManager } from '../../src/adapters/outbound/fakes/fake-s
 import { DeliveryFollowUps } from '../../src/application/delivery/delivery-follow-ups';
 import { DEFAULT_RECONCILIATION_POLICY, type DeliveryDependencies } from '../../src/application/delivery/delivery-dependencies';
 import { ProcessDeliveryEvent, RecordDeliveryWebhook } from '../../src/application/delivery/delivery-webhooks';
-import { ReconcileAttempt, SweepUnconfirmed } from '../../src/application/delivery/reconciliation';
+import { CheckRecentSends, ReconcileAttempt, SweepUnconfirmed } from '../../src/application/delivery/reconciliation';
 import { ReleaseSuppressedAddress } from '../../src/application/delivery/release-suppressed-address';
 import { ResendReceipt } from '../../src/application/delivery/resend-receipt';
 import { ResolveUncertain } from '../../src/application/delivery/resolve-uncertain';
+import { VerifyDelivery } from '../../src/application/delivery/verify-delivery';
 import type { IncomingDeliveryEvent } from '../../src/domain/receipt/delivery-state';
 import type { Receipt } from '../../src/domain/receipt/receipt';
 import type { Attempt } from '../../src/domain/sending/attempt';
@@ -23,9 +24,11 @@ export interface DeliveryFixture extends ExecutionFixture {
   readonly processWebhook: ProcessDeliveryEvent;
   readonly reconcile: ReconcileAttempt;
   readonly sweep: SweepUnconfirmed;
+  readonly recentSends: CheckRecentSends;
   readonly resolve: ResolveUncertain;
   readonly release: ReleaseSuppressedAddress;
   readonly resend: ResendReceipt;
+  readonly verify: VerifyDelivery;
   /** Uploads and sends one receipt; returns it with its attempt. */
   sendOne(): Promise<{ receipt: Receipt; attempt: Attempt }>;
   /** Stores a webhook with these events and processes it, as the job would. */
@@ -67,9 +70,11 @@ export function deliveryFixture(
     processWebhook,
     reconcile: new ReconcileAttempt(deliveryDeps),
     sweep: new SweepUnconfirmed(deliveryDeps),
+    recentSends: new CheckRecentSends(deliveryDeps),
     resolve: new ResolveUncertain(deliveryDeps),
     release: new ReleaseSuppressedAddress(deliveryDeps),
     resend: new ResendReceipt(deliveryDeps),
+    verify: new VerifyDelivery(deliveryDeps),
     async sendOne() {
       await fx.uploadValid(1);
       await fx.startAndRun();

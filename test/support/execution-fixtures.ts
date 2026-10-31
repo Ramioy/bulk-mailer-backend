@@ -91,7 +91,7 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
       const batch = await base.repository.batches.get(OCT_2026, 'CASH');
       const started = await start.execute('operador', OCT_2026, 'CASH', batch?.manifestVersion ?? 0);
       if (!started.ok) throw new Error(started.error.code);
-      const job = await jobs.claimNext(base.clock.now());
+      const job = await jobs.claimNext(base.clock.now(), ['EXECUTE_BATCH']);
       if (job?.type !== 'EXECUTE_BATCH') throw new Error('no execution job');
       await run.execute(job.payload.executionId as string);
       await jobs.complete(job.jobId);

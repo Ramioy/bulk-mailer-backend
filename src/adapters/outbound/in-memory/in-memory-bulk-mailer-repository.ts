@@ -168,6 +168,10 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
       const webhook = this.state.webhooks.get(webhookRequestId);
       if (webhook) this.state.webhooks.set(webhookRequestId, { ...webhook, processedAt: at });
     },
+    listRecent: async (limit) =>
+      [...this.state.webhooks.values()]
+        .sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime() || b.webhookRequestId.localeCompare(a.webhookRequestId))
+        .slice(0, limit),
   };
 
   readonly deliveryEvents: BulkMailerStores['deliveryEvents'] = {

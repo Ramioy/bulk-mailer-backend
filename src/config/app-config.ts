@@ -51,6 +51,9 @@ export interface AppConfig {
   readonly reconcileSweepMaxHours: number;
   /** How often the sweep runs; default 60 minutes. */
   readonly reconcileSweepIntervalMinutes: number;
+  /** While a batch runs and `deliveryCheckTailMinutes` after, its sends are checked this often; default 60 s (D21). */
+  readonly deliveryCheckIntervalSeconds: number;
+  readonly deliveryCheckTailMinutes: number;
   /** Outside production every email goes to this test mailbox (§15). Required with ZeptoMail outside production. */
   readonly redirectAllEmailTo?: string;
   /** Pause between two sends; default 1000 ms. */
@@ -142,6 +145,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const reconcileSweepMaxHours = positiveInteger(env.RECONCILE_SWEEP_MAX_HOURS ?? '72', 'RECONCILE_SWEEP_MAX_HOURS', problems);
   if (reconcileSweepMaxHours <= reconcileSweepAfterHours) problems.push('RECONCILE_SWEEP_MAX_HOURS must be greater than RECONCILE_SWEEP_AFTER_HOURS');
   const reconcileSweepIntervalMinutes = positiveInteger(env.RECONCILE_SWEEP_INTERVAL_MINUTES ?? '60', 'RECONCILE_SWEEP_INTERVAL_MINUTES', problems);
+  const deliveryCheckIntervalSeconds = positiveInteger(env.DELIVERY_CHECK_INTERVAL_SECONDS ?? '60', 'DELIVERY_CHECK_INTERVAL_SECONDS', problems);
+  const deliveryCheckTailMinutes = nonNegativeInteger(env.DELIVERY_CHECK_TAIL_MINUTES ?? '30', 'DELIVERY_CHECK_TAIL_MINUTES', problems);
   const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
   const incidentBaseWaitSeconds = positiveInteger(env.INCIDENT_BASE_WAIT_SECONDS ?? '30', 'INCIDENT_BASE_WAIT_SECONDS', problems);
   const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
@@ -191,6 +196,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reconcileSweepAfterHours,
     reconcileSweepMaxHours,
     reconcileSweepIntervalMinutes,
+    deliveryCheckIntervalSeconds,
+    deliveryCheckTailMinutes,
     sendPauseMs,
     incidentBaseWaitSeconds,
     incidentMaxWaitSeconds,

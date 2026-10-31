@@ -108,6 +108,28 @@ describe('delivery over HTTP', () => {
     const suppressions = (await call('GET', '/suppressions', token)).json();
     expect(suppressions).toMatchObject({ release: 'PROVIDER_API', addresses: [{ email: 'admin@altos.com', reason: 'HARD_BOUNCE' }] });
     expect((await call('GET', '/alerts', token)).json().map((a: { type: string }) => a.type)).toContain('HARD_BOUNCE');
+
+    // D20: what was received can be queried only with the operator's token.
+    expect((await ctx.app.inject({ method: 'GET', url: '/webhooks/zeptomail/events' })).statusCode).toBe(401);
+    const events = (await call('GET', '/webhooks/zeptomail/events', token)).json();
+    expect(events).toEqual([expect.objectContaining({ webhookRequestId: 'wr-1', provider: 'ZEPTOMAIL', events: [expect.objectContaining({ state: 'HARD_BOUNCE' })] })]);
+    expect(events[0]).not.toHaveProperty('body');
+    expect((await call('GET', '/webhooks/zeptomail/events/wr-1', token)).json()).toMatchObject({ webhookRequestId: 'wr-1', body: hardBounce(attemptId), processedAt: expect.any(String) });
+    expect((await call('GET', '/webhooks/zeptomail/events/nope', token)).statusCode).toBe(404);
+  });
+
+  it('manual verification over HTTP (D22)', async () => {
+    ctx = await startTestApp({ SEND_PAUSE_MS: '0' });
+    const token = await signIn();
+    const receipt = await sendOne(token);
+    ctx.lookup.setResult(ctx.email.calls[0]?.attemptId as string, { kind: 'FOUND', status: 'DELIVERED' });
+    expect((await ctx.app.inject({ method: 'POST', url: `/receipts/${receipt?.sha256}/verify-delivery` })).statusCode).toBe(401);
+    expect((await call('POST', '/batches/2026-10/CASH/verify-delivery', token)).json()).toEqual({
+      receipts: [expect.objectContaining({ sha256: receipt?.sha256, result: 'UPDATED', providerStatus: 'DELIVERED', state: 'SENT', deliveryState: 'ACCEPTED' })],
+    });
+    const again = await call('POST', `/receipts/${receipt?.sha256}/verify-delivery`, token);
+    expect([again.statusCode, again.json()]).toEqual([409, { error: 'RECEIPT_NOT_VERIFIABLE' }]);
+    expect((await call('POST', '/batches/2026-10/ANGLO/verify-delivery', token)).statusCode).toBe(404);
   });
 
   it('resend, release and manual resolution endpoints', async () => {

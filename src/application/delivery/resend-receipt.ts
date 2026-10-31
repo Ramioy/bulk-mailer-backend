@@ -11,6 +11,7 @@ import { RecipientErrorType, type RecipientErrorType as RecipientError } from '.
 import { err, ok, type Result } from '../../domain/shared/result';
 import type { DomainEventType } from '../../ports/event-bus';
 import { domainEvent } from '../events/domain-events';
+import { applyPendingEvents } from './apply-delivery-event';
 import { publishNextManifest } from '../receipts/receipt-dependencies';
 import { renderEmail } from '../sending/email-template';
 import type { DeliveryDependencies } from './delivery-dependencies';
@@ -135,6 +136,7 @@ export class ResendReceipt {
       await tx.outbox.add(
         domainEvent(newId, type, now, { sha256, attemptId: attempt.attemptId, attemptKind: 'RESEND', state, outcome: outcome.kind, errorType: resolution.errorType, providerCalled: true }),
       );
+      if (state === 'SENT' || state === 'UNCERTAIN') await applyPendingEvents(tx, newId, now, attempt.attemptId);
     });
     // Files are kept only until the receipt is processed (D4).
     if (state === 'SENT') await fileStore.delete({ period: receipt.period, block: receipt.block, sha256 });

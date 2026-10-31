@@ -13,6 +13,8 @@ export type ApplyResult =
   | 'UNKNOWN_ATTEMPT'
   /** Recorded without changing the receipt (copy, unknown recipient, older attempt, no change). */
   | 'RECORDED'
+  /** The send is still being recorded (SENDING): applied as soon as its outcome is (D21). */
+  | 'PENDING_SEND'
   | 'APPLIED';
 
 /** The most recent attempt of the receipt: only its events can change the receipt. */
@@ -66,6 +68,24 @@ export async function applyIncomingEvent(tx: BulkMailerStores, newId: () => stri
   }
   if (role === 'UNKNOWN') return 'RECORDED';
 
+  return applyToReceipt(tx, newId, now, attempt, event);
+}
+
+/**
+ * Events of the primary recipient recorded while the send was still SENDING (D21): applied once the outcome is
+ * recorded. Also used by the recent-sends check for a receipt still UNCERTAIN or UNCONFIRMED with recorded events.
+ */
+export async function applyPendingEvents(tx: BulkMailerStores, newId: () => string, now: Date, attemptId: string): Promise<number> {
+  const attempt = await tx.attempts.get(attemptId);
+  if (!attempt) return 0;
+  let applied = 0;
+  for (const event of await tx.deliveryEvents.listByAttempt(attemptId)) {
+    if (event.isPrimaryRecipient && (await applyToReceipt(tx, newId, now, attempt, event)) === 'APPLIED') applied += 1;
+  }
+  return applied;
+}
+
+async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Date, attempt: Attempt, event: DeliveryEvent): Promise<ApplyResult> {
   let receipt = await tx.receipts.get(attempt.sha256);
   if (!receipt) return 'RECORDED';
   if ((await latestAttempt(tx, receipt))?.attemptId !== attempt.attemptId) {
@@ -81,6 +101,7 @@ export async function applyIncomingEvent(tx: BulkMailerStores, newId: () => stri
     });
   }
 
+  if (receipt.state === 'SENDING') return 'PENDING_SEND';
   if (receipt.state === 'UNCERTAIN') {
     receipt = await confirmSent(tx, newId, now, receipt, attempt, event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs');
   } else if (receipt.state !== 'SENT') {

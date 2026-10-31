@@ -27,6 +27,8 @@ describe('loadConfig', () => {
       reconcileSweepAfterHours: 6,
       reconcileSweepMaxHours: 72,
       reconcileSweepIntervalMinutes: 60,
+      deliveryCheckIntervalSeconds: 60,
+      deliveryCheckTailMinutes: 30,
       sendPauseMs: 1000,
       incidentBaseWaitSeconds: 30,
       incidentMaxWaitSeconds: 600,
