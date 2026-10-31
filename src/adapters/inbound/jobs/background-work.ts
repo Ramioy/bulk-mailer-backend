@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { type BeforeApplicationShutdown, Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 
 import type { Adapters } from '../../../composition/adapters';
 import type { DeliveryUseCases } from '../../../composition/delivery-use-cases';
@@ -12,9 +12,10 @@ import type { JobLanes } from './job-runner';
 /**
  * At startup: crash recovery first, then release abandoned jobs, then start taking jobs. The outbox relay and the
  * periodic sweep of unconfirmed sends (queued as a job, so it runs between other jobs) run in their own loops.
+ * On shutdown the job lanes stop first (cooperatively, D33), then the loops.
  */
 @Injectable()
-export class BackgroundWork implements OnApplicationBootstrap, OnApplicationShutdown {
+export class BackgroundWork implements OnApplicationBootstrap, BeforeApplicationShutdown {
   private readonly logger = new Logger('BackgroundWork');
   private outboxLoop: PollingLoop | undefined;
   private sweepLoop: PollingLoop | undefined;
@@ -51,10 +52,13 @@ export class BackgroundWork implements OnApplicationBootstrap, OnApplicationShut
     this.recentLoop.start();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  /**
+   * Before, not on, application shutdown: Nest closes the HTTP server, and with it the database (the `onClose` hook of
+   * `bootstrap.ts`), between the two hooks. The execution in progress needs the database to record its last receipt
+   * and stop as INTERRUPTED (D33). The outbox loop keeps relaying while the lanes stop.
+   */
+  async beforeApplicationShutdown(): Promise<void> {
     await this.runner.stop();
-    await this.outboxLoop?.stop();
-    await this.sweepLoop?.stop();
-    await this.recentLoop?.stop();
+    await Promise.all([this.outboxLoop?.stop(), this.sweepLoop?.stop(), this.recentLoop?.stop()]);
   }
 }

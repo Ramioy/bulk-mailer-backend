@@ -43,7 +43,8 @@ const MAX_CAUSE_LENGTH = 300;
  * growing waits after uncertain responses and a stop after three consecutive incidents.
  * There are no automatic retries: a receipt is sent at most once per execution.
  *
- * An unexpected exception stops the execution as INTERNAL_ERROR instead of leaving the global lock taken (D32).
+ * An unexpected exception stops the execution as INTERNAL_ERROR instead of leaving the global lock taken (D32);
+ * an aborted `signal` (shutdown) lets the receipt in progress finish and stops it as INTERRUPTED (D33).
  */
 export class RunExecution {
   private readonly progress: ProgressRecorder;
@@ -52,7 +53,7 @@ export class RunExecution {
     this.progress = new ProgressRecorder(deps.repository, deps.progress, deps.clock);
   }
 
-  async execute(executionId: string): Promise<void> {
+  async execute(executionId: string, signal?: AbortSignal): Promise<void> {
     const { repository } = this.deps;
     const execution = await repository.executions.get(executionId);
     // Already finished (stopped as INTERRUPTED by crash recovery or aborted by the operator): nothing to do.
@@ -70,9 +71,11 @@ export class RunExecution {
       const sourceIncidents = new SourceIncidentTracker(this.deps.incidentPolicy.stopAfter);
 
       for (const [index, entry] of entries.entries()) {
-        if (index > 0) await this.deps.clock.sleep(this.deps.pauseBetweenSendsMs);
+        if (index > 0 && !signal?.aborted) await this.deps.clock.sleep(this.deps.pauseBetweenSendsMs, signal);
+        // Shutdown (D33): checked only between receipts, so the one in progress always gets its outcome recorded.
+        if (signal?.aborted) return await this.finish(execution, counters, BatchStopReason.INTERRUPTED);
         inFlight = { providerCalled: false };
-        const step = await this.sendOne(execution, entry, counters, providerIncidents, sourceIncidents, inFlight);
+        const step = await this.sendOne(execution, entry, counters, providerIncidents, sourceIncidents, inFlight, signal);
         if (step.abandoned) return;
         if (step.stop) return await this.finish(execution, counters, step.stop);
       }
@@ -141,6 +144,7 @@ export class RunExecution {
     providerIncidents: ProviderIncidentTracker,
     sourceIncidents: SourceIncidentTracker,
     inFlight: InFlight,
+    signal?: AbortSignal,
   ): Promise<Step> {
     const { repository, fileStore, contractSources, emailProvider, clock, newId } = this.deps;
     const receipt = (await repository.receipts.get(entry.sha256)) as Receipt;
@@ -217,7 +221,8 @@ export class RunExecution {
 
     const decision = providerIncidents.register(outcome);
     if (decision.action === 'STOP') return { stop: decision.reason };
-    if (decision.action === 'WAIT') {
+    // On shutdown no growing wait starts: the loop stops the execution as INTERRUPTED right after (D33).
+    if (decision.action === 'WAIT' && !signal?.aborted) {
       // Reported before the wait starts, so the operator knows the batch is waiting, not stuck.
       const nextSendAt = new Date(clock.now().getTime() + decision.seconds * 1000);
       await this.progress.emit(execution.executionId, {
@@ -227,7 +232,7 @@ export class RunExecution {
         consecutiveIncidents: decision.consecutiveIncidents,
         nextSendAt: nextSendAt.toISOString(),
       });
-      await clock.sleep(decision.seconds * 1000);
+      await clock.sleep(decision.seconds * 1000, signal);
     }
     return {};
   }

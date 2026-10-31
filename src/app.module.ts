@@ -71,13 +71,16 @@ export class AppModule {
       archiveCopyAddress: config.archiveCopyAddress,
     });
     // Two lanes (D21): one batch at a time in the whole system; delivery work one at a time, in parallel to it.
+    // On shutdown each lane signals its job and waits for it at most `shutdownTimeoutSeconds` (D33).
+    const laneOptions = { stopTimeoutMs: config.shutdownTimeoutSeconds * 1000 };
     const runner = new JobLanes([
       new JobRunner(
         adapters.jobQueue,
-        { EXECUTE_BATCH: (job) => executions.run.execute(String(job.payload.executionId)) },
+        { EXECUTE_BATCH: (job, signal) => executions.run.execute(String(job.payload.executionId), signal) },
         adapters.clock,
         config.jobRunnerPollMs,
         new Logger('ExecutionLane'),
+        laneOptions,
       ),
       new JobRunner(
         adapters.jobQueue,
@@ -98,6 +101,7 @@ export class AppModule {
         adapters.clock,
         config.jobRunnerPollMs,
         new Logger('DeliveryLane'),
+        laneOptions,
       ),
     ]);
     // Consumers of domain events. Registered alert providers receive every raised alert.

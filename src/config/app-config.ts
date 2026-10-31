@@ -69,6 +69,8 @@ export interface AppConfig {
   readonly jobRunnerPollMs: number;
   /** The operator may abort a running execution after this many minutes without progress, or by forcing it; default 10 (D32). */
   readonly executionAbortAfterMinutes: number;
+  /** On shutdown, how long the job lanes may take to finish the job in progress; default 25 s (D33). */
+  readonly shutdownTimeoutSeconds: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -159,6 +161,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
   const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
   const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
+  const shutdownTimeoutSeconds = positiveInteger(env.SHUTDOWN_TIMEOUT_SECONDS ?? '25', 'SHUTDOWN_TIMEOUT_SECONDS', problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -209,6 +212,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,
     executionAbortAfterMinutes,
+    shutdownTimeoutSeconds,
   };
 }
 

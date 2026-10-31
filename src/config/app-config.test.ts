@@ -35,13 +35,18 @@ describe('loadConfig', () => {
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,
       executionAbortAfterMinutes: 10,
+      shutdownTimeoutSeconds: 25,
     });
   });
 
-  it('D32: the abort threshold is a positive integer', () => {
-    expect(loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '3' })).toMatchObject({ executionAbortAfterMinutes: 3 });
+  it('D32/D33: the abort threshold and the shutdown timeout are positive integers', () => {
+    expect(loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '3', SHUTDOWN_TIMEOUT_SECONDS: '40' })).toMatchObject({
+      executionAbortAfterMinutes: 3,
+      shutdownTimeoutSeconds: 40,
+    });
     expect(() => loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '0' })).toThrow('EXECUTION_ABORT_AFTER_MINUTES must be a positive integer');
     expect(() => loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '2.5' })).toThrow('EXECUTION_ABORT_AFTER_MINUTES must be a positive integer');
+    expect(() => loadConfig({ ...REQUIRED, SHUTDOWN_TIMEOUT_SECONDS: '-1' })).toThrow('SHUTDOWN_TIMEOUT_SECONDS must be a positive integer');
   });
 
   it('requires TLS in production, with both files', () => {

@@ -310,3 +310,65 @@ describe('D32: operator abort of an execution that stopped making progress', () 
     expect((await fx.repository.receipts.history(first?.sha256 as never)).at(-1)?.event).toBe('OUTCOME_NOT_APPLIED');
   });
 });
+
+describe('D33: cooperative stop on shutdown', () => {
+  it('finishes the receipt in progress, then stops as INTERRUPTED with nothing left SENDING or UNCERTAIN', async () => {
+    const fx = executionFixture();
+    await fx.uploadValid(4);
+    const shutdown = new AbortController();
+    // SIGTERM arrives while the second email is with the provider.
+    fx.email.respondWith(ACCEPTED, () => {
+      shutdown.abort();
+      return ACCEPTED;
+    });
+    const executionId = await startExecution(fx);
+    await fx.run.execute(executionId, shutdown.signal);
+
+    expect(fx.email.calls).toHaveLength(2);
+    expect(await states(fx)).toEqual(['SENT', 'SENT', 'PENDING', 'PENDING']);
+    expect(fx.clock.sleeps).toEqual([1000]);
+    expect(await fx.repository.executions.get(executionId)).toMatchObject({ result: 'STOPPED', stopReason: 'INTERRUPTED' });
+    expect(await fx.repository.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'STOPPED', stopReason: 'INTERRUPTED' });
+    expect(eventTypes(fx)).toEqual(['STARTED', 'RECEIPT_PROCESSED', 'RECEIPT_PROCESSED', 'FINISHED']);
+    expect(fx.progress.events.at(-1)?.event).toMatchObject({ stopReason: 'INTERRUPTED', counters: { total: 4, processed: 2 } });
+    const events = await published(fx, 'EXECUTION_FINISHED');
+    expect(events.map((e) => e.payload.stopReason)).toEqual(['INTERRUPTED']);
+    expect(fx.alerts.alerts).toMatchObject([{ type: 'BATCH_STOPPED', detail: '2026-10/CASH stopped: INTERRUPTED' }]);
+
+    // Nothing for the recovery at the next start to do; the next send continues where it stopped.
+    expect(await fx.recover.execute()).toEqual({ uncertain: 0 });
+    await fx.startAndRun();
+    expect(await states(fx)).toEqual(['SENT', 'SENT', 'SENT', 'SENT']);
+  });
+
+  it('does not start a growing wait once the shutdown was requested', async () => {
+    const fx = executionFixture();
+    await fx.uploadValid(3);
+    const shutdown = new AbortController();
+    fx.email.respondWith(() => {
+      shutdown.abort();
+      return { kind: 'UNCERTAIN', detail: 'HTTP 503' };
+    });
+    const executionId = await startExecution(fx);
+    await fx.run.execute(executionId, shutdown.signal);
+
+    // UNCERTAIN is the provider's answer, not the stop's doing.
+    expect(await states(fx)).toEqual(['UNCERTAIN', 'PENDING', 'PENDING']);
+    expect(fx.clock.sleeps).toEqual([]);
+    expect(eventTypes(fx)).toEqual(['STARTED', 'RECEIPT_PROCESSED', 'FINISHED']);
+    expect(await fx.repository.executions.get(executionId)).toMatchObject({ stopReason: 'INTERRUPTED' });
+  });
+
+  it('a shutdown after the last receipt still completes the batch', async () => {
+    const fx = executionFixture();
+    await fx.uploadValid(1);
+    const shutdown = new AbortController();
+    fx.email.respondWith(() => {
+      shutdown.abort();
+      return ACCEPTED;
+    });
+    const executionId = await startExecution(fx);
+    await fx.run.execute(executionId, shutdown.signal);
+    expect(await fx.repository.executions.get(executionId)).toMatchObject({ result: 'COMPLETED' });
+  });
+});
