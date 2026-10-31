@@ -60,6 +60,18 @@ INSERT INTO operator_accounts (operator_id, username, password_hash) VALUES ('op
 
 Secrets: `JWT_SIGNING_KEY` (base64, ≥ 32 bytes). TLS: `TLS_CERT_FILE` and `TLS_KEY_FILE`, required in production.
 
+## Simulated external APIs
+
+For tests and local development (decision D17):
+
+```bash
+PORT=4001 MOCK_TOKEN=dev-token pnpm mock:contracts   # Tayrona/SAP contracts API (§6.1), data in deploy/dev/mock-contracts-api.json
+PORT=4002 MOCK_API_KEY=dev-key pnpm mock:zeptomail   # ZeptoMail send API; force answers with +zm-<scenario> in the recipient
+```
+
+Point the app at them with `CONTRACT_SOURCE=http`, `TAYRONA_API_URL`, `SAP_API_URL`, `EMAIL_PROVIDER=zeptomail`,
+`ZEPTOMAIL_BASE_URL=http://127.0.0.1:4002/v1.1` and `NONPROD_REDIRECT_TO`. Scenarios are listed at the top of each file in `mocks/`.
+
 ## Checks
 
 ```bash

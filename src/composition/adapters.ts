@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
+import { HttpContractSource } from '../adapters/outbound/contracts/http-contract-source';
 import { FakeContractSource, type FakeContract } from '../adapters/outbound/fakes/fake-contract-source';
 import { FakeEmailProvider } from '../adapters/outbound/fakes/fake-email-provider';
+import { RedirectingEmailProvider } from '../adapters/outbound/zeptomail/redirecting-email-provider';
+import { ZeptoMailEmailProvider } from '../adapters/outbound/zeptomail/zeptomail-email-provider';
 import { InProcessEventBus } from '../adapters/outbound/events/in-process-event-bus';
 import { PostgresJobQueue } from '../adapters/outbound/postgres/postgres-job-queue';
 import { SseProgressHub } from '../adapters/outbound/sse/sse-progress-hub';
@@ -67,14 +70,37 @@ export async function loadSigningKey(secrets: SecretStore): Promise<Buffer> {
   return key;
 }
 
+export const ZEPTOMAIL_API_KEY_SECRET = 'ZEPTOMAIL_API_KEY';
+
+/** ZeptoMail (always wrapped by the test-mailbox redirect outside production) or, outside production, simulated. */
+async function emailProvider(config: AppConfig, secrets: SecretStore): Promise<EmailProvider> {
+  const provider: EmailProvider =
+    config.emailProvider === 'zeptomail' && config.zeptomail
+      ? new ZeptoMailEmailProvider({
+          baseUrl: config.zeptomail.baseUrl,
+          apiKey: await secrets.get(ZEPTOMAIL_API_KEY_SECRET),
+          from: { address: config.zeptomail.fromAddress, ...(config.zeptomail.fromName ? { name: config.zeptomail.fromName } : {}) },
+          bounceAddress: config.zeptomail.bounceAddress,
+          timeoutMs: config.zeptomail.timeoutMs,
+        })
+      : new FakeEmailProvider();
+  return config.redirectAllEmailTo ? new RedirectingEmailProvider(provider, config.redirectAllEmailTo) : provider;
+}
+
+export const TAYRONA_API_TOKEN_SECRET = 'TAYRONA_API_TOKEN';
+export const SAP_API_TOKEN_SECRET = 'SAP_API_TOKEN';
+
 /**
- * Simulated contract sources, only outside production, optionally loaded from a JSON file
+ * Tayrona and SAP contracts APIs over HTTP, or (outside production) simulated sources optionally loaded from
  * `{ "TAYRONA": { "<contract>": { complexName, email, active? } }, "SAP": { … } }`.
- * The real Tayrona and SAP adapters arrive in steps 7 and 10.
  */
-function contractSources(config: AppConfig): ContractSources {
-  if (config.nodeEnv === 'production') {
-    throw new Error('The Tayrona and SAP contract adapters are not available yet (implementation plan, steps 7 and 10)');
+async function contractSources(config: AppConfig, secrets: SecretStore): Promise<ContractSources> {
+  if (config.contractSource === 'http') {
+    const timeoutMs = config.contractApiTimeoutMs;
+    return {
+      TAYRONA: new HttpContractSource({ baseUrl: config.tayronaApiUrl as string, token: await secrets.get(TAYRONA_API_TOKEN_SECRET), timeoutMs }),
+      SAP: new HttpContractSource({ baseUrl: config.sapApiUrl as string, token: await secrets.get(SAP_API_TOKEN_SECRET), timeoutMs }),
+    };
   }
   const data = config.fakeContractsFile
     ? (JSON.parse(readFileSync(config.fakeContractsFile, 'utf8')) as Partial<Record<'TAYRONA' | 'SAP', Record<string, FakeContract>>>)
@@ -83,7 +109,7 @@ function contractSources(config: AppConfig): ContractSources {
 }
 
 export async function buildAdapters(config: AppConfig, secrets: SecretStore = new EnvSecretStore()): Promise<Adapters> {
-  const sources = contractSources(config);
+  const sources = await contractSources(config, secrets);
   const clock = new SystemClock();
   const dataSource = await createDataSource(config.databaseUrl).initialize();
   const authenticator = new LocalJwtAuthenticator(new PostgresOperatorAccountStore(dataSource), clock, {
@@ -99,8 +125,7 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     fileStore: new LocalVolumeFileStore(config.dataDir),
     fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates }),
     contractSources: sources,
-    // The ZeptoMail adapter arrives in step 8; until then (non-production only) emails are simulated.
-    emailProvider: new FakeEmailProvider(),
+    emailProvider: await emailProvider(config, secrets),
     jobQueue: new PostgresJobQueue(dataSource, () => clock.now()),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),

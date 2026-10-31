@@ -21,7 +21,9 @@
     "db:down": "docker compose down",
     "test:db": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run",
     "db:migrate": "pnpm build && node --env-file-if-exists=.env dist/adapters/outbound/postgres/migrate.js",
-    "hash-password": "pnpm -s build && node dist/adapters/outbound/auth/hash-password.js"
+    "hash-password": "pnpm -s build && node dist/adapters/outbound/auth/hash-password.js",
+    "mock:contracts": "MOCK_CONTRACTS_FILE=deploy/dev/mock-contracts-api.json node mocks/contracts-api.ts",
+    "mock:zeptomail": "node mocks/zeptomail-api.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.6",

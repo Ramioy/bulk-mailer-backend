@@ -21,8 +21,25 @@ export interface AppConfig {
   readonly pdfMaxIncrementalUpdates: number;
   /** Accept and strip leading zeros in the contract of the file name; default false. */
   readonly contractAllowLeadingZeros: boolean;
+  /** `http` (Tayrona and SAP APIs) or `fake` (non-production only). */
+  readonly contractSource: 'http' | 'fake';
+  readonly tayronaApiUrl?: string;
+  readonly sapApiUrl?: string;
+  /** Maximum wait of the contracts APIs; default 5 s. */
+  readonly contractApiTimeoutMs: number;
   /** Non-production only: data for the simulated contract sources. */
   readonly fakeContractsFile?: string;
+  /** `zeptomail` or `fake` (non-production only). */
+  readonly emailProvider: 'zeptomail' | 'fake';
+  readonly zeptomail?: {
+    readonly baseUrl: string;
+    readonly fromAddress: string;
+    readonly fromName?: string;
+    readonly bounceAddress?: string;
+    readonly timeoutMs: number;
+  };
+  /** Outside production every email goes to this test mailbox (§15). Required with ZeptoMail outside production. */
+  readonly redirectAllEmailTo?: string;
   /** Pause between two sends; default 1000 ms. */
   readonly sendPauseMs: number;
   /** Growing wait after uncertain responses: base (30 s) and ceiling for Retry-After (600 s). */
@@ -81,11 +98,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (leadingZeros !== 'true' && leadingZeros !== 'false') problems.push('CONTRACT_ALLOW_LEADING_ZEROS must be true or false');
   const fakeContractsFile = env.FAKE_CONTRACTS_FILE ?? '';
   if (nodeEnv === 'production' && fakeContractsFile !== '') problems.push('FAKE_CONTRACTS_FILE is not allowed in production');
+  const contractSource = env.CONTRACT_SOURCE ?? (nodeEnv === 'production' ? 'http' : 'fake');
+  if (contractSource !== 'http' && contractSource !== 'fake') problems.push('CONTRACT_SOURCE must be http or fake');
+  if (nodeEnv === 'production' && contractSource === 'fake') problems.push('CONTRACT_SOURCE=fake is not allowed in production');
+  const tayronaApiUrl = env.TAYRONA_API_URL ?? '';
+  const sapApiUrl = env.SAP_API_URL ?? '';
+  if (contractSource === 'http' && (tayronaApiUrl === '' || sapApiUrl === '')) problems.push('TAYRONA_API_URL and SAP_API_URL are required with CONTRACT_SOURCE=http');
+  const contractApiTimeoutMs = positiveInteger(env.CONTRACT_API_TIMEOUT_MS ?? '5000', 'CONTRACT_API_TIMEOUT_MS', problems);
+  const emailProvider = env.EMAIL_PROVIDER ?? (nodeEnv === 'production' ? 'zeptomail' : 'fake');
+  if (emailProvider !== 'zeptomail' && emailProvider !== 'fake') problems.push('EMAIL_PROVIDER must be zeptomail or fake');
+  if (nodeEnv === 'production' && emailProvider === 'fake') problems.push('EMAIL_PROVIDER=fake is not allowed in production');
+  const fromAddress = env.ZEPTOMAIL_FROM_ADDRESS ?? '';
+  if (emailProvider === 'zeptomail' && !isEmail(fromAddress)) problems.push('ZEPTOMAIL_FROM_ADDRESS (a valid email) is required with EMAIL_PROVIDER=zeptomail');
+  const bounceAddress = env.ZEPTOMAIL_BOUNCE_ADDRESS ?? '';
+  if (bounceAddress !== '' && !isEmail(bounceAddress)) problems.push('ZEPTOMAIL_BOUNCE_ADDRESS is not a valid email');
+  const zeptomailTimeoutMs = positiveInteger(env.ZEPTOMAIL_TIMEOUT_MS ?? '30000', 'ZEPTOMAIL_TIMEOUT_MS', problems);
+  const redirect = env.NONPROD_REDIRECT_TO ?? '';
+  if (nodeEnv === 'production' && redirect !== '') problems.push('NONPROD_REDIRECT_TO is not allowed in production');
+  if (nodeEnv !== 'production' && emailProvider === 'zeptomail' && !isEmail(redirect)) {
+    problems.push('NONPROD_REDIRECT_TO (a valid email) is required to use ZeptoMail outside production');
+  }
   const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
   const incidentBaseWaitSeconds = positiveInteger(env.INCIDENT_BASE_WAIT_SECONDS ?? '30', 'INCIDENT_BASE_WAIT_SECONDS', problems);
   const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
   const archiveCopyAddress = env.ARCHIVE_COPY_ADDRESS ?? '';
-  if (archiveCopyAddress !== '' && !/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(archiveCopyAddress)) problems.push('ARCHIVE_COPY_ADDRESS is not a valid email');
+  if (archiveCopyAddress !== '' && !isEmail(archiveCopyAddress)) problems.push('ARCHIVE_COPY_ADDRESS is not a valid email');
   const emailTemplateFile = env.EMAIL_TEMPLATE_FILE ?? '';
   const runner = env.JOB_RUNNER_ENABLED ?? 'true';
   if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
@@ -105,7 +142,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sessionHours,
     pdfMaxIncrementalUpdates,
     contractAllowLeadingZeros: leadingZeros === 'true',
+    contractSource: contractSource as AppConfig['contractSource'],
+    ...(tayronaApiUrl === '' ? {} : { tayronaApiUrl }),
+    ...(sapApiUrl === '' ? {} : { sapApiUrl }),
+    contractApiTimeoutMs,
     ...(fakeContractsFile === '' ? {} : { fakeContractsFile }),
+    emailProvider: emailProvider as AppConfig['emailProvider'],
+    ...(emailProvider === 'zeptomail'
+      ? {
+          zeptomail: {
+            baseUrl: env.ZEPTOMAIL_BASE_URL ?? 'https://cpaas.zoho.com/v1.1',
+            fromAddress,
+            ...(env.ZEPTOMAIL_FROM_NAME ? { fromName: env.ZEPTOMAIL_FROM_NAME } : {}),
+            ...(bounceAddress === '' ? {} : { bounceAddress }),
+            timeoutMs: zeptomailTimeoutMs,
+          },
+        }
+      : {}),
+    ...(redirect === '' ? {} : { redirectAllEmailTo: redirect }),
     sendPauseMs,
     incidentBaseWaitSeconds,
     incidentMaxWaitSeconds,
@@ -120,6 +174,10 @@ function positiveInteger(text: string, name: string, problems: string[]): number
   const value = Number(text);
   if (!Number.isInteger(value) || value < 1) problems.push(`${name} must be a positive integer`);
   return value;
+}
+
+function isEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(value);
 }
 
 function nonNegativeInteger(text: string, name: string, problems: string[]): number {

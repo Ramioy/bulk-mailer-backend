@@ -1,0 +1,7 @@
+{
+  "104522": { "activo": true, "nombre_conjunto": "Edificio Altos", "correo": "admin@altos.example" },
+  "98765": { "activo": true, "nombre_conjunto": "Conjunto Las Palmas", "correo": "palmas@example.com" },
+  "55555": { "activo": false, "nombre_conjunto": "Contrato inactivo", "correo": "inactivo@example.com" },
+  "44444": { "activo": true, "nombre_conjunto": "Sin correo", "correo": null },
+  "7001": { "activo": true, "nombre_conjunto": "Anglo Torre 1", "correo": "anglo@example.com" }
+}

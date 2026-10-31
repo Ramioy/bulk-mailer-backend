@@ -25,10 +25,10 @@ simulados, y al final los sistemas externos, que dependen de terceros.
 
 | # | Componente | Depende de | Estado |
 |---|---|---|---|
-| 7 | `TayronaContractSource` (bloques 1–4 y 6) | API de contratos de Tayrona (pendiente externo #2) | ⏳ |
-| 8 | `ZeptoMailEmailProvider`, con redirección a buzón de prueba fuera de producción | Cuenta de ZeptoMail aprobada (pendiente #4) | ⏳ |
+| 7 | `HttpContractSource` para Tayrona (bloques 1–4 y 6) **y SAP** (bloque 5), mismo contrato §6.1 | ✅ contra el simulador `mocks/contracts-api.ts`. Falta validar con las APIs reales (pendientes externos #2 y #3) | ✅ |
+| 8 | `ZeptoMailEmailProvider` según la documentación de Zoho, con redirección a buzón de prueba fuera de producción | ✅ contra el simulador `mocks/zeptomail-api.ts`. Falta validar con la cuenta real (pendientes #4 y #5) | ✅ |
 | 9 | Webhook + `ProcessDeliveryEvent`, `ZeptoMailSendLookup` + `ReconcileSends` + `ResolveUncertain`, `UiAlertNotifier`, `ZeptoMailSuppressionManager` + liberación, `ResendReceipt` | Paso 8 | ⏳ |
-| 10 | `SapContractSource` (bloque `ANGLO`) | API de SAP (pendiente #3) | ⏳ |
+| 10 | ~~`SapContractSource`~~ cubierto por el paso 7 (misma interfaz) | API de SAP (pendiente #3) | ✅ |
 
 ## Etapa 4 — Cierre
 

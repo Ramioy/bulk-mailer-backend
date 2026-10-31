@@ -119,3 +119,28 @@ P1 a P4: ✅ **aprobados** el 2026-10-31.
 | D16 | Las **alertas** llegan a los proveedores registrados a través del bus (`ALERT_RAISED`): un proveedor que falla nunca bloquea la operación |
 
 Eventos: `RECEIPTS_UPLOADED`, `RECEIPT_REMOVED`, `RECIPIENTS_REFRESHED`, `EXECUTION_STARTED`, `RECEIPT_SENT`, `RECEIPT_SEND_FAILED`, `RECEIPT_UNCERTAIN`, `EXECUTION_FINISHED`, `ALERT_RAISED`.
+
+## Pasos 7 y 8: APIs externas simuladas (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D17 | ✅ Los pasos 7 y 8 se construyen **contra simuladores** del contrato de cada API, mientras las APIs reales y la cuenta de ZeptoMail no estén disponibles. Los simuladores viven en `mocks/` y se usan en las pruebas y en desarrollo (`pnpm mock:contracts`, `pnpm mock:zeptomail`) |
+| D18 | Tayrona y SAP usan **el mismo adaptador** (`HttpContractSource`) con distinta URL y token: exponen la misma interfaz (§6.1). El antiguo paso 10 queda cubierto |
+
+### Supuestos por validar con las APIs reales
+
+| Tema | Supuesto implementado | Validar con |
+|---|---|---|
+| Token de servicio de Tayrona/SAP | `Authorization: Bearer <token>` | Yoimar (construye las APIs) |
+| Respuesta `200` de contratos | `{ contrato, activo, nombre_conjunto, correo }`; un cuerpo distinto o malformado es `SOURCE_UNAVAILABLE` | Yoimar |
+| Formato del error `400` de ZeptoMail | La documentación solo muestra `{ "data": { "error_code", "message" }, "message": "error" }`; ZeptoMail suele responder `{ "error": { "code", "details": [{ "code", "target", "target_value" }] } }`. El adaptador entiende ambos y el simulador produce ambos | Cuenta real (§12.7) |
+| `SM_113` | Si el campo inválido es `from`, `bounce_address` o `bcc`, es configuración → `ACCOUNT_ERROR` (detiene el lote). Si es el destinatario → `RECEIPT_REJECTED` | Cuenta real |
+| Códigos no documentados en un `400` (p. ej. `TM_3004`) | `UNCERTAIN` (regla del contexto: lo no documentado es incierto) | Cuenta real |
+| `429`, `5xx`, `Retry-After` | No documentados por Zoho; se tratan como `UNCERTAIN` con espera creciente | Soporte de Zoho (§12.7) |
+| Fallas de conexión | DNS, conexión rechazada y TLS → `CONNECTION_FAILED` (certeza de no envío); conexión cortada después de enviar o timeout → `UNCERTAIN` | — |
+
+### Configuración nueva
+
+`CONTRACT_SOURCE` (`http`/`fake`), `TAYRONA_API_URL`, `SAP_API_URL`, `CONTRACT_API_TIMEOUT_MS` (5000); secretos `TAYRONA_API_TOKEN`, `SAP_API_TOKEN`.
+`EMAIL_PROVIDER` (`zeptomail`/`fake`), `ZEPTOMAIL_BASE_URL` (`https://cpaas.zoho.com/v1.1`), `ZEPTOMAIL_FROM_ADDRESS`, `ZEPTOMAIL_FROM_NAME`, `ZEPTOMAIL_BOUNCE_ADDRESS`, `ZEPTOMAIL_TIMEOUT_MS` (30000); secreto `ZEPTOMAIL_API_KEY`.
+`NONPROD_REDIRECT_TO`: buzón de prueba, **obligatorio** para usar ZeptoMail fuera de producción y **prohibido** en producción; el asunto muestra el destinatario original. En producción, los simulados están prohibidos.
