@@ -27,6 +27,7 @@ describe('loadConfig', () => {
       reconcileSweepAfterHours: 6,
       reconcileSweepMaxHours: 72,
       reconcileSweepIntervalMinutes: 60,
+      reconcileSweepBatchSize: 50,
       deliveryCheckIntervalSeconds: 60,
       deliveryCheckTailMinutes: 30,
       deliveryCheckBatchSize: 20,
@@ -41,6 +42,11 @@ describe('loadConfig', () => {
       executionAbortAfterMinutes: 10,
       shutdownTimeoutSeconds: 25,
     });
+  });
+
+  it('D44: the sweep budget is a positive integer', () => {
+    expect(loadConfig({ ...REQUIRED, RECONCILE_SWEEP_BATCH_SIZE: '10' })).toMatchObject({ reconcileSweepBatchSize: 10 });
+    expect(() => loadConfig({ ...REQUIRED, RECONCILE_SWEEP_BATCH_SIZE: '0' })).toThrow('RECONCILE_SWEEP_BATCH_SIZE must be a positive integer');
   });
 
   it('D41: the orphan sweep interval and minimum age are positive integers', () => {

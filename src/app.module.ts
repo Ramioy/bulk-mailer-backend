@@ -71,6 +71,7 @@ export class AppModule {
         recentCheckTailMinutes: config.deliveryCheckTailMinutes,
         recentCheckBatchSize: config.deliveryCheckBatchSize,
         recentCheckBackoffCycles: config.deliveryCheckBackoffCycles,
+        sweepBatchSize: config.reconcileSweepBatchSize,
       },
       emailTemplate,
       archiveCopyAddress: config.archiveCopyAddress,

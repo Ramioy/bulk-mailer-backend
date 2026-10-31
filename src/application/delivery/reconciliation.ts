@@ -235,18 +235,25 @@ async function needsLookup(stores: Pick<BulkMailerStores, 'receipts' | 'attempts
 
 /**
  * Hourly sweep (§9.4) of the sends whose delivery is still pending, in case a webhook was lost:
- * - SENT receipts UNCONFIRMED between N and 72 hours after the send;
- * - UNCERTAIN receipts whose last scheduled lookup is over (D43), up to 72 hours, never failed here. Beyond 72 h
- *   a pending receipt is only visible in the batch summary and in its alert.
+ * - SENT receipts UNCONFIRMED or SOFT_BOUNCE (D44: a hard bounce whose webhook was lost must be seen and suppressed)
+ *   between N and 72 hours after the send;
+ * - UNCERTAIN receipts whose last scheduled lookup is over (D43), up to 72 hours, never failed here.
+ * At most `sweepBatchSize` lookups per run: those not looked up for the longest first, then the oldest sends (D44). Beyond 72 h a pending receipt is only visible in the
+ * batch summary and in its alert.
  * Then the WEBHOOKS_NOT_RECEIVED alert, at most once per execution: proven loss (the logs know a delivery state no
- * webhook reported) or total silence (no webhook for any send), judged N hours after the execution.
+ * webhook reported) or total silence (no webhook for any send that should have one), judged N hours after it.
  */
 export class SweepUnconfirmed {
+  private run = 0;
+  /** Run in which each send was last looked up by the sweep (D44, as D38: a restart only resets the rotation). */
+  private readonly lastSwept = new Map<string, number>();
+
   constructor(private readonly deps: CheckDependencies & Pick<DeliveryDependencies, 'reconciliation'>) {}
 
   async execute(): Promise<{ lookedUp: number; updated: number; alerts: number }> {
     const { repository, clock, newId, serial, reconciliation } = this.deps;
     const now = clock.now();
+    this.run += 1;
     const from = new Date(now.getTime() - reconciliation.sweepMaxHours * 3_600_000);
     const to = new Date(now.getTime() - reconciliation.sweepAfterHours * 3_600_000);
     const afterLastLookup = new Date(now.getTime() - (reconciliation.uncertainDelaysMinutes.at(-1) ?? 0) * 60_000);
@@ -260,7 +267,7 @@ export class SweepUnconfirmed {
 
     const candidates: Array<{ receipt: Receipt; attempt: Attempt; since: Date }> = [];
     for (const receipt of await repository.receipts.listByState('SENT')) {
-      if (receipt.deliveryState !== 'UNCONFIRMED') continue;
+      if (!isPendingDelivery(receipt)) continue;
       const attempt = await latestAttempt(repository, receipt);
       if (!attempt?.finishedAt || attempt.finishedAt < from || attempt.finishedAt > to) continue;
       candidates.push({ receipt, attempt, since: attempt.finishedAt });
@@ -272,7 +279,14 @@ export class SweepUnconfirmed {
       if (!attempt || !since || since < from || since > afterLastLookup) continue;
       candidates.push({ receipt, attempt, since });
     }
-    for (const { receipt, attempt } of candidates) {
+    // Not looked up for the longest first (never first), then the oldest send: the budget never starves anyone.
+    const swept = (c: { attempt: Attempt }) => this.lastSwept.get(c.attempt.attemptId) ?? 0;
+    candidates.sort((a, b) => swept(a) - swept(b) || a.since.getTime() - b.since.getTime());
+    const inWindow = new Set(candidates.map((c) => c.attempt.attemptId));
+    for (const id of this.lastSwept.keys()) if (!inWindow.has(id)) this.lastSwept.delete(id);
+
+    for (const { receipt, attempt } of candidates.slice(0, reconciliation.sweepBatchSize)) {
+      this.lastSwept.set(attempt.attemptId, this.run);
       lookedUp += 1;
       // Never final: an UNCERTAIN is never failed by the sweep (D43).
       const { result, providerStatus } = await checkAttempt(this.deps, attempt.attemptId, false);
@@ -289,18 +303,31 @@ export class SweepUnconfirmed {
       if (sent.length === 0) continue;
       let withWebhook = 0;
       let provenLoss = 0;
+      let confirmedLate = 0;
       let expectingWebhook = 0;
       for (const attempt of sent) {
+        // D44: only a send that went out expects a webhook: its receipt is SENT (or still UNCERTAIN) by this attempt.
+        // One proven not sent (FAILED / NOT_FOUND_AT_PROVIDER), or replaced by a later attempt, expects none.
+        const receipt = await repository.receipts.get(attempt.sha256);
+        if (!receipt || (receipt.state !== 'SENT' && receipt.state !== 'UNCERTAIN')) continue;
+        if ((await latestAttempt(repository, receipt))?.attemptId !== attempt.attemptId) continue;
         const events = await repository.deliveryEvents.listByAttempt(attempt.attemptId);
         // A process failure is only in the logs: ZeptoMail sends no webhook for it, so it proves nothing (M2).
         if (events.some((e) => e.state === 'PROCESS_FAILED')) continue;
         expectingWebhook += 1;
         if (events.some((e) => e.source === 'WEBHOOK')) withWebhook += 1;
-        else if (events.some((e) => e.source === 'LOGS')) provenLoss += 1;
+        else if (events.some((e) => e.source === 'LOGS')) {
+          provenLoss += 1;
+          if ((await repository.receipts.history(receipt.sha256)).some((h) => h.detail?.startsWith('SENT confirmed late') && h.detail.includes(attempt.attemptId))) confirmedLate += 1;
+        }
       }
       const where = `${execution.period.toString()}/${execution.block}`;
-      if (provenLoss > 0) await raise(execution.executionId, `the provider logs show a delivery state for ${provenLoss} receipt(s) of ${where} but no webhook arrived`);
-      else if (expectingWebhook > 0 && withWebhook === 0) await raise(execution.executionId, `${expectingWebhook} receipt(s) sent by ${where} and no webhook in ${reconciliation.sweepAfterHours} h`);
+      if (provenLoss > 0) {
+        const late = confirmedLate > 0 ? ` (${confirmedLate} of them first marked not sent and confirmed late, D34)` : '';
+        await raise(execution.executionId, `the provider logs show a delivery state for ${provenLoss} receipt(s) of ${where}${late} but no webhook arrived`);
+      } else if (expectingWebhook > 0 && withWebhook === 0) {
+        await raise(execution.executionId, `${expectingWebhook} receipt(s) sent by ${where} and no webhook in ${reconciliation.sweepAfterHours} h`);
+      }
     }
     return { lookedUp, updated, alerts };
   }

@@ -51,6 +51,8 @@ export interface AppConfig {
   readonly reconcileSweepMaxHours: number;
   /** How often the sweep runs; default 60 minutes. */
   readonly reconcileSweepIntervalMinutes: number;
+  /** Lookups per hourly sweep, oldest sends first (D44); default 50. */
+  readonly reconcileSweepBatchSize: number;
   /** While a batch runs and `deliveryCheckTailMinutes` after, its sends are checked this often; default 60 s (D21). */
   readonly deliveryCheckIntervalSeconds: number;
   readonly deliveryCheckTailMinutes: number;
@@ -157,6 +159,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const reconcileSweepMaxHours = positiveInteger(env.RECONCILE_SWEEP_MAX_HOURS ?? '72', 'RECONCILE_SWEEP_MAX_HOURS', problems);
   if (reconcileSweepMaxHours <= reconcileSweepAfterHours) problems.push('RECONCILE_SWEEP_MAX_HOURS must be greater than RECONCILE_SWEEP_AFTER_HOURS');
   const reconcileSweepIntervalMinutes = positiveInteger(env.RECONCILE_SWEEP_INTERVAL_MINUTES ?? '60', 'RECONCILE_SWEEP_INTERVAL_MINUTES', problems);
+  const reconcileSweepBatchSize = positiveInteger(env.RECONCILE_SWEEP_BATCH_SIZE ?? '50', 'RECONCILE_SWEEP_BATCH_SIZE', problems);
   const deliveryCheckIntervalSeconds = positiveInteger(env.DELIVERY_CHECK_INTERVAL_SECONDS ?? '60', 'DELIVERY_CHECK_INTERVAL_SECONDS', problems);
   const deliveryCheckTailMinutes = nonNegativeInteger(env.DELIVERY_CHECK_TAIL_MINUTES ?? '30', 'DELIVERY_CHECK_TAIL_MINUTES', problems);
   const deliveryCheckBatchSize = positiveInteger(env.DELIVERY_CHECK_BATCH_SIZE ?? '20', 'DELIVERY_CHECK_BATCH_SIZE', problems);
@@ -214,6 +217,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reconcileSweepAfterHours,
     reconcileSweepMaxHours,
     reconcileSweepIntervalMinutes,
+    reconcileSweepBatchSize,
     deliveryCheckIntervalSeconds,
     deliveryCheckTailMinutes,
     deliveryCheckBatchSize,

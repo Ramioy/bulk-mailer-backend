@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { SweepUnconfirmed } from '../../src/application/delivery/reconciliation';
 import type { SendOutcome } from '../../src/domain/sending/send-outcome';
 import { deliveryFixture, type DeliveryFixture } from '../support/delivery-fixtures';
 
@@ -64,5 +65,58 @@ describe('D43: an UNCERTAIN the last scheduled lookup could not resolve does not
     await uncertainOne(fx);
     fx.clock.advance(30 * 60_000);
     expect(await fx.sweep.execute()).toMatchObject({ lookedUp: 0 });
+  });
+});
+
+describe('D44: the sweep covers SOFT_BOUNCE, has a budget, and alerts only for sends that expect a webhook', () => {
+  it('H8 (audit): a SOFT_BOUNCE 10 h old that the logs show as a hard bounce → HARD_BOUNCE, suppression, alert', async () => {
+    const fx = deliveryFixture();
+    const { receipt, attempt } = await fx.sendOne();
+    await fx.deliver('w-sb', { attemptId: attempt.attemptId, recipient: 'admin@altos.com', state: 'SOFT_BOUNCE' });
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'HARD_BOUNCE', detail: 'hard bounce' });
+    fx.clock.advance(10 * HOUR);
+    expect(await fx.sweep.execute()).toMatchObject({ lookedUp: 1, updated: 1 });
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'HARD_BOUNCE' });
+    expect(await fx.repository.suppressions.get('admin@altos.com')).toMatchObject({ reason: 'HARD_BOUNCE' });
+    expect(await alertTypes(fx)).toContain('HARD_BOUNCE');
+  });
+
+  it('H9 (audit): an uncertain send proven not to exist expects no webhook: no WEBHOOKS_NOT_RECEIVED', async () => {
+    const fx = deliveryFixture();
+    const { receipt, attempt } = await uncertainOne(fx);
+    fx.clock.advance(HOUR);
+    await fx.reconcile.execute(attempt.attemptId, true);
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'FAILED', errorType: 'NOT_FOUND_AT_PROVIDER' });
+    fx.clock.advance(10 * HOUR);
+    expect(await fx.sweep.execute()).toMatchObject({ alerts: 0 });
+    expect(await alertTypes(fx)).toEqual([]);
+  });
+
+  it('a send confirmed late from the logs is still a proven webhook loss, and the alert says so', async () => {
+    const fx = deliveryFixture();
+    const { attempt } = await uncertainOne(fx);
+    fx.clock.advance(HOUR);
+    await fx.reconcile.execute(attempt.attemptId, true);
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'DELIVERED' });
+    const { receipt } = { receipt: (await fx.repository.receipts.listByState('FAILED'))[0] };
+    expect(await fx.verify.receipt('operador', receipt?.sha256 as never)).toMatchObject({ ok: true, value: { state: 'SENT' } });
+    fx.clock.advance(10 * HOUR);
+    expect(await fx.sweep.execute()).toMatchObject({ alerts: 1 });
+    const [alert] = await fx.repository.alerts.list({ type: 'WEBHOOKS_NOT_RECEIVED' });
+    expect(alert?.detail).toContain('1 of them first marked not sent and confirmed late, D34');
+  });
+
+  it('looks up at most the batch size per run; the next run starts with the sends left out', async () => {
+    const fx = deliveryFixture();
+    await fx.uploadValid(12);
+    await fx.startAndRun();
+    const sent = fx.email.calls.map((c) => c.attemptId as string);
+    fx.clock.advance(7 * HOUR);
+    const sweep = new SweepUnconfirmed({ ...fx.deliveryDeps, reconciliation: { ...fx.deliveryDeps.reconciliation, sweepBatchSize: 8 } });
+    expect(await sweep.execute()).toMatchObject({ lookedUp: 8 });
+    expect(fx.lookup.calls.map((c) => c.attemptId)).toEqual(sent.slice(0, 8));
+    fx.lookup.calls.length = 0;
+    expect(await sweep.execute()).toMatchObject({ lookedUp: 8 });
+    expect(fx.lookup.calls.map((c) => c.attemptId)).toEqual([...sent.slice(8), ...sent.slice(0, 4)]);
   });
 });

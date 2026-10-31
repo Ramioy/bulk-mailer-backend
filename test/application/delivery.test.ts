@@ -206,7 +206,8 @@ describe('SweepUnconfirmed and WEBHOOKS_NOT_RECEIVED (§9.4)', () => {
     const { attempt } = await fx.sendOne();
     await fx.deliver('w1', { attemptId: attempt.attemptId, recipient: 'admin@altos.com', state: 'SOFT_BOUNCE' });
     fx.clock.advance(7 * HOUR);
-    expect(await fx.sweep.execute()).toEqual({ lookedUp: 0, updated: 0, alerts: 0 });
+    // D44 (M3): a SOFT_BOUNCE is looked up too (it may have become a hard bounce); a webhook arrived, so no alert.
+    expect(await fx.sweep.execute()).toEqual({ lookedUp: 1, updated: 0, alerts: 0 });
 
     const other = deliveryFixture();
     await other.sendOne();

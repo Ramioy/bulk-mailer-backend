@@ -23,6 +23,8 @@ export interface ReconciliationPolicy {
   readonly recentCheckBatchSize: number;
   /** A send whose lookup found the logs API unavailable is skipped for this many checks (D38). Default 2. */
   readonly recentCheckBackoffCycles: number;
+  /** At most this many lookups per hourly sweep, the oldest sends first (D44). Default 50. */
+  readonly sweepBatchSize: number;
 }
 
 export const DEFAULT_RECONCILIATION_POLICY: ReconciliationPolicy = {
@@ -32,6 +34,7 @@ export const DEFAULT_RECONCILIATION_POLICY: ReconciliationPolicy = {
   recentCheckTailMinutes: 30,
   recentCheckBatchSize: 20,
   recentCheckBackoffCycles: 2,
+  sweepBatchSize: 50,
 };
 
 export interface DeliveryDependencies {
