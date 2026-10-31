@@ -108,6 +108,10 @@ describe('delivery over HTTP', () => {
     const suppressions = (await call('GET', '/suppressions', token)).json();
     expect(suppressions).toMatchObject({ release: 'PROVIDER_API', addresses: [{ email: 'admin@altos.com', reason: 'HARD_BOUNCE' }] });
     expect((await call('GET', '/alerts', token)).json().map((a: { type: string }) => a.type)).toContain('HARD_BOUNCE');
+    // D57: `since` keeps only the alerts raised from that instant on.
+    expect((await call('GET', `/alerts?since=${encodeURIComponent(ctx.clock.now().toISOString())}`, token)).json().map((a: { type: string }) => a.type)).toContain('HARD_BOUNCE');
+    expect((await call('GET', `/alerts?since=${encodeURIComponent(new Date(ctx.clock.now().getTime() + 60_000).toISOString())}`, token)).json()).toEqual([]);
+    expect((await call('GET', '/alerts?since=ayer', token)).statusCode).toBe(400);
 
     // D20: what was received can be queried only with the operator's token.
     expect((await ctx.app.inject({ method: 'GET', url: '/webhooks/zeptomail/events' })).statusCode).toBe(401);

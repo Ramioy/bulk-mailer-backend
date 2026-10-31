@@ -22,6 +22,14 @@ export class ReceiptsController {
    * the way), so the request is never held in memory; over UPLOAD_MAX_TOTAL_BYTES or UPLOAD_MAX_FILES it is answered
    * 413 UPLOAD_TOO_LARGE, its staged files are dropped and the connection is closed instead of reading the rest.
    */
+  /** D59 (§13): attempts with provider ids, delivery events and the receipt's history. */
+  @Get('receipts/:sha256/history')
+  async history(@Param('sha256') sha256: string) {
+    const result = await this.useCases.history.execute(sha256Param(sha256));
+    if (!result.ok) throw httpError(result.error);
+    return result.value;
+  }
+
   @Post('batches/:period/:block/receipts')
   @HttpCode(200)
   async upload(@Param('period') period: string, @Param('block') block: string, @Req() request: AuthenticatedRequest, @Res({ passthrough: true }) reply: FastifyReply) {

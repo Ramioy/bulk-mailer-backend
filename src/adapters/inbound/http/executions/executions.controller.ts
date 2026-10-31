@@ -81,7 +81,9 @@ export class ExecutionsController {
 
     reply.hijack();
     const raw = reply.raw;
-    raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+    // D56: the headers Fastify already decided (CORS, D49) must reach the browser too; hijacking bypasses them.
+    const decided = Object.fromEntries(Object.entries(reply.getHeaders()).filter(([, v]) => v !== undefined)) as Record<string, string | number | string[]>;
+    raw.writeHead(200, { ...decided, 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
     // Node sends headers lazily; without this the client would not see the stream open until the first event.
     raw.flushHeaders();
 

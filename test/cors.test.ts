@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startTestApp, type TestContext } from './support/test-app';
+import { fileName, pdfBytes } from './support/receipt-fixtures';
+import { startTestApp, TEST_PASSWORD, type TestContext } from './support/test-app';
 
 const ALLOWED = 'https://bulk-mailer.anutibara.com';
+const BOUNDARY = 'bulkmailerboundary';
+
+function multipart(files: Array<{ name: string; content: Uint8Array }>): Buffer {
+  const parts = files.flatMap(({ name, content }) => [
+    Buffer.from(`--${BOUNDARY}\r\nContent-Disposition: form-data; name="files"; filename="${name}"\r\nContent-Type: application/pdf\r\n\r\n`, 'utf8'),
+    Buffer.from(content),
+    Buffer.from('\r\n'),
+  ]);
+  return Buffer.concat([...parts, Buffer.from(`--${BOUNDARY}--\r\n`)]);
+}
 
 describe('CORS for the web client (D49)', () => {
   let ctx: TestContext;
@@ -44,5 +55,27 @@ describe('CORS for the web client (D49)', () => {
     ctx = await startTestApp();
     const response = await preflight('/batches/2026-10/CASH/receipts', ALLOWED, 'POST', 'authorization');
     expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('D56: the event stream of an execution (hijacked response) carries the CORS header of an allowed origin', async () => {
+    ctx = await startTestApp({ CORS_ALLOWED_ORIGINS: ALLOWED, SEND_PAUSE_MS: '0' });
+    const token = (await ctx.app.inject({ method: 'POST', url: '/auth/sign-in', payload: { username: 'operador', password: TEST_PASSWORD } })).json().accessToken as string;
+    const headers = { authorization: `Bearer ${token}`, origin: ALLOWED };
+    await ctx.app.inject({
+      method: 'POST',
+      url: '/batches/2026-10/CASH/receipts',
+      headers: { ...headers, 'content-type': `multipart/form-data; boundary=${BOUNDARY}` },
+      payload: multipart([{ name: fileName('Torre CORS', 'MULTA', '104522'), content: pdfBytes('cors') }]),
+    });
+    const version = (await ctx.app.inject({ method: 'GET', url: '/batches/2026-10/CASH', headers })).json().manifestVersion;
+    const started = await ctx.app.inject({ method: 'POST', url: '/batches/2026-10/CASH/executions', headers, payload: { manifestVersion: version } });
+    expect(started.statusCode).toBe(202);
+    await ctx.runner.drain();
+
+    const events = await ctx.app.inject({ method: 'GET', url: `/executions/${started.json().executionId}/events`, headers });
+    expect(events.statusCode).toBe(200);
+    expect(events.headers['content-type']).toBe('text/event-stream');
+    expect(events.headers['access-control-allow-origin']).toBe(ALLOWED);
+    expect(events.body).toContain('event: FINISHED');
   });
 });

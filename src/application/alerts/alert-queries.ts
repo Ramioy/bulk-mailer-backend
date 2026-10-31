@@ -18,6 +18,8 @@ export interface ListAlertsQuery {
   readonly resolved?: boolean;
   readonly type?: AlertType;
   readonly subject?: string;
+  /** D57: only alerts raised at or after this instant. */
+  readonly since?: Date;
   readonly limit?: number;
 }
 

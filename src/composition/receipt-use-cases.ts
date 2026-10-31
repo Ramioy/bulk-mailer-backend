@@ -1,5 +1,6 @@
 import { ReleaseBatchFiles } from '../application/files/release-batch-files';
 import { GetBatchSummary } from '../application/receipts/get-batch-summary';
+import { GetReceiptHistory } from '../application/receipts/get-receipt-history';
 import type { ReceiptDependencies } from '../application/receipts/receipt-dependencies';
 import { RefreshRecipients } from '../application/receipts/refresh-recipients';
 import { RemoveReceipt } from '../application/receipts/remove-receipt';
@@ -14,6 +15,8 @@ export interface ReceiptUseCases {
   readonly resolveConflict: ResolveDuplicateConflict;
   /** D51 */
   readonly releaseFiles: ReleaseBatchFiles;
+  /** D59 */
+  readonly history: GetReceiptHistory;
 }
 
 export function receiptUseCases(deps: ReceiptDependencies): ReceiptUseCases {
@@ -24,5 +27,6 @@ export function receiptUseCases(deps: ReceiptDependencies): ReceiptUseCases {
     summary: new GetBatchSummary(deps),
     resolveConflict: new ResolveDuplicateConflict(deps),
     releaseFiles: new ReleaseBatchFiles(deps),
+    history: new GetReceiptHistory(deps),
   };
 }

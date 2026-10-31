@@ -140,6 +140,17 @@ describe('receipts over HTTP', () => {
     const json = await ctx.app.inject({ method: 'POST', url: '/batches/2026-10/CASH/receipts', headers: auth(), payload: {} });
     expect([json.statusCode, json.json().error]).toEqual([400, 'EXPECTED_MULTIPART']);
   });
+
+  it('D59: GET /receipts/{sha256}/history tells the story of a receipt, and 404 for an unknown one', async () => {
+    const uploaded = (await upload('/batches/2026-10/OTHERS/receipts', [{ name: fileName('Torre Historia', 'MULTA', '104522'), content: pdfBytes('history') }])).json();
+    const sha256 = uploaded.results[0].sha256 as string;
+    const response = await ctx.app.inject({ method: 'GET', url: `/receipts/${sha256}/history`, headers: auth() });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ sha256, period: '2026-10', block: 'OTHERS', state: 'PENDING', attempts: [], history: [expect.objectContaining({ event: 'UPLOADED' })] });
+
+    const missing = await ctx.app.inject({ method: 'GET', url: `/receipts/${'0'.repeat(64)}/history`, headers: auth() });
+    expect([missing.statusCode, missing.json()]).toEqual([404, { error: 'RECEIPT_NOT_FOUND' }]);
+  });
 });
 
 describe('uploads streamed to the staging area (D48)', () => {

@@ -42,7 +42,7 @@ Preguntas abiertas de la auditoría: **ninguna**. Pendiente: fusión de `audita`
 
 ### 🧩 Cliente web: repositorio aparte
 
-Por decisión del usuario (2026-10-31) el cliente web vive en un repositorio propio (`bulk-mailer-frontend`, hermano de este), con pruebas e2e (Playwright) contra este backend corriendo en local con adaptadores `fake`. Este repositorio no cambia por el cliente; si el cliente necesita algo del backend, se propone aquí como decisión.
+Por decisión del usuario (2026-10-31) el cliente web vive en un repositorio propio (`bulk-mailer-frontend`, hermano de este), con pruebas e2e (Playwright) contra este backend corriendo en local con adaptadores `fake`. Este repositorio no cambia por el cliente; si el cliente necesita algo del backend, se propone aquí como decisión. Así nacieron **D56–D59** (CORS en el SSE, `since` en alertas, `INVALID_CREDENTIALS` único en el inicio de sesión, `GET /receipts/{sha256}/history`), aprobadas y hechas el 2026-10-31. El cliente aún no consume D59 ni el código único del 401.
 
 ### ⏸ EN ESPERA: paso 12
 

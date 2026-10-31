@@ -18,11 +18,11 @@ describe('authentication over HTTP', () => {
     ctx.app.inject({ method: 'GET', url: '/auth/me', headers: token === undefined ? {} : { authorization: `Bearer ${token}` } });
   const signIn = async () => (await post('/auth/sign-in', { username: 'operador', password: TEST_PASSWORD })).json();
 
-  it('distinguishes unknown user from wrong password, and audits both failures', async () => {
+  it('D58: answers the same code for an unknown user and a wrong password, and audits the real reason', async () => {
     const unknown = await post('/auth/sign-in', { username: 'nadie', password: 'x' });
     const wrong = await post('/auth/sign-in', { username: 'operador', password: 'x' });
-    expect([unknown.statusCode, unknown.json()]).toEqual([401, expect.objectContaining({ error: 'UNKNOWN_USER' })]);
-    expect([wrong.statusCode, wrong.json()]).toEqual([401, expect.objectContaining({ error: 'WRONG_PASSWORD' })]);
+    expect([unknown.statusCode, unknown.json()]).toEqual([401, { error: 'INVALID_CREDENTIALS' }]);
+    expect([wrong.statusCode, wrong.json()]).toEqual([401, { error: 'INVALID_CREDENTIALS' }]);
 
     const audit = await ctx.repository.audit.list();
     expect(audit.filter((a) => a.action === 'SIGN_IN_FAILED').map((a) => [a.actor, a.newValue])).toEqual([

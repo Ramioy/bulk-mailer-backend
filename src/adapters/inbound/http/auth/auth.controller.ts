@@ -32,7 +32,8 @@ export class AuthController {
   async signIn(@Body() body: unknown) {
     const { username, password } = requireStrings(body, ['username', 'password']);
     const result = await this.auth.signIn(username, password);
-    if (!result.ok) throw new UnauthorizedException({ error: result.error });
+    // D58: the answer never says whether the account exists; the audit keeps the distinction.
+    if (!result.ok) throw new UnauthorizedException({ error: 'INVALID_CREDENTIALS' });
     return session(result.value);
   }
 
