@@ -1,0 +1,44 @@
+# Bulk Mailer — backend
+
+Sends monthly payment receipts (PDF) by email, one email per receipt, through Zoho ZeptoMail.
+Hexagonal architecture (ports and adapters), modular monolith, single instance.
+
+- Architecture: [`docs/architecture/arquitectura.md`](docs/architecture/arquitectura.md)
+- Decisions: [`docs/architecture/decisiones.md`](docs/architecture/decisiones.md) — they override `docs/context/` where they differ
+- Implementation plan: [`docs/architecture/plan-implementacion.md`](docs/architecture/plan-implementacion.md)
+- Business context (as received): [`docs/context/`](docs/context/README.md)
+
+## Toolchain
+
+Node 26 · pnpm 12 · NestJS 12 on Fastify · TypeScript 7 · Vitest · oxlint · PostgreSQL 18 (Docker Compose for local work).
+
+## Layout
+
+```
+src/
+  domain/        entities, value objects, state machines — pure TypeScript
+  ports/         interfaces the core needs from the outside
+  application/   use cases
+  adapters/
+    inbound/     REST API, webhook endpoint, job runner
+    outbound/    port implementations (PostgreSQL, volume, ZeptoMail, Tayrona, SAP, SSE…)
+  config/        configuration loaded and validated at startup
+  app.module.ts  composition root: the only place where ports are bound to adapters
+test/
+  architecture.test.ts  fails if domain/ports/application import infrastructure or outer layers
+```
+
+## Getting started
+
+```bash
+pnpm install
+cp .env.example .env
+pnpm db:up
+pnpm dev            # http://localhost:3000/health
+```
+
+## Checks
+
+```bash
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+```
