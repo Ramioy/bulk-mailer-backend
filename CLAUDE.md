@@ -23,6 +23,26 @@ Hechos y en `main`: pasos 0 a 9 (el 10 quedó cubierto por el 7), plantilla de c
 
 **Siguiente: paso 11** (administración: catálogo de conceptos y copia `bcc`, auditados). Antes de empezar, el usuario debe dar el visto bueno.
 
+### Punto de retorno para el paso 11
+
+Último commit del paso 9: "Webhook queries with JWT, per-minute delivery check and manual verification (D20-D22)"; CI en verde, 411 pruebas.
+
+Contexto que manda: `docs/context/04-file-name.md` §4.3 (catálogo: `clave`, `asunto`, `activo`; se agregan y se retiran conceptos, todo auditado; un concepto retirado deja de aceptarse en cargas posteriores y no afecta lo ya enviado), §10.5 (copia `bcc`: ajuste general desactivado por defecto, auditado con valor anterior; el valor vigente al iniciar una ejecución aplica a toda ella), §13 (la interfaz administra catálogo y copia; las cuentas de operador no) y §15 (auditoría).
+
+Lo que **ya existe** (no rehacerlo):
+- Dominio: `Concept`, `ConceptCatalog`, `INITIAL_CONCEPTS` (`src/domain/concept/concept.ts`); acciones de auditoría `CONCEPT_CHANGED` y `ARCHIVE_COPY_CHANGED` (`src/domain/audit/audit.ts`).
+- Persistencia: `ConceptStore.list/save` y `SettingsStore.archiveCopyEnabled/setArchiveCopyEnabled`, en memoria y PostgreSQL (tablas `concepts` y `settings`).
+- Uso: la carga valida contra el catálogo activo; el envío y el reenvío toman el `asunto`; `StartExecution` fija la copia al iniciar (rechaza con `ARCHIVE_COPY_NOT_CONFIGURED` si está activa sin `ARCHIVE_COPY_ADDRESS`); el resumen del lote muestra `archiveCopyEnabled`.
+
+Lo que **falta**: casos de uso de administración (por el `SerialExecutor`, en `repository.transaction` con auditoría y eventos en `tx.outbox`), endpoints con JWT (la prueba `test/route-authentication.test.ts` los cubre sola) y pruebas.
+
+**Preguntas para el usuario antes de implementar** (regla 2; proponer y esperar aprobación):
+1. ¿Se puede **editar el `asunto`** de un concepto existente, o solo agregar y retirar? ¿Se puede **reactivar** un concepto retirado?
+2. Validación de la `clave` nueva: proponer las mismas reglas del nombre de archivo (NFC, sin espacios dobles ni al borde, sin `CNCPT`/`CNTRT`, que quepa en los 150 caracteres) y que no exista ya.
+3. Al **retirar** un concepto con soportes `PENDING` o `FAILED` ya cargados: ¿quedan como están (propuesta: sí, la regla habla de cargas posteriores) o pasan a `INVALID / UNKNOWN_CONCEPT` con nueva versión de manifiesto?
+4. **Copia `bcc`**: rechazar activarla si no hay `ARCHIVE_COPY_ADDRESS` configurada (propuesta) y permitir el cambio durante una ejecución (aplica a la siguiente).
+5. Endpoints propuestos: `GET /concepts`, `POST /concepts`, `PATCH /concepts/{clave}` (retirar, reactivar, asunto), `GET /settings/archive-copy` y `PUT /settings/archive-copy` con `{ "enabled": bool }` (respuesta con la dirección configurada).
+
 **Preguntas abiertas al usuario** (el usuario construye las APIs de Tayrona y SAP):
 - ¿El token de servicio de las APIs de contratos va como `Authorization: Bearer <token>`? ¿La respuesta 200 trae exactamente `contrato`, `activo`, `nombre_conjunto`, `correo`?
 - Pendiente para el piloto: calibrar el umbral de revisiones incrementales con PDF reales (los PDF linealizados traen dos `%%EOF`).
