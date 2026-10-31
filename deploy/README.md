@@ -29,3 +29,23 @@ services:
 ## CORS (D49)
 
 En producción `CORS_ALLOWED_ORIGINS` es obligatorio: el origen exacto del cliente web (`https://host[:puerto]`), nunca `*`.
+
+## Volumen de soportes (D41, D51)
+
+Los PDF se guardan en el volumen (`DATA_DIR`, `/data` en el contenedor) con la estructura `<DATA_DIR>/<YYYY-MM>/<BLOCK>/<sha256>.pdf`, nombrados por su contenido. **No** copia la estructura del servidor de archivos (`OCTUBRE_2026/EFECTIVO/<nombre original>.pdf`), por decisión del usuario (D51); el nombre original queda en la base. Equivalencia:
+
+| Servidor de archivos | Volumen |
+|---|---|
+| `OCTUBRE_2026` (mes en español, `MES_AÑO`) | `2026-10` (`YYYY-MM`) |
+| `EFECTIVO` | `CASH` |
+| `AVVILLAS` | `AVVILLAS` |
+| `BANCOLOMBIA` | `BANCOLOMBIA` |
+| `DAVIVIENDA` | `DAVIVIENDA` |
+| `ANGLO` | `ANGLO` |
+| `OTROS` | `OTHERS` |
+| `<nombre original>.pdf` | `<sha256>.pdf` (el nombre está en `receipts.file_name`) |
+
+- `<DATA_DIR>/.staging/` guarda las cargas mientras se reciben (D48); lo que queda ahí más de `FILE_ORPHAN_MIN_AGE_MINUTES` lo borra el barrido.
+- Los archivos de soportes ya procesados se borran solos (D41/D42). Los de soportes que siguen "necesarios" (un `FAILED` no reenviado, un `PENDING` no corregido, un conflicto) se conservan **sin plazo** hasta que el operador libera los del lote: `POST /batches/{period}/{block}/release-files` con nota (D51). Los registros se conservan; el archivo se puede volver a subir.
+- No borrar archivos del volumen a mano: el barrido de huérfanos y los trabajos de borrado lo hacen comprobando la base.
+

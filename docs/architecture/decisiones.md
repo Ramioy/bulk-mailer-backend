@@ -670,11 +670,73 @@ Hallazgos M8, M10 y M13 de `docs/audit/auditoria-2026-10-31.md`, corregidos en l
 - **`execution_events`** no se purga: es lo que permite repetir el progreso de una ejecución (D10, D11) y es pequeño.
 - **El límite de autenticación** es por proceso y se reinicia con él.
 
-### Preguntas abiertas al usuario
+### Preguntas al usuario (respondidas el 2026-10-31)
 
-1. **Retención máxima de los PDF** de soportes que siguen "necesarios" (un `FAILED` que nunca se reenvía, un `PENDING` que nunca se corrige): hoy se conservan mientras sigan así (D41/D42). ¿Plazo máximo, por ejemplo al cerrar el periodo?
-2. **Reconocer solas las alertas** cuando su causa se resuelve (por ejemplo, un `UNCERTAIN_UNRESOLVED` que el barrido confirma después). Hoy el operador las reconoce (D46).
-3. **B2**: corregir el contrato de un soporte subiéndolo con el nombre arreglado produce un `DUPLICATE_CONFLICT` con nota obligatoria (consecuencia de D31). ¿Se acepta esa fricción o se permite reemplazar el nombre en la misma carga?
+1. **Retención máxima de los PDF** de soportes que siguen "necesarios" (un `FAILED` que nunca se reenvía, un `PENDING` que nunca se corrige): hoy se conservan mientras sigan así (D41/D42). ¿Plazo máximo, por ejemplo al cerrar el periodo? → **Respondida en D51**: sin plazo; liberación manual por lote que conserva los registros.
+2. **Reconocer solas las alertas** cuando su causa se resuelve (por ejemplo, un `UNCERTAIN_UNRESOLVED` que el barrido confirma después). Hoy el operador las reconoce (D46). → **Respondida en D52**: el sistema las marca resueltas; reconocerlas sigue siendo del operador.
+3. **B2**: corregir el contrato de un soporte subiéndolo con el nombre arreglado produce un `DUPLICATE_CONFLICT` con nota obligatoria (consecuencia de D31). ¿Se acepta esa fricción o se permite reemplazar el nombre en la misma carga? → **Respondida en D53**: no se reemplaza; se retira el soporte y se sube con el nombre corregido.
+
+## Respuestas del usuario a las preguntas de D50 (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D51 | ✅ **(Pregunta 1 de D50) Retención de los PDF: indefinida, con liberación manual que conserva los registros.** No hay plazo máximo: los archivos de soportes que siguen "necesarios" (`FAILED` nunca reenviado, `PENDING` nunca corregido, conflictos) se conservan **hasta que el operador los libera**, un lote a la vez, con nota obligatoria. Liberar borra los archivos, no los registros: estados, errores y conflictos no cambian, el resumen muestra `fileError: FILE_NOT_AVAILABLE` y el archivo se puede volver a subir (A2). La estructura del volumen no cambia (`<DATA_DIR>/<YYYY-MM>/<BLOCK>/<sha256>.pdf`); el usuario eligió no copiar la del servidor de archivos (`OCTUBRE_2026/EFECTIVO`) y la equivalencia se documenta en `deploy/README.md`. **No hay liberación de un periodo entero**: un lote a la vez mantiene la auditoría precisa (cada registro dice qué lote y cuántos archivos) |
+| D52 | ✅ **(Pregunta 2 de D50, opción 3) Alertas: resolución híbrida.** El sistema marca una alerta **resuelta** (`resolvedAt`, `resolution`) cuando su causa se resuelve, pero **reconocerla sigue siendo del operador** (D46): una alerta resuelta sigue pendiente hasta que alguien la reconoce. `GET /alerts` conserva su comportamiento por defecto (todas, las más recientes primero) y gana el filtro `resolved` |
+
+### Cómo quedó implementado
+
+- **D51**:
+  - Caso de uso `ReleaseBatchFiles` (`src/application/files/release-batch-files.ts`), dentro del `SerialExecutor` y de una sola transacción, sin llamadas externas (fase b de D36).
+  - Para un `(periodo, bloque)`, cada soporte con `fileAvailable=true` que **no** está `SENDING` queda con `fileAvailable=false`, una entrada `FILE_RELEASED by <operador>` en su historial y un trabajo `DELETE_RECEIPT_FILE` encolado en la transacción (D41): el archivo se borra después del *commit* por el carril de archivos.
+  - Publica una nueva versión del manifiesto (las entradas listas salen de él), audita `BATCH_FILES_RELEASED` (sujeto `periodo/bloque`, valor nuevo: cuántos, nota obligatoria) y agrega al *outbox* el evento `BATCH_FILES_RELEASED` (que el registro de operación escribe, B7).
+  - Es una corrección, como B3: se permite en cualquier periodo y solo la rechaza una ejecución en curso (`EXECUTION_IN_PROGRESS`, la misma regla global que los otros comandos de lote; un lote `RUNNING` implica una ejecución en curso).
+  - **Volver a subir**: la regla de carga (A1) ahora reevalúa también un `PENDING` sin archivo del mismo lote, como ya hacía con un `FAILED` sin archivo. Recupera el archivo, conserva el estado y el conflicto si lo hay, y actualiza nombre y destinatario. Antes un `PENDING` sin archivo se tomaba como duplicado y no había forma de devolverle el archivo.
+- **D52**:
+  - `Alert` gana `resolvedAt?` y `resolution?` (motivo breve), y `AlertFilter` gana `resolved?: boolean` (`true`, solo resueltas; `false`, solo sin resolver; sin valor, todas).
+  - `AlertStore.resolve(match, at, resolution)` resuelve todas las alertas coincidentes aún sin resolver, estén reconocidas o no, y devuelve cuántas. `match` es un tipo con `subject`, `reference` o ambos y, opcionalmente, `raisedNotAfter`. Tiene pruebas de contrato en PostgreSQL y en memoria.
+  - Migración `AlertResolution1761922800000`: columnas, índice de alertas sin resolver por tipo y sujeto, y `reference` de las `BATCH_STOPPED` existentes tomada de su detalle (`<periodo>/<bloque> stopped: …`).
+  - Ayudantes `resolveAlerts`, `resolveReceiptAlerts` y `resolveBatchStopped` (`src/application/alerts/resolve-alerts.ts`), siempre en la transacción del cambio que resuelve la causa.
+  - `GET /alerts` acepta `resolved=true|false` junto a `pending`. **Para el cliente web**: la vista por defecto es "por atender" (`?pending=true&resolved=false`); una segunda pestaña, "resueltas, por revisar" (`?pending=true&resolved=true`); el historial completo, sin filtros.
+- **Pruebas**:
+  - `test/application/release-files.test.ts`.
+  - `test/application/alert-resolution.test.ts`: un caso por tipo que se resuelve solo y uno que comprueba que los demás siguen sin resolver.
+  - Prueba HTTP de `release-files` (incluida en la lista de rutas con JWT) y del filtro `resolved`.
+  - Contrato de `resolve` y la regla de carga de un `PENDING` sin archivo.
+
+### Endpoint (JWT, D20)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `POST` | `/batches/{period}/{block}/release-files` | `{ "note": "…" }` → 200 `{ "released": n, "manifestVersion": v }`. Errores: `INVALID_REQUEST` (400, sin `note`), `NOTE_REQUIRED` (400, nota vacía), `BATCH_NOT_FOUND` (404), `EXECUTION_IN_PROGRESS` (409) |
+| `GET` | `/alerts?pending=&resolved=&type=&subject=&limit=` | Como D46, más `resolved` (D52). Las alertas traen `resolvedAt` y `resolution` cuando el sistema las resolvió |
+
+### Qué alertas se resuelven solas (D52)
+
+| Alerta | Se resuelve cuando | Cómo se encuentra |
+|---|---|---|
+| `UNCERTAIN_UNRESOLVED` | El soporte sale de `UNCERTAIN`: confirmado por un evento o por los logs, fallido por la conciliación, resuelto por el operador, o con el resultado de un envío abortado (D32) | Sujeto (SHA-256) y referencia (el intento) |
+| `BATCH_STOPPED` | Una ejecución posterior del mismo lote termina `COMPLETED`, o el lote detenido se asienta (D41) | Referencia `periodo/bloque` (nueva en estas alertas) |
+| `HARD_BOUNCE`, `COMPLAINT`, `PROCESS_FAILED` | Un envío posterior del soporte sale (`SENT`): reenvío, lote siguiente o confirmación de un envío incierto | Sujeto (SHA-256), solo las generadas hasta el inicio de ese envío: un rebote del propio envío nuevo no se resuelve con él |
+| `DUPLICATE_CONFLICT` | El conflicto se resuelve (`resolve-conflict`) o el soporte se retira | Sujeto (SHA-256) |
+| `OUTBOX_EVENT_DEAD` | El evento revivido por el operador (D39) se entrega | Sujeto (id del evento) |
+| `FILE_PURGE_FAILED` | Un barrido posterior termina sin fallas: borró todo lo que nadie necesita, incluidos los archivos que antes no pudo borrar | Sujeto (`receipt-files`) |
+
+**No se resuelven nunca solas**, porque nada de lo que el sistema observa después prueba que su causa desapareció:
+
+- `COPY_BOUNCED`: el buzón de copia hay que revisarlo.
+- `WEBHOOKS_NOT_RECEIVED` y `WEBHOOK_UNPARSED`: hay que revisar la configuración del webhook o el formato.
+- `LATE_SEND_EVIDENCE` y `DUPLICATE_SEND_DETECTED`: el cliente pudo recibir el correo dos veces y hay que hablar con él.
+- `PROVIDER_UNKNOWN_ERROR`: hay que clasificar el código.
+- `MALICIOUS_FILE`: hay que investigar el archivo.
+
+### Supuestos (informados al usuario)
+
+- **D51, `UNCERTAIN` sin archivo**: liberar alcanza también a los `UNCERTAIN` y a los `SENT` que guardan el archivo para un reenvío (A2), como pide la regla "todo lo que no está `SENDING`". Un `SENT` rebotado puede recuperar el archivo subiéndolo de nuevo. Un `UNCERTAIN` no puede recuperarlo hasta que se resuelve; si termina `FAILED`, entonces sí.
+- **D51, lote reabierto**: como toda corrección que publica manifiesto, un lote `COMPLETED` o `STOPPED` vuelve a `OPEN` al liberar (`publishNextManifest`, igual que retirar un soporte).
+- **D51**: liberar un lote sin archivos disponibles responde `released: 0` y publica igualmente una versión del manifiesto y su auditoría. Así cada pedido del operador queda registrado.
+- **D52, `DUPLICATE_CONFLICT`**: hoy esa alerta solo se genera cuando el contenido ya se estaba enviando o ya se envió (D31, punto a). Esos soportes no se pueden retirar ni resolver mientras sigan así, de modo que en la práctica se resuelve sola solo si el envío termina `FAILED` y luego se retira; casi siempre la reconocerá el operador.
+- **D52, `FILE_PURGE_FAILED`**: es una alerta por barrido (sujeto común `receipt-files`), así que se resuelve cuando un barrido completo termina sin fallas, no archivo por archivo. Si un barrido vuelve a fallar se genera otra.
+- **D52**: resolver una alerta no genera un evento de dominio ni avisa al operador; el cliente web lo ve al consultar. Las `BATCH_STOPPED` anteriores a la migración reciben su referencia del detalle; las demás alertas anteriores sin referencia se resuelven por sujeto como las nuevas.
 
 ## B2 cerrado por decisión: sin reemplazo de nombre en la misma carga (2026-10-31)
 
