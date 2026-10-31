@@ -1,8 +1,7 @@
 import { BadRequestException, Body, Controller, Get, HttpCode, Inject, Param, Post, Req } from '@nestjs/common';
 
-import type { Adapters } from '../../../../composition/adapters';
 import type { DeliveryUseCases } from '../../../../composition/delivery-use-cases';
-import { ADAPTERS, DELIVERY_USE_CASES } from '../../../../composition/tokens';
+import { DELIVERY_USE_CASES } from '../../../../composition/tokens';
 import type { AuthenticatedRequest } from '../auth/bearer-auth.guard';
 import { blockParam, httpError, periodParam, sha256Param } from '../http-params';
 
@@ -11,10 +10,7 @@ const field = (body: unknown, name: string): unknown => (body as Record<string, 
 
 @Controller()
 export class DeliveryController {
-  constructor(
-    @Inject(DELIVERY_USE_CASES) private readonly useCases: DeliveryUseCases,
-    @Inject(ADAPTERS) private readonly adapters: Adapters,
-  ) {}
+  constructor(@Inject(DELIVERY_USE_CASES) private readonly useCases: DeliveryUseCases) {}
 
   /** Manual resolution of an UNCERTAIN receipt: `{ "outcome": "SENT" | "NOT_SENT", "note": "evidence" }`. */
   @Post('receipts/:sha256/resolve')
@@ -58,8 +54,8 @@ export class DeliveryController {
 
   /** Local suppression list. `release` tells the interface what the operator must confirm (D19). */
   @Get('suppressions')
-  async suppressions() {
-    return { release: this.adapters.suppressionManager.confirmation, addresses: await this.adapters.repository.suppressions.list() };
+  suppressions() {
+    return this.useCases.suppressions.execute();
   }
 
   /** `{ "businessConfirmed": true, "removedInProviderConsole": true, "note": "evidence" }` (§10.3, D19). */

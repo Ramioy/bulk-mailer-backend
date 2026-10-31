@@ -2,10 +2,9 @@ import { BadRequestException, Body, Controller, Get, HttpCode, Inject, NotFoundE
 import type { FastifyReply } from 'fastify';
 
 import type { ExecutionUseCases } from '../../../../composition/execution-use-cases';
-import { ADAPTERS, EXECUTION_USE_CASES, SSE_HUB } from '../../../../composition/tokens';
-import type { Adapters } from '../../../../composition/adapters';
-import type { SseProgressHub } from '../../../outbound/sse/sse-progress-hub';
-import type { StoredProgressEvent } from '../../../../ports/progress-notifier';
+import { CLOCK, EXECUTION_USE_CASES, SSE_HUB } from '../../../../composition/tokens';
+import type { Clock } from '../../../../ports/clock';
+import type { ProgressNotifier, StoredProgressEvent } from '../../../../ports/progress-notifier';
 import type { AuthenticatedRequest } from '../auth/bearer-auth.guard';
 import { blockParam, httpError, periodParam } from '../http-params';
 
@@ -15,8 +14,8 @@ const HEARTBEAT_MS = 15_000;
 export class ExecutionsController {
   constructor(
     @Inject(EXECUTION_USE_CASES) private readonly useCases: ExecutionUseCases,
-    @Inject(SSE_HUB) private readonly hub: SseProgressHub,
-    @Inject(ADAPTERS) private readonly adapters: Adapters,
+    @Inject(SSE_HUB) private readonly hub: ProgressNotifier,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
   /** "Send": body `{ manifestVersion }` = the version the operator reviewed. */
@@ -74,8 +73,8 @@ export class ExecutionsController {
    */
   @Get('executions/:executionId/events')
   async events(@Param('executionId') executionId: string, @Req() request: AuthenticatedRequest, @Res() reply: FastifyReply): Promise<void> {
-    const { repository, clock } = this.adapters;
-    const execution = await repository.executions.get(executionId);
+    const query = this.useCases.events;
+    const execution = await query.execution(executionId);
     if (!execution) throw new NotFoundException({ error: 'EXECUTION_NOT_FOUND' });
     const header = request.headers['last-event-id'];
     const afterSeq = Number(Array.isArray(header) ? header[0] : header) || 0;
@@ -108,16 +107,16 @@ export class ExecutionsController {
 
     // Subscribe before replaying, so nothing published meanwhile is lost; duplicates are skipped by seq.
     const unsubscribe = this.hub.subscribe(executionId, (stored) => (replaying ? buffered.push(stored) : write(stored)));
-    for (const stored of await repository.executionEvents.listAfter(executionId, afterSeq)) write(stored);
+    for (const stored of await query.eventsAfter(executionId, afterSeq)) write(stored);
     replaying = false;
     for (const stored of buffered) write(stored);
     if (closed) return;
 
-    if ((await repository.executions.get(executionId))?.finishedAt) {
+    if (await query.isFinished(executionId)) {
       close();
       return;
     }
-    const expiresInMs = Math.max(0, (request.operator?.accessExpiresAt.getTime() ?? 0) - clock.now().getTime());
+    const expiresInMs = Math.max(0, (request.operator?.accessExpiresAt.getTime() ?? 0) - this.clock.now().getTime());
     timers.push(
       setTimeout(() => {
         if (!closed) raw.write('event: TOKEN_EXPIRED\ndata: {}\n\n');

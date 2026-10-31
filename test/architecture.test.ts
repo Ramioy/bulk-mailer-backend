@@ -69,3 +69,47 @@ describe('hexagonal boundaries', () => {
     });
   }
 });
+
+/** D50 (B4): rules for the adapters themselves. */
+const ADAPTERS_DIR = join(SRC, 'adapters');
+const STATEMENT = /(?:^|\n)\s*(import|export)(\s+type)?\s[^'"]*?from\s+['"]([^'"]+)['"]/g;
+
+function statements(file: string): Array<{ typeOnly: boolean; target: string }> {
+  const code = readFileSync(file, 'utf8');
+  return [...code.matchAll(STATEMENT)].map((m) => ({ typeOnly: m[2] !== undefined, target: m[3] ?? '' }));
+}
+
+describe('adapter boundaries (D50)', () => {
+  it('inbound adapters do not import outbound adapters: they talk to use cases and ports', () => {
+    const found: string[] = [];
+    for (const file of sourceFiles(join(ADAPTERS_DIR, 'inbound'))) {
+      for (const { target } of statements(file)) {
+        if (target.startsWith('.') && resolve(file, '..', target).startsWith(join(ADAPTERS_DIR, 'outbound'))) found.push(`${relative(SRC, file)} → ${target}`);
+      }
+    }
+    expect(found).toEqual([]);
+  });
+
+  it('adapters import from the composition only its DI tokens, or types', () => {
+    const found: string[] = [];
+    for (const file of sourceFiles(ADAPTERS_DIR)) {
+      for (const { typeOnly, target } of statements(file)) {
+        if (!target.startsWith('.')) continue;
+        const path = resolve(file, '..', target);
+        if (!path.startsWith(join(SRC, 'composition'))) continue;
+        if (path === join(SRC, 'composition', 'tokens') || typeOnly) continue;
+        found.push(`${relative(SRC, file)} → ${target}`);
+      }
+    }
+    expect(found).toEqual([]);
+  });
+
+  it('no controller reads the repository or the adapter set directly (B4)', () => {
+    const found: string[] = [];
+    for (const file of sourceFiles(ADAPTERS_DIR).filter((f) => f.endsWith('.controller.ts'))) {
+      const code = readFileSync(file, 'utf8');
+      if (/BulkMailerRepository|\.repository\b|composition\/adapters/.test(code)) found.push(relative(SRC, file));
+    }
+    expect(found).toEqual([]);
+  });
+});

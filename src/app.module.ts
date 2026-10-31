@@ -28,7 +28,7 @@ import { executionUseCases } from './composition/execution-use-cases';
 import { fileUseCases } from './composition/file-use-cases';
 import { fileKeyOf } from './application/files/delete-receipt-file';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, INSTANCE_ID, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, INSTANCE_ID, JOB_RUNNER, CLOCK, WEBHOOK_SECRETS, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -216,6 +216,8 @@ export class AppModule {
         },
         { provide: INSTANCE_ID, useValue: instanceId },
         { provide: SSE_HUB, useValue: adapters.progressHub },
+        { provide: CLOCK, useValue: adapters.clock },
+        { provide: WEBHOOK_SECRETS, useValue: adapters.webhookSecrets },
         { provide: JOB_RUNNER, useValue: runner },
         { provide: FILE_USE_CASES, useValue: files },
         { provide: OUTBOX_RELAY, useValue: relay },
