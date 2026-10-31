@@ -226,7 +226,7 @@ export class RunExecution {
     const resolution = resolveSendOutcome(outcome);
     if (!(await this.recordOutcome(execution, attempt, outcome, counters, resolution.receiptState, resolution.errorType))) return { abandoned: true };
     if (resolution.stopBatch) return { stop: resolution.stopBatch };
-    if (resolution.receiptState === 'SENT' && this.deps.deliveryWait) await this.waitForDelivery(execution, entry, attempt, this.deps.deliveryWait);
+    if (resolution.receiptState === 'SENT' && this.deps.deliveryWait) await this.waitForDelivery(execution, entry, attempt, this.deps.deliveryWait, signal);
 
     const decision = providerIncidents.register(outcome);
     if (decision.action === 'STOP') return { stop: decision.reason };
@@ -260,7 +260,8 @@ export class RunExecution {
    * bounce, complaint, or process failed in the logs), or after `maxSeconds`. The wait runs outside the serial
    * executor, so the delivery lane applies the webhook meanwhile (D21).
    */
-  private async waitForDelivery(execution: Execution, entry: ManifestEntry, attempt: Attempt, policy: NonNullable<ExecutionDependencies['deliveryWait']>): Promise<void> {
+  /** Simulation branch (S3). A shutdown (`signal`, D33) ends the wait at once: the delivery lanes finish the follow-up. */
+  private async waitForDelivery(execution: Execution, entry: ManifestEntry, attempt: Attempt, policy: NonNullable<ExecutionDependencies['deliveryWait']>, signal?: AbortSignal): Promise<void> {
     const { repository, clock, newId, serial } = this.deps;
     const started = clock.now().getTime();
     const elapsed = () => (clock.now().getTime() - started) / 1000;
@@ -270,6 +271,7 @@ export class RunExecution {
     };
     let nextLookup = policy.lookupEverySeconds;
     for (;;) {
+      if (signal?.aborted) return resolved('INTERRUPTED');
       const receipt = await repository.receipts.get(entry.sha256);
       if (receipt?.deliveryState && receipt.deliveryState !== 'UNCONFIRMED') return resolved(receipt.deliveryState);
       if (elapsed() >= nextLookup) {
@@ -284,7 +286,7 @@ export class RunExecution {
         });
         return resolved('TIMEOUT');
       }
-      await clock.sleep(policy.pollMs);
+      await clock.sleep(policy.pollMs, signal);
     }
   }
 
