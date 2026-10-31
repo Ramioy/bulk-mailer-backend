@@ -12,7 +12,13 @@ import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
 import type { Attempt } from '../../../domain/sending/attempt';
 import type { Suppression } from '../../../domain/suppression/suppression';
-import { DuplicateAttemptError, type BulkMailerRepository, type BulkMailerStores } from '../../../ports/bulk-mailer-repository';
+import {
+  ConcurrentModificationError,
+  DuplicateAttemptError,
+  DuplicateManifestVersionError,
+  type BulkMailerRepository,
+  type BulkMailerStores,
+} from '../../../ports/bulk-mailer-repository';
 import type { StoredProgressEvent } from '../../../ports/progress-notifier';
 import type { DomainEvent } from '../../../ports/event-bus';
 
@@ -56,6 +62,13 @@ function snapshot(state: State): State {
   };
 }
 
+/** D37: new rows are stored as given; an update needs the stored version and bumps it. */
+function optimistic<T extends { readonly version: number }>(entity: 'receipt' | 'batch', key: string, stored: T | undefined, next: T): T {
+  if (!stored) return next;
+  if (stored.version !== next.version) throw new ConcurrentModificationError(entity, key, next.version);
+  return { ...next, version: next.version + 1 };
+}
+
 /** Reference implementation of the repository, for tests and local runs without a database. */
 export class InMemoryBulkMailerRepository implements BulkMailerRepository {
   private state: State = {
@@ -79,7 +92,9 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
   readonly receipts: BulkMailerStores['receipts'] = {
     get: async (sha256) => this.state.receipts.get(sha256),
     save: async (receipt) => {
-      this.state.receipts.set(receipt.sha256, receipt);
+      const saved = optimistic('receipt', receipt.sha256, this.state.receipts.get(receipt.sha256), receipt);
+      this.state.receipts.set(receipt.sha256, saved);
+      return saved;
     },
     listByBatch: async (period, block) =>
       [...this.state.receipts.values()]
@@ -95,10 +110,15 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
   readonly batches: BulkMailerStores['batches'] = {
     get: async (period, block) => this.state.batches.get(batchKey(period, block)),
     save: async (batch) => {
-      this.state.batches.set(batchKey(batch.period, batch.block), batch);
+      const key = batchKey(batch.period, batch.block);
+      const saved = optimistic('batch', key, this.state.batches.get(key), batch);
+      this.state.batches.set(key, saved);
+      return saved;
     },
     saveManifest: async (period, block, manifest) => {
-      this.state.manifests.set(`${batchKey(period, block)}|${manifest.version}`, manifest);
+      const key = `${batchKey(period, block)}|${manifest.version}`;
+      if (this.state.manifests.has(key)) throw new DuplicateManifestVersionError(batchKey(period, block), manifest.version);
+      this.state.manifests.set(key, manifest);
     },
     getManifest: async (period, block, version) => this.state.manifests.get(`${batchKey(period, block)}|${version}`),
   };

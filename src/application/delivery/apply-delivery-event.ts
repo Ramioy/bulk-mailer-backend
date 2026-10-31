@@ -25,7 +25,7 @@ export async function latestAttempt(stores: Pick<BulkMailerStores, 'attempts'>, 
 
 /**
  * The provider proved the email went out (a delivery event, or the logs): UNCERTAIN → SENT, delivery UNCONFIRMED.
- * Returns the updated receipt.
+ * `receipt` must have been read in `tx` (D37). Returns it as stored, with its new version.
  */
 export async function confirmSent(
   tx: BulkMailerStores,
@@ -36,8 +36,7 @@ export async function confirmSent(
   evidence: string,
 ): Promise<Receipt> {
   assertTransition(receipt.state, 'SENT');
-  const sent: Receipt = { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now };
-  await tx.receipts.save(sent);
+  const sent = await tx.receipts.save({ ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now });
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `confirmed by ${evidence} (attempt ${attempt.attemptId})` });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence }));
   return sent;
@@ -60,8 +59,7 @@ export async function confirmLateSent(
   if (!awaitsLateEvidence(receipt.state, receipt.errorType)) throw new DomainError(`Receipt ${receipt.sha256} cannot be confirmed late from ${receipt.state}`);
   assertTransition(receipt.state, 'SENT');
   const failedAt = (await tx.receipts.history(receipt.sha256)).filter((h) => h.event === 'FAILED').at(-1)?.at ?? receipt.updatedAt;
-  const sent: Receipt = { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now };
-  await tx.receipts.save(sent);
+  const sent = await tx.receipts.save({ ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now });
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `SENT confirmed late by ${evidence} (attempt ${attempt.attemptId})` });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence, late: true }));
   await raiseAlert(tx, newId, {

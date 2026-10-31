@@ -18,16 +18,16 @@ export class ResolveUncertain {
     return this.deps.serial.run(async () => {
       const { repository, clock, newId } = this.deps;
       if (note.trim() === '') return err('NOTE_REQUIRED');
-      const receipt = await repository.receipts.get(sha256);
-      if (!receipt) return err('RECEIPT_NOT_FOUND');
-      if (receipt.state !== 'UNCERTAIN') return err('RECEIPT_NOT_UNCERTAIN');
-
-      const now = clock.now();
-      const resolved: Receipt =
-        outcome === 'SENT'
-          ? { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now }
-          : { ...receipt, state: 'FAILED', errorType: SendErrorType.NOT_FOUND_AT_PROVIDER, errorDetail: 'resolved by the operator', updatedAt: now };
-      await repository.transaction(async (tx) => {
+      return repository.transaction(async (tx) => {
+        // Read in the transaction it is saved in (D37).
+        const receipt = await tx.receipts.get(sha256);
+        if (!receipt) return err('RECEIPT_NOT_FOUND');
+        if (receipt.state !== 'UNCERTAIN') return err('RECEIPT_NOT_UNCERTAIN');
+        const now = clock.now();
+        const resolved: Receipt =
+          outcome === 'SENT'
+            ? { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now }
+            : { ...receipt, state: 'FAILED', errorType: SendErrorType.NOT_FOUND_AT_PROVIDER, errorDetail: 'resolved by the operator', updatedAt: now };
         await tx.receipts.save(resolved);
         await tx.receipts.appendHistory({ sha256, at: now, event: resolved.state, detail: `resolved by ${operator}: ${note.trim()}` });
         await tx.audit.append({
@@ -41,8 +41,8 @@ export class ResolveUncertain {
           note: note.trim(),
         });
         await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256, state: resolved.state, errorType: resolved.errorType, by: 'operator' }));
+        return ok({ state: resolved.state });
       });
-      return ok({ state: resolved.state });
     });
   }
 }

@@ -212,8 +212,9 @@ describe('receipt use cases', () => {
 
     it('never removes a SENT or UNCERTAIN receipt', async () => {
       const sha256 = (await uploadOk([altos])).results[0]?.sha256 as never;
-      const receipt = await fx.repository.receipts.get(sha256);
       for (const state of ['SENT', 'UNCERTAIN'] as const) {
+        // Read before each save: a save needs the stored version (D37).
+        const receipt = await fx.repository.receipts.get(sha256);
         await fx.repository.receipts.save({ ...(receipt as Receipt), state });
         expect(await remove.execute(OP, sha256)).toEqual({ ok: false, error: 'RECEIPT_NOT_REMOVABLE' });
       }

@@ -104,7 +104,7 @@ export async function publishNextManifest(stores: BulkMailerStores, period: Peri
       inConflict: inConflict(r),
     })),
   );
-  await stores.batches.save({ period, block, state: 'OPEN', manifestVersion: manifest.version, updatedAt: now });
+  await stores.batches.save({ period, block, state: 'OPEN', manifestVersion: manifest.version, updatedAt: now, version: batch?.version ?? 1 });
   await stores.batches.saveManifest(period, block, manifest);
   return manifest;
 }

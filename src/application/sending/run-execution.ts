@@ -174,13 +174,12 @@ export class RunExecution {
     });
     if (started === 'ABANDONED') return { abandoned: true };
     if (typeof started === 'string') return this.skipNotReady(execution, entry, started, counters);
-    const sending = started;
 
     // Same hash as reviewed.
     const content = await fileStore.read({ period: execution.period, block: execution.block, sha256: entry.sha256 });
-    if (!content) return this.failBeforeSending(execution, sending, attempt, counters, SendErrorType.FILE_NOT_AVAILABLE);
+    if (!content) return this.failBeforeSending(execution, attempt, counters, SendErrorType.FILE_NOT_AVAILABLE);
     if (createHash('sha256').update(content).digest('hex') !== entry.sha256) {
-      return this.failBeforeSending(execution, sending, attempt, counters, SendErrorType.FILE_MODIFIED);
+      return this.failBeforeSending(execution, attempt, counters, SendErrorType.FILE_MODIFIED);
     }
 
     // Same email as reviewed, and not suppressed.
@@ -188,14 +187,14 @@ export class RunExecution {
     const sourceDecision = sourceIncidents.register(lookup.kind !== 'UNAVAILABLE');
     const resolved = resolveRecipient(lookup, () => false);
     if (!resolved.ok) {
-      const step = await this.failBeforeSending(execution, sending, attempt, counters, resolved.error);
+      const step = await this.failBeforeSending(execution, attempt, counters, resolved.error);
       return sourceDecision.action === 'STOP' && !step.abandoned ? { stop: sourceDecision.reason } : step;
     }
     if (await repository.suppressions.get(resolved.value.email)) {
-      return this.failBeforeSending(execution, sending, attempt, counters, 'EMAIL_SUPPRESSED');
+      return this.failBeforeSending(execution, attempt, counters, 'EMAIL_SUPPRESSED');
     }
     if (resolved.value.email !== entry.email) {
-      return this.failBeforeSending(execution, sending, attempt, counters, SendErrorType.RECIPIENT_CHANGED, `now ${resolved.value.email}`);
+      return this.failBeforeSending(execution, attempt, counters, SendErrorType.RECIPIENT_CHANGED, `now ${resolved.value.email}`);
     }
 
     const concept = (await repository.concepts.list()).find((c) => c.key === entry.conceptKey) ?? { subject: entry.conceptKey };
@@ -220,7 +219,7 @@ export class RunExecution {
       attachment: { name: entry.fileName, content },
     });
     const resolution = resolveSendOutcome(outcome);
-    if (!(await this.recordOutcome(execution, sending, attempt, outcome, counters, resolution.receiptState, resolution.errorType))) return { abandoned: true };
+    if (!(await this.recordOutcome(execution, attempt, outcome, counters, resolution.receiptState, resolution.errorType))) return { abandoned: true };
     if (resolution.stopBatch) return { stop: resolution.stopBatch };
 
     const decision = providerIncidents.register(outcome);
@@ -260,25 +259,24 @@ export class RunExecution {
 
   private async failBeforeSending(
     execution: Execution,
-    sending: Receipt,
     attempt: Attempt,
     counters: Counters,
     errorType: ReceiptErrorType,
     detail?: string,
   ): Promise<Step> {
     const now = this.deps.clock.now();
-    const failed: Receipt = { ...sending, state: 'FAILED', errorType, errorDetail: detail, updatedAt: now };
-    const live = await this.write(async (tx) => {
+    const failed = await this.write(async (tx) => {
       const finished = { ...attempt, finishedAt: now, detail: `not sent: ${errorType}${detail ? ` (${detail})` : ''}` };
       const current = await this.applicable(tx, attempt, finished, 'FAILED');
-      if (current === 'NOT_APPLICABLE') return false;
+      if (current === 'NOT_APPLICABLE') return undefined;
+      const live = current.state === 'SENDING';
       await tx.attempts.save(finished);
-      await tx.receipts.save(failed);
-      await tx.receipts.appendHistory({ sha256: failed.sha256, at: now, event: 'FAILED', detail: current === 'SENDING' ? errorType : `${errorType} (after the execution was aborted)` });
+      const saved = await tx.receipts.save({ ...current, state: 'FAILED', errorType, errorDetail: detail, updatedAt: now });
+      await tx.receipts.appendHistory({ sha256: saved.sha256, at: now, event: 'FAILED', detail: live ? errorType : `${errorType} (after the execution was aborted)` });
       await tx.outbox.add(this.receiptEvent('RECEIPT_SEND_FAILED', now, execution, attempt, { errorType, providerCalled: false }));
-      return current === 'SENDING';
+      return live ? saved : undefined;
     });
-    if (!live) return { abandoned: true };
+    if (!failed) return { abandoned: true };
     counters.record('FAILED', errorType);
     await this.emitProcessed(execution, failed, counters);
     return {};
@@ -286,7 +284,6 @@ export class RunExecution {
 
   private async recordOutcome(
     execution: Execution,
-    sending: Receipt,
     attempt: Attempt,
     outcome: SendOutcome,
     counters: Counters,
@@ -296,15 +293,7 @@ export class RunExecution {
     const now = this.deps.clock.now();
     assertTransition('SENDING', state);
     const detail = outcome.kind === 'ACCEPTED' ? undefined : outcome.detail;
-    const updated: Receipt = {
-      ...sending,
-      state,
-      errorType,
-      errorDetail: detail,
-      ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const } : {}),
-      updatedAt: now,
-    };
-    const live = await this.write(async (tx) => {
+    const updated = await this.write(async (tx) => {
       const finished: Attempt = {
         ...attempt,
         finishedAt: now,
@@ -313,24 +302,33 @@ export class RunExecution {
         providerRequestId: outcome.kind === 'ACCEPTED' ? outcome.providerRequestId : undefined,
       };
       const current = await this.applicable(tx, attempt, finished, state);
-      if (current === 'NOT_APPLICABLE') return false;
+      if (current === 'NOT_APPLICABLE') return undefined;
+      const live = current.state === 'SENDING';
       await tx.attempts.save(finished);
-      await tx.receipts.save(updated);
+      // Built from the receipt read in this transaction, not from the one read before the provider call (D37).
+      const saved = await tx.receipts.save({
+        ...current,
+        state,
+        errorType,
+        errorDetail: detail,
+        ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const } : {}),
+        updatedAt: now,
+      });
       const historyDetail = detail ?? outcome.kind;
       await tx.receipts.appendHistory({
-        sha256: updated.sha256,
+        sha256: saved.sha256,
         at: now,
         event: state,
-        detail: current === 'SENDING' ? historyDetail : `${historyDetail} (after the execution was aborted)`,
+        detail: live ? historyDetail : `${historyDetail} (after the execution was aborted)`,
       });
       const type: DomainEventType = state === 'SENT' ? 'RECEIPT_SENT' : state === 'UNCERTAIN' ? 'RECEIPT_UNCERTAIN' : 'RECEIPT_SEND_FAILED';
       await tx.outbox.add(this.receiptEvent(type, now, execution, attempt, { state, outcome: outcome.kind, errorType, providerCalled: true }));
-      if (outcome.kind === 'UNKNOWN_REJECTION') await unknownRejectionAlert(tx, this.deps.newId, now, updated, outcome.detail);
+      if (outcome.kind === 'UNKNOWN_REJECTION') await unknownRejectionAlert(tx, this.deps.newId, now, saved, outcome.detail);
       // Delivery events that arrived while it was SENDING (D21).
       if (state === 'SENT' || state === 'UNCERTAIN') await applyPendingEvents(tx, this.deps.newId, now, attempt.attemptId);
-      return current === 'SENDING';
+      return live ? saved : undefined;
     });
-    if (!live) return false;
+    if (!updated) return false;
     counters.record(state, errorType);
     await this.emitProcessed(execution, updated, counters);
     return true;
@@ -341,10 +339,10 @@ export class RunExecution {
    * operator aborted the execution meanwhile (D32), the receipt is already UNCERTAIN: a certain outcome (SENT, or
    * FAILED without sending) still settles it, as reconciliation would; anything else is only kept on the attempt.
    */
-  private async applicable(tx: BulkMailerStores, attempt: Attempt, finished: Attempt, state: ReceiptState): Promise<ReceiptState | 'NOT_APPLICABLE'> {
-    const current = (await tx.receipts.get(attempt.sha256))?.state;
-    if (current === 'SENDING') return current;
-    if (current && canTransition(current, state)) return current;
+  private async applicable(tx: BulkMailerStores, attempt: Attempt, finished: Attempt, state: ReceiptState): Promise<Receipt | 'NOT_APPLICABLE'> {
+    const receipt = await tx.receipts.get(attempt.sha256);
+    const current = receipt?.state;
+    if (receipt && (current === 'SENDING' || canTransition(receipt.state, state))) return receipt;
     await tx.attempts.save(finished);
     await tx.receipts.appendHistory({
       sha256: attempt.sha256,

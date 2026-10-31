@@ -10,7 +10,10 @@ import { PostgresBulkMailerRepository } from '../../src/adapters/outbound/postgr
 import { PostgresJobQueue } from '../../src/adapters/outbound/postgres/postgres-job-queue';
 import { bulkMailerRepositoryContract } from '../contracts/bulk-mailer-repository.contract';
 import { jobQueueContract } from '../contracts/job-queue.contract';
-import { aReceipt, anExecution, T0 } from '../support/builders';
+import type { Receipt } from '../../src/domain/receipt/receipt';
+import { ConcurrentModificationError } from '../../src/ports/bulk-mailer-repository';
+import { aReceipt, anExecution, hashOf, T0 } from '../support/builders';
+import { gate } from '../support/serial-guard';
 import { migratedDataSource, resetData, TEST_DATABASE_URL } from '../support/postgres';
 
 describe.skipIf(!TEST_DATABASE_URL)('PostgreSQL 18', () => {
@@ -53,6 +56,29 @@ describe.skipIf(!TEST_DATABASE_URL)('PostgreSQL 18', () => {
     it('rejects states and blocks that do not exist', async () => {
       await expect(repo.receipts.save(aReceipt({ state: 'LOST' as never }))).rejects.toThrow('receipts_state_check');
       await expect(repo.receipts.save(aReceipt({ block: 'EFECTIVO' as never }))).rejects.toThrow('receipts_block_check');
+    });
+
+    it('D37: of two transactions that read the same receipt version, the second save fails (row lock + version)', async () => {
+      await repo.receipts.save(aReceipt());
+      const firstSaved = gate();
+      const commitFirst = gate();
+      const first = repo.transaction(async (tx) => {
+        const read = (await tx.receipts.get(hashOf('a'))) as Receipt;
+        await tx.receipts.save({ ...read, state: 'SENDING' });
+        firstSaved.open();
+        await commitFirst.wait;
+      });
+      await firstSaved.wait;
+      const second = repo.transaction(async (tx) => {
+        // Reads version 1: the first transaction has not committed yet.
+        const read = (await tx.receipts.get(hashOf('a'))) as Receipt;
+        const saving = tx.receipts.save({ ...read, state: 'REMOVED' });
+        commitFirst.open();
+        return saving;
+      });
+      await first;
+      await expect(second).rejects.toBeInstanceOf(ConcurrentModificationError);
+      expect(await repo.receipts.get(hashOf('a'))).toMatchObject({ state: 'SENDING', version: 2 });
     });
 
     it('lets exactly one of several concurrent executions start', async () => {

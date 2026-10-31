@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Period } from '../../src/domain/period/period';
-import { DuplicateAttemptError, type BulkMailerRepository } from '../../src/ports/bulk-mailer-repository';
+import {
+  ConcurrentModificationError,
+  DuplicateAttemptError,
+  DuplicateManifestVersionError,
+  type BulkMailerRepository,
+} from '../../src/ports/bulk-mailer-repository';
 import { aReceipt, anAttempt, anExecution, hashOf, OCT_2026, T0 } from '../support/builders';
 
 /** Behaviour every BulkMailerRepository adapter must have. Run against in-memory now, PostgreSQL in step 3. */
@@ -18,7 +23,7 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         const receipt = aReceipt({ errorDetail: 'x', deliveryState: 'UNCONFIRMED' });
         await repo.receipts.save(receipt);
         await repo.receipts.save({ ...receipt, state: 'SENT', attempts: 1 });
-        expect(await repo.receipts.get(receipt.sha256)).toEqual({ ...receipt, state: 'SENT', attempts: 1 });
+        expect(await repo.receipts.get(receipt.sha256)).toEqual({ ...receipt, state: 'SENT', attempts: 1, version: 2 });
         expect(await repo.receipts.get(hashOf('f'))).toBeUndefined();
       });
 
@@ -46,6 +51,26 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect((await repo.receipts.listByState('INVALID')).map((r) => r.sha256)).toEqual([hashOf('b')]);
       });
 
+      it('D37: a new receipt is stored as given; each save needs the stored version and bumps it', async () => {
+        const receipt = aReceipt();
+        expect(await repo.receipts.save(receipt)).toEqual(receipt);
+        const read = (await repo.receipts.get(receipt.sha256)) ?? receipt;
+        const saved = await repo.receipts.save({ ...read, state: 'SENDING' });
+        expect(saved.version).toBe(2);
+        expect(await repo.receipts.save({ ...saved, state: 'SENT' })).toMatchObject({ state: 'SENT', version: 3 });
+        expect(await repo.receipts.get(receipt.sha256)).toMatchObject({ state: 'SENT', version: 3 });
+      });
+
+      it('D37: two saves from the same read: the second fails and changes nothing', async () => {
+        await repo.receipts.save(aReceipt());
+        const read = (await repo.receipts.get(hashOf('a'))) ?? aReceipt();
+        await repo.receipts.save({ ...read, state: 'SENDING' });
+        await expect(repo.receipts.save({ ...read, state: 'REMOVED' })).rejects.toBeInstanceOf(ConcurrentModificationError);
+        // A "new" receipt for a hash already stored is the same mistake.
+        await expect(repo.receipts.save(aReceipt({ state: 'INVALID' }))).rejects.toBeInstanceOf(ConcurrentModificationError);
+        expect(await repo.receipts.get(hashOf('a'))).toMatchObject({ state: 'SENDING', version: 2 });
+      });
+
       it('keeps the history of a receipt in order', async () => {
         await repo.receipts.save(aReceipt());
         await repo.receipts.appendHistory({ sha256: hashOf('a'), at: T0, event: 'UPLOADED' });
@@ -56,7 +81,7 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
 
     describe('batches and manifests', () => {
       it('saves a batch and its manifest versions', async () => {
-        const batch = { period: OCT_2026, block: 'CASH' as const, state: 'OPEN' as const, manifestVersion: 2, updatedAt: T0 };
+        const batch = { period: OCT_2026, block: 'CASH' as const, state: 'OPEN' as const, manifestVersion: 2, updatedAt: T0, version: 1 };
         await repo.batches.save(batch);
         expect(await repo.batches.get(OCT_2026, 'CASH')).toEqual(batch);
         expect(await repo.batches.get(OCT_2026, 'ANGLO')).toBeUndefined();
@@ -68,6 +93,23 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         await repo.batches.saveManifest(OCT_2026, 'CASH', manifest);
         expect(await repo.batches.getManifest(OCT_2026, 'CASH', 2)).toEqual(manifest);
         expect(await repo.batches.getManifest(OCT_2026, 'CASH', 1)).toBeUndefined();
+      });
+
+      it('D37: a batch save needs the stored version; a stale one fails', async () => {
+        const batch = { period: OCT_2026, block: 'CASH' as const, state: 'OPEN' as const, manifestVersion: 1, updatedAt: T0, version: 1 };
+        await repo.batches.save(batch);
+        expect(await repo.batches.save({ ...batch, state: 'RUNNING' })).toMatchObject({ state: 'RUNNING', version: 2 });
+        await expect(repo.batches.save({ ...batch, state: 'STOPPED' })).rejects.toBeInstanceOf(ConcurrentModificationError);
+        expect(await repo.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'RUNNING', version: 2 });
+      });
+
+      it('D37: a manifest version is written once; a second write fails and keeps the first', async () => {
+        for (const block of ['CASH', 'ANGLO'] as const) await repo.batches.save({ period: OCT_2026, block, state: 'OPEN', manifestVersion: 1, updatedAt: T0, version: 1 });
+        const first = { version: 1, entries: [{ sha256: hashOf('a'), fileName: 'a.pdf', conceptKey: 'MULTA', contract: '1', email: 'a@x.co' }] };
+        await repo.batches.saveManifest(OCT_2026, 'CASH', first);
+        await expect(repo.batches.saveManifest(OCT_2026, 'CASH', { version: 1, entries: [] })).rejects.toBeInstanceOf(DuplicateManifestVersionError);
+        expect(await repo.batches.getManifest(OCT_2026, 'CASH', 1)).toEqual(first);
+        await repo.batches.saveManifest(OCT_2026, 'ANGLO', { version: 1, entries: [] });
       });
     });
 

@@ -22,10 +22,40 @@ export class DuplicateAttemptError extends Error {
   }
 }
 
+/**
+ * D37: a save based on a version that is no longer the stored one (someone else saved it meanwhile). Within this
+ * single-instance service every change goes through the serial executor, so this is a bug in our own serialisation:
+ * it is not caught and retried, it surfaces.
+ */
+export class ConcurrentModificationError extends Error {
+  constructor(
+    readonly entity: 'receipt' | 'batch',
+    readonly key: string,
+    readonly expectedVersion: number,
+  ) {
+    super(`The ${entity} ${key} changed since version ${expectedVersion} was read`);
+    this.name = 'ConcurrentModificationError';
+  }
+}
+
+/** D37: a manifest version of a batch is never written twice; a second write is a bug, not an update. */
+export class DuplicateManifestVersionError extends Error {
+  constructor(
+    readonly batch: string,
+    readonly version: number,
+  ) {
+    super(`Manifest v${version} of ${batch} already exists`);
+    this.name = 'DuplicateManifestVersionError';
+  }
+}
+
 export interface ReceiptStore {
   get(sha256: Sha256): Promise<Receipt | undefined>;
-  /** Insert or replace. */
-  save(receipt: Receipt): Promise<void>;
+  /**
+   * Inserts a new receipt as given, or updates the stored one if its version is still `receipt.version` (D37);
+   * returns it as stored (with its new version). Throws ConcurrentModificationError otherwise.
+   */
+  save(receipt: Receipt): Promise<Receipt>;
   listByBatch(period: Period, block: Block): Promise<Receipt[]>;
   listByState(state: ReceiptState): Promise<Receipt[]>;
   appendHistory(entry: ReceiptHistoryEntry): Promise<void>;
@@ -34,7 +64,9 @@ export interface ReceiptStore {
 
 export interface BatchStore {
   get(period: Period, block: Block): Promise<Batch | undefined>;
-  save(batch: Batch): Promise<void>;
+  /** Same optimistic rule as ReceiptStore.save (D37). */
+  save(batch: Batch): Promise<Batch>;
+  /** Insert only: throws DuplicateManifestVersionError if that version of the batch already exists (D37). */
   saveManifest(period: Period, block: Block, manifest: Manifest): Promise<void>;
   getManifest(period: Period, block: Block, version: number): Promise<Manifest | undefined>;
 }

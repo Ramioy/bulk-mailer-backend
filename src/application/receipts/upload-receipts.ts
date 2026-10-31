@@ -258,6 +258,7 @@ export class UploadReceipts {
         deliveryState: existing?.deliveryState,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
+        version: existing?.version ?? 1,
       };
       if (receipt.fileAvailable) await fileStore.save({ period, block, sha256: receipt.sha256 }, file.content);
       const event = decision === 'NEW' ? 'UPLOADED' : decision === 'MOVE' ? 'MOVED' : 'UPLOADED_AGAIN';
@@ -336,7 +337,10 @@ export class UploadReceipts {
     seen: Map<Sha256, Receipt>,
     results: UploadResult[],
   ): void {
-    changed.push(receipt);
+    // The same content twice in one upload: the last decision is the one saved, once (D37: one save per read).
+    const at = changed.findIndex((r) => r.sha256 === receipt.sha256);
+    if (at >= 0) changed[at] = receipt;
+    else changed.push(receipt);
     history.push({ sha256: receipt.sha256, event, detail });
     seen.set(receipt.sha256, receipt);
     results.push({

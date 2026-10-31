@@ -18,7 +18,9 @@ import type { SendOutcomeKind } from '../../../domain/sending/send-outcome';
 import type { BatchStopReason, ReceiptErrorType } from '../../../domain/shared/error-types';
 import type { Suppression } from '../../../domain/suppression/suppression';
 import {
+  ConcurrentModificationError,
   DuplicateAttemptError,
+  DuplicateManifestVersionError,
   type AlertStore,
   type AttemptStore,
   type AuditLog,
@@ -66,6 +68,7 @@ function toReceipt(r: Row): Receipt {
     conflictingNames: conflictingNames(r.conflicting_names),
     createdAt: r.created_at as Date,
     updatedAt: r.updated_at as Date,
+    version: r.version as number,
   };
 }
 
@@ -176,24 +179,33 @@ function stores(db: Queryable): BulkMailerStores {
       return row && toReceipt(row);
     },
     async save(r) {
-      await db.query(
+      const params = [
+        r.sha256, r.period.toString(), r.block, r.state, r.fileName, r.conceptKey ?? null, r.contract ?? null, r.sizeBytes,
+        r.errorType ?? null, r.errorDetail ?? null, r.recipient?.email ?? null, r.recipient?.complexName ?? null,
+        r.fileAvailable, r.attempts, r.deliveryState ?? null, r.createdAt, r.updatedAt, storedConflictingNames(r.conflictingNames), r.version,
+      ];
+      // D37: an update only if nobody saved it since this version was read; a new receipt is inserted as given.
+      const updated = await rows(
+        db,
+        `UPDATE receipts SET period = $2, block = $3, state = $4, file_name = $5, concept_key = $6, contract = $7,
+           size_bytes = $8, error_type = $9, error_detail = $10, recipient_email = $11, recipient_complex_name = $12,
+           file_available = $13, attempts = $14, delivery_state = $15, created_at = $16, updated_at = $17,
+           conflicting_names = $18, version = version + 1
+         WHERE sha256 = $1 AND version = $19 RETURNING version`,
+        params,
+      );
+      if (updated[0]) return { ...r, version: updated[0].version as number };
+      const inserted = await rows(
+        db,
         `INSERT INTO receipts (sha256, period, block, state, file_name, concept_key, contract, size_bytes, error_type,
            error_detail, recipient_email, recipient_complex_name, file_available, attempts, delivery_state, created_at, updated_at,
-           conflicting_names)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-         ON CONFLICT (sha256) DO UPDATE SET
-           period = EXCLUDED.period, block = EXCLUDED.block, state = EXCLUDED.state, file_name = EXCLUDED.file_name,
-           concept_key = EXCLUDED.concept_key, contract = EXCLUDED.contract, size_bytes = EXCLUDED.size_bytes,
-           error_type = EXCLUDED.error_type, error_detail = EXCLUDED.error_detail, recipient_email = EXCLUDED.recipient_email,
-           recipient_complex_name = EXCLUDED.recipient_complex_name, file_available = EXCLUDED.file_available,
-           attempts = EXCLUDED.attempts, delivery_state = EXCLUDED.delivery_state, created_at = EXCLUDED.created_at,
-           updated_at = EXCLUDED.updated_at, conflicting_names = EXCLUDED.conflicting_names`,
-        [
-          r.sha256, r.period.toString(), r.block, r.state, r.fileName, r.conceptKey ?? null, r.contract ?? null, r.sizeBytes,
-          r.errorType ?? null, r.errorDetail ?? null, r.recipient?.email ?? null, r.recipient?.complexName ?? null,
-          r.fileAvailable, r.attempts, r.deliveryState ?? null, r.createdAt, r.updatedAt, storedConflictingNames(r.conflictingNames),
-        ],
+           conflicting_names, version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         ON CONFLICT (sha256) DO NOTHING RETURNING version`,
+        params,
       );
+      if (inserted[0]) return r;
+      throw new ConcurrentModificationError('receipt', r.sha256, r.version);
     },
     async listByBatch(p, block) {
       const found = await rows(db, 'SELECT * FROM receipts WHERE period = $1 AND block = $2', [p.toString(), block]);
@@ -229,22 +241,38 @@ function stores(db: Queryable): BulkMailerStores {
         manifestVersion: r.manifest_version as number,
         stopReason: opt<BatchStopReason>(r.stop_reason),
         updatedAt: r.updated_at as Date,
+        version: r.version as number,
       } satisfies Batch;
     },
     async save(b) {
-      await db.query(
-        `INSERT INTO batches (period, block, state, manifest_version, stop_reason, updated_at) VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (period, block) DO UPDATE SET state = EXCLUDED.state, manifest_version = EXCLUDED.manifest_version,
-           stop_reason = EXCLUDED.stop_reason, updated_at = EXCLUDED.updated_at`,
-        [b.period.toString(), b.block, b.state, b.manifestVersion, b.stopReason ?? null, b.updatedAt],
+      const params = [b.period.toString(), b.block, b.state, b.manifestVersion, b.stopReason ?? null, b.updatedAt, b.version];
+      // D37: same optimistic rule as receipts.
+      const updated = await rows(
+        db,
+        `UPDATE batches SET state = $3, manifest_version = $4, stop_reason = $5, updated_at = $6, version = version + 1
+         WHERE period = $1 AND block = $2 AND version = $7 RETURNING version`,
+        params,
       );
+      if (updated[0]) return { ...b, version: updated[0].version as number };
+      const inserted = await rows(
+        db,
+        `INSERT INTO batches (period, block, state, manifest_version, stop_reason, updated_at, version) VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (period, block) DO NOTHING RETURNING version`,
+        params,
+      );
+      if (inserted[0]) return b;
+      throw new ConcurrentModificationError('batch', `${b.period.toString()}|${b.block}`, b.version);
     },
     async saveManifest(p, block, manifest) {
-      await db.query(
+      // D37: insert only. "Never two manifests with the same version" is guarded by the database, not only by the
+      // serial executor; a repeated version is a bug and surfaces as an error.
+      const inserted = await rows(
+        db,
         `INSERT INTO manifests (period, block, version, entries) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (period, block, version) DO UPDATE SET entries = EXCLUDED.entries`,
+         ON CONFLICT (period, block, version) DO NOTHING RETURNING version`,
         [p.toString(), block, manifest.version, JSON.stringify(manifest.entries)],
       );
+      if (!inserted[0]) throw new DuplicateManifestVersionError(`${p.toString()}|${block}`, manifest.version);
     },
     async getManifest(p, block, version) {
       const r = await firstRow(db, 'SELECT * FROM manifests WHERE period = $1 AND block = $2 AND version = $3', [

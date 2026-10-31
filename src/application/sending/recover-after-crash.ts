@@ -16,16 +16,18 @@ export class RecoverAfterCrash {
     const { repository, clock, newId } = this.deps;
     const now = clock.now();
 
-    const sending = await repository.receipts.listByState('SENDING');
-    await repository.transaction(async (tx) => {
+    // Read in the transaction they are saved in (D37).
+    const uncertain = await repository.transaction(async (tx) => {
+      const sending = await tx.receipts.listByState('SENDING');
       for (const receipt of sending) {
         const attempt = (await tx.attempts.listByReceipt(receipt.sha256)).at(-1);
         await markSendingUncertain(tx, newId, now, receipt, REASON, attempt);
       }
+      return sending.length;
     });
 
     const running = await repository.executions.running();
-    if (!running) return { uncertain: sending.length };
+    if (!running) return { uncertain };
 
     await repository.transaction((tx) => stopExecution(tx, newId, now, running, 'INTERRUPTED'));
     await new ProgressRecorder(repository, this.deps.progress, clock).emit(running.executionId, {
@@ -34,6 +36,6 @@ export class RecoverAfterCrash {
       stopReason: 'INTERRUPTED',
       counters: await lastCounters(repository, running.executionId),
     });
-    return { uncertain: sending.length, interrupted: running.executionId };
+    return { uncertain, interrupted: running.executionId };
   }
 }

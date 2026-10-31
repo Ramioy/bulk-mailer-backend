@@ -12,6 +12,11 @@ export interface Batch {
   readonly manifestVersion: number;
   readonly stopReason?: BatchStopReason;
   readonly updatedAt: Date;
+  /**
+   * Row version for optimistic concurrency (D37): 1 when first stored, +1 on every save. A save based on another
+   * version than the stored one fails instead of overwriting what someone else wrote.
+   */
+  readonly version: number;
 }
 
 /** One run of a batch manifest. Only one execution runs at a time in the whole system. */

@@ -62,7 +62,9 @@ export class StartExecution {
         ...(copyEnabled ? { copyAddress: this.deps.archiveCopyAddress } : {}),
       };
       if (!(await tx.executions.tryStart(execution))) return false;
-      await tx.batches.save({ ...batch, state: 'RUNNING', stopReason: undefined, updatedAt: now });
+      // Saved from what this transaction reads (D37).
+      const stored = (await tx.batches.get(period, block)) ?? batch;
+      await tx.batches.save({ ...stored, state: 'RUNNING', stopReason: undefined, updatedAt: now });
       await tx.audit.append({
         auditId: newId(),
         actor: operator,
