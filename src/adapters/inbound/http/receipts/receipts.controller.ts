@@ -63,6 +63,17 @@ export class ReceiptsController {
     return result.value;
   }
 
+  /** D51: `{ "note": "why" }`. Releases the files of the batch's receipts (not of those being sent); the records stay. */
+  @Post('batches/:period/:block/release-files')
+  @HttpCode(200)
+  async releaseFiles(@Param('period') period: string, @Param('block') block: string, @Body() body: unknown, @Req() request: AuthenticatedRequest) {
+    const note = (body as Record<string, unknown> | undefined)?.note;
+    if (typeof note !== 'string') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'note' });
+    const result = await this.useCases.releaseFiles.execute(actor(request), periodParam(period), blockParam(block), note);
+    if (!result.ok) throw httpError(result.error);
+    return result.value;
+  }
+
   @Delete('receipts/:sha256')
   @HttpCode(200)
   async remove(@Param('sha256') sha256: string, @Req() request: AuthenticatedRequest) {

@@ -24,6 +24,8 @@ export const AuditAction = {
   OUTBOX_EVENT_RETRIED: 'OUTBOX_EVENT_RETRIED',
   /** D46: the operator acknowledged an alert. */
   ALERT_ACKNOWLEDGED: 'ALERT_ACKNOWLEDGED',
+  /** D51: the operator released the files of a batch's receipts; the records stay. */
+  BATCH_FILES_RELEASED: 'BATCH_FILES_RELEASED',
 } as const;
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];
 

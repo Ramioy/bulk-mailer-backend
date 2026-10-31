@@ -31,7 +31,7 @@ describe('route authentication (D20)', () => {
   afterAll(() => ctx.app.close());
 
   it('knows the routes', () => {
-    expect(routes).toEqual(expect.arrayContaining(['GET /webhooks/zeptomail/events', 'POST /receipts/:sha256/verify-delivery', 'GET /suppressions', 'PATCH /concepts/:key', 'PUT /settings/archive-copy', 'POST /executions/:executionId/abort', 'GET /outbox/dead', 'POST /outbox/dead/:eventId/retry', 'GET /alerts', 'POST /alerts/:alertId/acknowledge', 'GET /instance']));
+    expect(routes).toEqual(expect.arrayContaining(['GET /webhooks/zeptomail/events', 'POST /receipts/:sha256/verify-delivery', 'GET /suppressions', 'PATCH /concepts/:key', 'PUT /settings/archive-copy', 'POST /executions/:executionId/abort', 'GET /outbox/dead', 'POST /outbox/dead/:eventId/retry', 'GET /alerts', 'POST /alerts/:alertId/acknowledge', 'GET /instance', 'POST /batches/:period/:block/release-files']));
   });
 
   it('answers 401 INVALID_ACCESS_TOKEN to every query and command without the operator token', async () => {

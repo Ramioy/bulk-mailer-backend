@@ -108,6 +108,24 @@ describe('receipts over HTTP', () => {
     expect(refreshed.json()).toEqual({ manifestVersion: 3, refreshed: 1, withoutFile: 0 });
   });
 
+  it('D51: releases the files of a batch with POST /batches/{period}/{block}/release-files, with a note', async () => {
+    const before = (await ctx.app.inject({ method: 'GET', url: '/batches/2026-10/CASH', headers: auth() })).json();
+    const release = (url: string, payload: object) => ctx.app.inject({ method: 'POST', url, headers: auth(), payload });
+    const withoutNote = await release('/batches/2026-10/CASH/release-files', {});
+    expect([withoutNote.statusCode, withoutNote.json()]).toEqual([400, { error: 'INVALID_REQUEST', field: 'note' }]);
+    const blankNote = await release('/batches/2026-10/CASH/release-files', { note: '  ' });
+    expect([blankNote.statusCode, blankNote.json().error]).toEqual([400, 'NOTE_REQUIRED']);
+    const unknown = await release('/batches/2026-09/ANGLO/release-files', { note: 'cleanup' });
+    expect([unknown.statusCode, unknown.json().error]).toEqual([404, 'BATCH_NOT_FOUND']);
+
+    const released = await release('/batches/2026-10/CASH/release-files', { note: 'retention: kept since October' });
+    expect(released.statusCode).toBe(200);
+    expect(released.json()).toEqual({ released: expect.any(Number), manifestVersion: before.manifestVersion + 1 });
+    expect(released.json().released).toBeGreaterThan(0);
+    const after = (await ctx.app.inject({ method: 'GET', url: '/batches/2026-10/CASH', headers: auth() })).json();
+    expect(after.readyToSend).toEqual([]);
+  });
+
   it.each([
     ['/batches/2026-13/CASH', 400, 'INVALID_PERIOD'],
     ['/batches/2026-10/EFECTIVO', 400, 'INVALID_BLOCK'],

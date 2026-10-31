@@ -26,6 +26,11 @@ describe('decideUpload (assumption A1)', () => {
     expect(decideUpload(existing('FAILED', { fileAvailable: false }), OCT, 'CASH')).toBe('RE_EVALUATE');
   });
 
+  it('re-evaluates a PENDING receipt whose file was released (D51)', () => {
+    expect(decideUpload(existing('PENDING', { fileAvailable: false }), OCT, 'CASH')).toBe('RE_EVALUATE');
+    expect(decideUpload(existing('PENDING', { fileAvailable: false }), OCT, 'ANGLO')).toBe('DUPLICATE');
+  });
+
   it.each(['PENDING', 'SENDING', 'SENT', 'UNCERTAIN', 'FAILED'] as const)('discards %s with its file in the same batch', (state) => {
     expect(decideUpload(existing(state), OCT, 'CASH')).toBe('DUPLICATE');
   });

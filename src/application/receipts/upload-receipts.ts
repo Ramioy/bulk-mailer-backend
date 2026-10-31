@@ -250,8 +250,9 @@ export class UploadReceipts {
         continue;
       }
 
-      if (existing?.state === 'FAILED') {
-        // A FAILED receipt whose file was purged gets its file back; it stays FAILED until the next execution.
+      if (existing && (existing.state === 'FAILED' || (existing.state === 'PENDING' && decision === 'RE_EVALUATE'))) {
+        // A FAILED receipt whose file was purged gets its file back; it stays FAILED until the next execution. A PENDING
+        // one whose file was released (D51) gets it back too, keeping its conflict if it has one.
         if (evaluated.fileError) {
           results.push({ fileName: evaluated.fileName, outcome: 'REJECTED', sha256: evaluated.sha256, errorType: evaluated.fileError, errorDetail: evaluated.errorDetail });
           continue;
@@ -263,7 +264,10 @@ export class UploadReceipts {
           contract: evaluated.contract,
           sizeBytes: evaluated.staged.size,
           recipient: evaluated.recipient?.recipient,
-          errorType: inConflict(existing) ? 'DUPLICATE_CONFLICT' : (evaluated.recipient?.errorType ?? existing.errorType),
+          // A FAILED receipt keeps its send error unless a recipient error replaces it; a PENDING one has no send error.
+          errorType: inConflict(existing)
+            ? 'DUPLICATE_CONFLICT'
+            : (evaluated.recipient?.errorType ?? (existing.state === 'FAILED' ? existing.errorType : undefined)),
           fileAvailable: true,
           updatedAt: now,
         };

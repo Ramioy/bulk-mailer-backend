@@ -9,7 +9,7 @@ export interface EventSubscriber {
 }
 
 /** Fields that may be logged: identifiers, states and counts. Never email addresses, file names or bodies (§15). */
-const SAFE = ['sha256', 'attemptId', 'executionId', 'webhookRequestId', 'period', 'block', 'manifestVersion', 'state', 'outcome', 'errorType', 'result', 'stopReason', 'deliveryState', 'source', 'reason', 'by', 'late', 'attemptKind', 'providerCalled', 'change', 'enabled'] as const;
+const SAFE = ['sha256', 'attemptId', 'executionId', 'webhookRequestId', 'period', 'block', 'manifestVersion', 'state', 'outcome', 'errorType', 'result', 'stopReason', 'deliveryState', 'source', 'reason', 'by', 'late', 'attemptKind', 'providerCalled', 'change', 'enabled', 'released'] as const;
 
 const LOGGED: readonly DomainEventType[] = [
   'RECEIPTS_UPLOADED',
@@ -28,6 +28,7 @@ const LOGGED: readonly DomainEventType[] = [
   'ADDRESS_RELEASED',
   'ALERT_RAISED',
   'BATCH_COMPLETED',
+  'BATCH_FILES_RELEASED',
   'CONCEPT_CHANGED',
   'ARCHIVE_COPY_CHANGED',
 ];
