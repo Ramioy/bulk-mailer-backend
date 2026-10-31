@@ -23,6 +23,8 @@ export const AlertType = {
   OUTBOX_EVENT_DEAD: 'OUTBOX_EVENT_DEAD',
   /** D41: receipt files that should have been deleted could not be (Ley 1581: they must not be kept). */
   FILE_PURGE_FAILED: 'FILE_PURGE_FAILED',
+  /** D43: an UNCERTAIN send is still unresolved after its last scheduled lookup; the operator can verify or resolve it. */
+  UNCERTAIN_UNRESOLVED: 'UNCERTAIN_UNRESOLVED',
 } as const;
 export type AlertType = (typeof AlertType)[keyof typeof AlertType];
 

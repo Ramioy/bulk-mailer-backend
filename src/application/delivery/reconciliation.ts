@@ -131,12 +131,35 @@ export class ReconcileAttempt {
     const attempt = await this.deps.repository.attempts.get(attemptId);
     const before = attempt && (await this.deps.repository.receipts.get(attempt.sha256));
     if (!attempt || before?.state !== 'UNCERTAIN') return 'ALREADY_RESOLVED';
-    const { result } = await checkAttempt(this.deps, attemptId, final);
+    const { result, detail } = await checkAttempt(this.deps, attemptId, final);
     if (result === 'NOT_APPLICABLE') return 'ALREADY_RESOLVED';
     const after = await this.deps.repository.receipts.get(attempt.sha256);
     if (after?.state === 'SENT') return 'SENT';
     if (after?.state === 'FAILED') return 'FAILED';
+    // D43: the last scheduled lookup could not resolve it (logs unavailable…): no other lookup is scheduled, so the
+    // operator is told, once per attempt. The hourly sweep keeps looking it up without ever failing it.
+    if (final && after?.state === 'UNCERTAIN') await this.unresolved(after, attempt, result === 'UNAVAILABLE' ? `the logs API was unavailable (${detail ?? 'no detail'})` : `last lookup: ${result}`);
     return 'STILL_UNCERTAIN';
+  }
+
+  private async unresolved(receipt: Receipt, attempt: Attempt, reason: string): Promise<void> {
+    const { repository, clock, newId, serial } = this.deps;
+    await serial.run(() =>
+      repository.transaction(async (tx) => {
+        const raised = await tx.alerts.list({ type: 'UNCERTAIN_UNRESOLVED', subject: receipt.sha256 });
+        if (raised.some((a) => a.detail.includes(attempt.attemptId))) return;
+        await raiseAlert(tx, newId, {
+          alertId: newId(),
+          type: 'UNCERTAIN_UNRESOLVED',
+          subject: receipt.sha256,
+          detail:
+            `${receipt.fileName}: attempt ${attempt.attemptId} is still UNCERTAIN after its last scheduled lookup; ${reason}. ` +
+            'The hourly sweep keeps looking it up for 72 h without failing it; meanwhile check it with ' +
+            `POST /receipts/${receipt.sha256}/verify-delivery or resolve it with POST /receipts/${receipt.sha256}/resolve.`,
+          raisedAt: clock.now(),
+        });
+      }),
+    );
   }
 }
 
@@ -211,9 +234,12 @@ async function needsLookup(stores: Pick<BulkMailerStores, 'receipts' | 'attempts
 }
 
 /**
- * Sweep of SENT receipts still UNCONFIRMED between N and 72 hours after the send, in case a webhook was lost, and
- * the WEBHOOKS_NOT_RECEIVED alert (§9.4), at most once per execution: proven loss (the logs know a delivery state
- * no webhook reported) or total silence (no webhook for any send), judged N hours after the execution.
+ * Hourly sweep (§9.4) of the sends whose delivery is still pending, in case a webhook was lost:
+ * - SENT receipts UNCONFIRMED between N and 72 hours after the send;
+ * - UNCERTAIN receipts whose last scheduled lookup is over (D43), up to 72 hours, never failed here. Beyond 72 h
+ *   a pending receipt is only visible in the batch summary and in its alert.
+ * Then the WEBHOOKS_NOT_RECEIVED alert, at most once per execution: proven loss (the logs know a delivery state no
+ * webhook reported) or total silence (no webhook for any send), judged N hours after the execution.
  */
 export class SweepUnconfirmed {
   constructor(private readonly deps: CheckDependencies & Pick<DeliveryDependencies, 'reconciliation'>) {}
@@ -223,6 +249,7 @@ export class SweepUnconfirmed {
     const now = clock.now();
     const from = new Date(now.getTime() - reconciliation.sweepMaxHours * 3_600_000);
     const to = new Date(now.getTime() - reconciliation.sweepAfterHours * 3_600_000);
+    const afterLastLookup = new Date(now.getTime() - (reconciliation.uncertainDelaysMinutes.at(-1) ?? 0) * 60_000);
     let lookedUp = 0;
     let updated = 0;
     let alerts = 0;
@@ -231,16 +258,28 @@ export class SweepUnconfirmed {
     };
     const webhookArrived = async (attemptId: string) => (await repository.deliveryEvents.listByAttempt(attemptId)).some((e) => e.source === 'WEBHOOK');
 
+    const candidates: Array<{ receipt: Receipt; attempt: Attempt; since: Date }> = [];
     for (const receipt of await repository.receipts.listByState('SENT')) {
       if (receipt.deliveryState !== 'UNCONFIRMED') continue;
       const attempt = await latestAttempt(repository, receipt);
       if (!attempt?.finishedAt || attempt.finishedAt < from || attempt.finishedAt > to) continue;
+      candidates.push({ receipt, attempt, since: attempt.finishedAt });
+    }
+    for (const receipt of await repository.receipts.listByState('UNCERTAIN')) {
+      const attempt = await latestAttempt(repository, receipt);
+      // A send left UNCERTAIN by a crash has no finish time: its start counts.
+      const since = attempt?.finishedAt ?? attempt?.startedAt;
+      if (!attempt || !since || since < from || since > afterLastLookup) continue;
+      candidates.push({ receipt, attempt, since });
+    }
+    for (const { receipt, attempt } of candidates) {
       lookedUp += 1;
+      // Never final: an UNCERTAIN is never failed by the sweep (D43).
       const { result, providerStatus } = await checkAttempt(this.deps, attempt.attemptId, false);
       if (result !== 'UPDATED') continue;
       updated += 1;
       // A resend has no execution: its proven loss is judged here. ZeptoMail has no webhook for a process failure.
-      if (!attempt.executionId && providerStatus !== 'PROCESS_FAILED' && !(await webhookArrived(attempt.attemptId))) {
+      if (receipt.state === 'SENT' && !attempt.executionId && providerStatus !== 'PROCESS_FAILED' && !(await webhookArrived(attempt.attemptId))) {
         await raise(attempt.attemptId, `the provider logs show ${providerStatus ?? 'a delivery state'} for ${receipt.fileName} but no webhook arrived`);
       }
     }
