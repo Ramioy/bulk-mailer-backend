@@ -743,6 +743,8 @@ Hallazgos M8, M10 y M13 de `docs/audit/auditoria-2026-10-31.md`, corregidos en l
 | # | Decisión |
 |---|---|
 | D53 | ✅ **(B2, pregunta 3 de D50) No se reemplaza el nombre en la misma carga.** Si el operador sube con el nombre corregido un archivo que ya estaba registrado con un nombre equivocado, el sistema sigue tratándolo como `DUPLICATE_CONFLICT` (D31). Para corregirlo, el operador **retira el soporte con el nombre equivocado** (`DELETE /receipts/{sha256}`, que termina el conflicto) y **sube el archivo con el nombre corregido**. Decisión del usuario del 2026-10-31 |
+| D54 | ✅ **Contadores de una ejecución recuperada.** `lastCounters` (recuperación tras caída y aborto, D32) toma el último evento de progreso **con contadores** (`STARTED`, `RECEIPT_PROCESSED`, `FINISHED`), no el último evento. Antes, si el proceso moría durante una pausa (`WAITING`), el `FINISHED` quedaba con `processed 0` y así lo mostraba `GET /executions/{id}` para siempre. Hallado por el tercer mes simulado (`sim/reports/2026-10-31-mes-simulado-3.md`). Aprobado por el usuario el 2026-10-31 |
+| D55 | ✅ **`release-files` no reabre el lote.** Liberar los archivos (D51) publica una versión nueva del manifiesto, pero el lote conserva su estado (`COMPLETED` o `STOPPED`); solo un lote `OPEN` sigue `OPEN`. Antes `publishNextManifest` ponía `OPEN` siempre, y un lote terminado parecía por enviar. Las demás publicaciones (carga, retiro, conflicto resuelto, destinatarios) siguen reabriendo, porque sí cambian lo que hay por enviar. Hallado por el tercer mes simulado. Aprobado por el usuario el 2026-10-31 |
 
 ### Cómo quedó implementado
 

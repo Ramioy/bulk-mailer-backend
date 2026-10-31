@@ -269,6 +269,36 @@ describe('RecoverAfterCrash', () => {
     await run.execute(started.value.executionId);
     expect(await states(fx)).toEqual(['SENT', 'UNCERTAIN', 'PENDING']);
   });
+
+  it('D54: keeps the counters of the interrupted execution even when its last event carries none (a WAITING)', async () => {
+    const fx = executionFixture();
+    await fx.uploadValid(3);
+    let crash: () => void = () => undefined;
+    const crashed = new Promise<void>((resolve) => {
+      crash = resolve;
+    });
+    let calls = 0;
+    const dying: EmailProvider = {
+      send: async () => {
+        calls += 1;
+        if (calls === 1) return { kind: 'ACCEPTED', providerRequestId: 'r1' };
+        crash();
+        return new Promise<never>(() => undefined);
+      },
+    };
+    const run = new RunExecution({ ...fx.execDeps, emailProvider: dying });
+    const started = await fx.start.execute('operador', OCT_2026, 'CASH', 1);
+    if (!started.ok) throw new Error('not started');
+    void run.execute(started.value.executionId);
+    await crashed;
+    // The process died while a growing wait was announced: the last stored event has no counters.
+    await fx.repository.executionEvents.append(started.value.executionId, fx.clock.now(), { type: 'WAITING', reason: 'HTTP 503', seconds: 30, consecutiveIncidents: 1, nextSendAt: new Date(fx.clock.now().getTime() + 30_000).toISOString() });
+
+    await fx.recover.execute();
+    const finished = (await fx.repository.executionEvents.last(started.value.executionId))?.event;
+    expect(finished).toMatchObject({ type: 'FINISHED', stopReason: 'INTERRUPTED', counters: { total: 3, processed: 1 } });
+    expect(await fx.status.byId(started.value.executionId)).toMatchObject({ result: 'STOPPED', counters: { total: 3, processed: 1 } });
+  });
 });
 
 describe('GetExecution (D10)', () => {

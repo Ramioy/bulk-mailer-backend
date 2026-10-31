@@ -39,8 +39,9 @@ export class ReleaseBatchFiles {
           await retireFile(tx, receipt, now);
           await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'FILE_RELEASED', detail: `by ${operator}` });
         }
-        // Ready entries may have left the batch: the operator reviews a new manifest before the next execution.
-        const published = await publishNextManifest(tx, period, block, now);
+        // Ready entries may have left the batch: the operator reviews a new manifest before the next execution. The
+        // batch keeps its state (D55): releasing the files of a COMPLETED batch does not reopen it.
+        const published = await publishNextManifest(tx, period, block, now, { keepState: true });
         await tx.audit.append({
           auditId: newId(),
           actor: operator,

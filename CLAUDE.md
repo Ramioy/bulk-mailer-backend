@@ -36,11 +36,16 @@ Hechos y en `main`: pasos 0 a 11 (el 10 quedó cubierto por el 7), plantilla de 
 
 Preguntas abiertas de la auditoría: **ninguna**. Pendiente: fusión de `audita` a `main` (CI solo corre en `main` o en PR) y las validaciones de §12.7 con la cuenta real.
 
-### ✅ Hecho: tercer mes simulado contra `main` auditado (rama `simulacion`, 2026-10-31)
+### ✅ Tercer mes simulado contra `main` auditado (2026-10-31) y D54–D55
 
-`main` (`6951bc3`) fusionado en `simulacion` (merge, nunca al revés). `sim/` adaptado a la auditoría y ampliado con los escenarios de D32–D53 (S6–S11 en `decisiones.md`). Informe: `sim/reports/2026-10-31-mes-simulado-3.md`. Resultado: los 300 soportes igual que en el segundo mes; 10 de 12 escenarios de la auditoría comprobados de punta a punta; **ningún defecto funcional en `main`**. Dos propuestas menores para `main`, pendientes de aprobación del usuario: **D54** (`lastCounters` debe leer el último evento *con contadores*) y **D55** (`release-files` no debe reabrir un lote `COMPLETED`). Pendiente: repetir el mes para comprobar S10 (apagado cooperativo con la espera de entrega atendiendo la señal) con las expectativas ya corregidas.
+`main` se llevó a la rama `simulacion` (merge `main → simulacion`, nunca al revés) y se corrió el mes con los escenarios de la auditoría (S6–S11 en `decisiones.md`; informe `sim/reports/2026-10-31-mes-simulado-3.md` en esa rama). Resultado: los 300 soportes igual que en el segundo mes; 10 de 12 escenarios de la auditoría de punta a punta; ningún defecto funcional. Dos defectos menores corregidos en `main` con aprobación del usuario: **D54** (`lastCounters` toma el último evento *con contadores*) y **D55** (`release-files` no reabre un lote `COMPLETED`). El usuario decidió **no repetir** el mes simulado por ahora.
+
+### 🧩 Cliente web: repositorio aparte
+
+Por decisión del usuario (2026-10-31) el cliente web vive en un repositorio propio (`bulk-mailer-frontend`, hermano de este), con pruebas e2e (Playwright) contra este backend corriendo en local con adaptadores `fake`. Este repositorio no cambia por el cliente; si el cliente necesita algo del backend, se propone aquí como decisión.
 
 Cómo correrlo: `pnpm sim:up` (construye la imagen, migra, aprovisiona), `pnpm sim:run` (el guion pide al anfitrión parar/arrancar contenedores vía `sim/out/control`; `sim/run.sh` lo atiende), `pnpm sim:down`. `sim/out/` no se rastrea en git (S9).
+
 
 ### ⏸ EN ESPERA: paso 12
 

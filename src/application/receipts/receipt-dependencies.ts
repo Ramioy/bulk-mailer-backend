@@ -94,9 +94,19 @@ export function isRecipientError(errorType: string | undefined): boolean {
  * Builds and stores the next manifest version of the batch, creating the batch on first use.
  * A COMPLETED or STOPPED batch becomes OPEN again.
  */
-export async function publishNextManifest(stores: BulkMailerStores, period: Period, block: Block, now: Date): Promise<Manifest> {
+export async function publishNextManifest(
+  stores: BulkMailerStores,
+  period: Period,
+  block: Block,
+  now: Date,
+  options: {
+    /** D55: the batch keeps its state (a release of files does not reopen a COMPLETED or STOPPED batch). */
+    readonly keepState?: boolean;
+  } = {},
+): Promise<Manifest> {
   const batch = await stores.batches.get(period, block);
-  if (batch) assertBatchTransition(batch.state, 'OPEN');
+  const keep = options.keepState === true && batch !== undefined && batch.state !== 'OPEN';
+  if (batch && !keep) assertBatchTransition(batch.state, 'OPEN');
 
   const receipts = await stores.receipts.listByBatch(period, block);
   const manifest = buildManifest(
@@ -112,7 +122,8 @@ export async function publishNextManifest(stores: BulkMailerStores, period: Peri
       inConflict: inConflict(r),
     })),
   );
-  await stores.batches.save({ period, block, state: 'OPEN', manifestVersion: manifest.version, updatedAt: now, version: batch?.version ?? 1 });
+  if (keep) await stores.batches.save({ ...batch, manifestVersion: manifest.version, updatedAt: now });
+  else await stores.batches.save({ period, block, state: 'OPEN', manifestVersion: manifest.version, updatedAt: now, version: batch?.version ?? 1 });
   await stores.batches.saveManifest(period, block, manifest);
   return manifest;
 }
