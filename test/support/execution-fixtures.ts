@@ -1,12 +1,16 @@
 import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-provider';
 import { RecordingAlertNotifier, RecordingProgressNotifier } from '../../src/adapters/outbound/fakes/recording-notifiers';
+import { InProcessEventBus } from '../../src/adapters/outbound/events/in-process-event-bus';
 import { InMemoryJobQueue } from '../../src/adapters/outbound/in-memory/in-memory-job-queue';
+import { alertFromEvent } from '../../src/application/alerts/raise-alert';
+import { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { UploadReceipts } from '../../src/application/receipts/upload-receipts';
 import type { ExecutionDependencies } from '../../src/application/sending/execution-dependencies';
 import { GetExecution } from '../../src/application/sending/get-execution';
 import { RecoverAfterCrash } from '../../src/application/sending/recover-after-crash';
 import { RunExecution } from '../../src/application/sending/run-execution';
 import { StartExecution } from '../../src/application/sending/start-execution';
+import { DEFAULT_EMAIL_TEMPLATE } from '../../src/application/sending/email-template';
 import { DEFAULT_PROVIDER_INCIDENT_POLICY } from '../../src/domain/sending/incident-policy';
 import { OCT_2026 } from './builders';
 import { fileName, pdfBytes, receiptFixture, type ReceiptFixture } from './receipt-fixtures';
@@ -16,6 +20,9 @@ export interface ExecutionFixture extends ReceiptFixture {
   readonly jobs: InMemoryJobQueue;
   readonly progress: RecordingProgressNotifier;
   readonly alerts: RecordingAlertNotifier;
+  readonly bus: InProcessEventBus;
+  /** Delivers the outbox (alerts reach `alerts` only through it). */
+  readonly relay: OutboxRelay;
   readonly execDeps: ExecutionDependencies;
   readonly upload: UploadReceipts;
   readonly start: StartExecution;
@@ -41,15 +48,18 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
     emailProvider: email,
     jobQueue: jobs,
     progress,
-    alertNotifiers: [alerts],
     clock: base.clock,
     newId: base.deps.newId,
     serial: base.deps.serial,
     timeZone: base.deps.timeZone,
     pauseBetweenSendsMs: 1000,
     incidentPolicy: DEFAULT_PROVIDER_INCIDENT_POLICY,
+    emailTemplate: DEFAULT_EMAIL_TEMPLATE,
     ...overrides,
   };
+  const bus = new InProcessEventBus();
+  bus.subscribe('ALERT_RAISED', (event) => alerts.notify(alertFromEvent(event.payload)));
+  const relay = new OutboxRelay(base.repository, bus, base.clock);
   const upload = new UploadReceipts(base.deps);
   const start = new StartExecution(execDeps);
   const run = new RunExecution(execDeps);
@@ -60,6 +70,8 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
     jobs,
     progress,
     alerts,
+    bus,
+    relay,
     execDeps,
     upload,
     start,

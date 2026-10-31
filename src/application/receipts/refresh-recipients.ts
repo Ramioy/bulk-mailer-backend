@@ -2,6 +2,7 @@ import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
 import type { Receipt } from '../../domain/receipt/receipt';
 import { err, ok, type Result } from '../../domain/shared/result';
+import { domainEvent } from '../events/domain-events';
 import {
   cachedResolver,
   isRecipientError,
@@ -44,6 +45,9 @@ export class RefreshRecipients {
           subject: `${period.toString()}/${block}`,
           newValue: `manifest v${published.version}`,
         });
+        await tx.outbox.add(
+          domainEvent(this.deps.newId, 'RECIPIENTS_REFRESHED', now, { period: period.toString(), block, manifestVersion: published.version }),
+        );
         return published;
       });
       return ok({ manifestVersion: manifest.version, refreshed: updated.length });

@@ -147,6 +147,35 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
       });
     });
 
+    describe('outbox', () => {
+      const event = (eventId: string) => ({ eventId, type: 'RECEIPT_SENT' as const, occurredAt: T0, payload: { sha256: hashOf('a'), n: 1 } });
+
+      it('returns pending events oldest first and forgets dispatched ones', async () => {
+        await repo.outbox.add(event('ev1'));
+        await repo.outbox.add(event('ev2'));
+        await repo.transaction(async (tx) => {
+          const pending = await tx.outbox.lockPending(10);
+          expect(pending).toEqual([
+            { event: event('ev1'), attempts: 0 },
+            { event: event('ev2'), attempts: 0 },
+          ]);
+          await tx.outbox.markDispatched('ev1', T0);
+          await tx.outbox.markFailed('ev2', 'consumer down');
+        });
+        expect(await repo.transaction((tx) => tx.outbox.lockPending(10))).toEqual([{ event: event('ev2'), attempts: 1 }]);
+      });
+
+      it('discards events of a transaction that fails', async () => {
+        await expect(
+          repo.transaction(async (tx) => {
+            await tx.outbox.add(event('lost'));
+            throw new Error('boom');
+          }),
+        ).rejects.toThrow('boom');
+        expect(await repo.transaction((tx) => tx.outbox.lockPending(10))).toEqual([]);
+      });
+    });
+
     describe('transaction', () => {
       it('keeps every change when the work succeeds', async () => {
         await repo.transaction(async (tx) => {

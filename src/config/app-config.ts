@@ -30,6 +30,8 @@ export interface AppConfig {
   readonly incidentMaxWaitSeconds: number;
   /** Archive copy (bcc) address; needed only while the copy setting is enabled. */
   readonly archiveCopyAddress?: string;
+  /** JSON file `{ "subject": "…", "body": "…" }` replacing the default email template. */
+  readonly emailTemplateFile?: string;
   readonly jobRunnerEnabled: boolean;
   readonly jobRunnerPollMs: number;
 }
@@ -84,6 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
   const archiveCopyAddress = env.ARCHIVE_COPY_ADDRESS ?? '';
   if (archiveCopyAddress !== '' && !/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(archiveCopyAddress)) problems.push('ARCHIVE_COPY_ADDRESS is not a valid email');
+  const emailTemplateFile = env.EMAIL_TEMPLATE_FILE ?? '';
   const runner = env.JOB_RUNNER_ENABLED ?? 'true';
   if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
   const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
@@ -107,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     incidentBaseWaitSeconds,
     incidentMaxWaitSeconds,
     ...(archiveCopyAddress === '' ? {} : { archiveCopyAddress }),
+    ...(emailTemplateFile === '' ? {} : { emailTemplateFile }),
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,
   };

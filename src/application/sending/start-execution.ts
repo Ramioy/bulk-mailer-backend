@@ -3,6 +3,7 @@ import { diffManifests, type ManifestDifference } from '../../domain/batch/manif
 import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
 import { err, ok, type Result } from '../../domain/shared/result';
+import { domainEvent } from '../events/domain-events';
 import { refuseBatchCommand, type BatchCommandError } from '../receipts/receipt-dependencies';
 import type { ExecutionDependencies } from './execution-dependencies';
 import { readyManifestEntries } from './ready-entries';
@@ -71,6 +72,9 @@ export class StartExecution {
         newValue: `manifest v${batch.manifestVersion}`,
         note: `execution ${executionId}${copyEnabled ? `, copy to ${this.deps.archiveCopyAddress}` : ''}`,
       });
+      await tx.outbox.add(
+        domainEvent(newId, 'EXECUTION_STARTED', now, { executionId, period: period.toString(), block, manifestVersion: batch.manifestVersion, startedBy: operator }),
+      );
       return true;
     });
     if (!started) return err({ code: 'EXECUTION_IN_PROGRESS' });

@@ -10,6 +10,7 @@ import { toSha256, type Sha256 } from '../../domain/receipt/sha256';
 import { decideUpload } from '../../domain/receipt/upload-rule';
 import { err, ok, type Result } from '../../domain/shared/result';
 import type { FileErrorType, ReceiptErrorType } from '../../domain/shared/error-types';
+import { domainEvent } from '../events/domain-events';
 import {
   cachedResolver,
   publishNextManifest,
@@ -169,6 +170,14 @@ export class UploadReceipts {
         newValue: `manifest v${published.version}`,
         note: `${changed.length} registered, ${results.length - changed.length} not registered`,
       });
+      await tx.outbox.add(
+        domainEvent(this.deps.newId, 'RECEIPTS_UPLOADED', now, {
+          period: period.toString(),
+          block,
+          manifestVersion: published.version,
+          registered: changed.map((r) => r.sha256),
+        }),
+      );
       return published;
     });
     return ok({ manifestVersion: manifest.version, results });

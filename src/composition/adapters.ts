@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 import { FakeContractSource, type FakeContract } from '../adapters/outbound/fakes/fake-contract-source';
 import { FakeEmailProvider } from '../adapters/outbound/fakes/fake-email-provider';
+import { InProcessEventBus } from '../adapters/outbound/events/in-process-event-bus';
 import { PostgresJobQueue } from '../adapters/outbound/postgres/postgres-job-queue';
 import { SseProgressHub } from '../adapters/outbound/sse/sse-progress-hub';
 import { UiAlertNotifier } from '../adapters/outbound/ui-alert-notifier';
@@ -14,6 +15,7 @@ import { createDataSource } from '../adapters/outbound/postgres/data-source';
 import { PostgresBulkMailerRepository } from '../adapters/outbound/postgres/postgres-bulk-mailer-repository';
 import { EnvSecretStore } from '../adapters/outbound/system/env-secret-store';
 import { SystemClock } from '../adapters/outbound/system/system-clock';
+import { DEFAULT_EMAIL_TEMPLATE, templateProblems, type EmailTemplate } from '../application/sending/email-template';
 import type { AppConfig } from '../config/app-config';
 import type { AlertNotifier } from '../ports/alert-notifier';
 import type { Authenticator } from '../ports/authenticator';
@@ -39,6 +41,8 @@ export interface Adapters {
   readonly jobQueue: JobQueue;
   /** Progress fan-out to SSE streams; also the ProgressNotifier adapter. */
   readonly progressHub: SseProgressHub;
+  /** Delivery side of the outbox; in-process for now, Kafka in the future. */
+  readonly eventBus: InProcessEventBus;
   /** Registered alert providers; the interface is the only one for now. */
   readonly alertNotifiers: readonly AlertNotifier[];
   /** Releases connections on shutdown. */
@@ -46,6 +50,15 @@ export interface Adapters {
 }
 
 export const JWT_SIGNING_KEY_SECRET = 'JWT_SIGNING_KEY';
+
+/** The default template, or the one in EMAIL_TEMPLATE_FILE; refuses to start with an invalid template. */
+export function loadEmailTemplate(config: AppConfig): EmailTemplate {
+  if (!config.emailTemplateFile) return DEFAULT_EMAIL_TEMPLATE;
+  const template = JSON.parse(readFileSync(config.emailTemplateFile, 'utf8')) as EmailTemplate;
+  const problems = templateProblems(template);
+  if (problems.length > 0) throw new Error(`Invalid EMAIL_TEMPLATE_FILE:\n- ${problems.join('\n- ')}`);
+  return template;
+}
 
 /** Decodes the base64 signing key from the secret store. */
 export async function loadSigningKey(secrets: SecretStore): Promise<Buffer> {
@@ -90,6 +103,7 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     emailProvider: new FakeEmailProvider(),
     jobQueue: new PostgresJobQueue(dataSource, () => clock.now()),
     progressHub: new SseProgressHub(),
+    eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],
     close: () => dataSource.destroy(),
   };

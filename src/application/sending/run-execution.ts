@@ -12,7 +12,9 @@ import { ProviderIncidentTracker, SourceIncidentTracker } from '../../domain/sen
 import { resolveSendOutcome, type SendOutcome } from '../../domain/sending/send-outcome';
 import { BatchStopReason, SendErrorType, type ReceiptErrorType } from '../../domain/shared/error-types';
 import { raiseAlert } from '../alerts/raise-alert';
-import { emailBody, emailSubject } from './email-template';
+import { domainEvent } from '../events/domain-events';
+import type { DomainEventType } from '../../ports/event-bus';
+import { renderEmail } from './email-template';
 import type { ExecutionDependencies } from './execution-dependencies';
 import { Counters, ProgressRecorder } from './progress-recorder';
 import { readyManifestEntries } from './ready-entries';
@@ -104,12 +106,18 @@ export class RunExecution {
     }
 
     const concept = (await repository.concepts.list()).find((c) => c.key === entry.conceptKey) ?? { subject: entry.conceptKey };
+    const { subject, textBody } = renderEmail(this.deps.emailTemplate, {
+      concept,
+      period: execution.period,
+      complexName: resolved.value.complexName,
+      fileName: entry.fileName,
+    });
     const outcome = await emailProvider.send({
       attemptId: attempt.attemptId,
       to: entry.email,
       copyTo: execution.copyAddress,
-      subject: emailSubject(concept, execution.period),
-      textBody: emailBody(concept, execution.period, resolved.value.complexName),
+      subject,
+      textBody,
       attachment: { name: entry.fileName, content },
     });
     const resolution = resolveSendOutcome(outcome);
@@ -147,6 +155,7 @@ export class RunExecution {
       await tx.attempts.save({ ...attempt, finishedAt: now, detail: `not sent: ${errorType}${detail ? ` (${detail})` : ''}` });
       await tx.receipts.save(failed);
       await tx.receipts.appendHistory({ sha256: failed.sha256, at: now, event: 'FAILED', detail: errorType });
+      await tx.outbox.add(this.receiptEvent('RECEIPT_SEND_FAILED', now, execution, attempt, { errorType, providerCalled: false }));
     });
     counters.record('FAILED', errorType);
     await this.emitProcessed(execution, failed, counters);
@@ -183,9 +192,20 @@ export class RunExecution {
       });
       await tx.receipts.save(updated);
       await tx.receipts.appendHistory({ sha256: updated.sha256, at: now, event: state, detail: detail ?? outcome.kind });
+      const type: DomainEventType = state === 'SENT' ? 'RECEIPT_SENT' : state === 'UNCERTAIN' ? 'RECEIPT_UNCERTAIN' : 'RECEIPT_SEND_FAILED';
+      await tx.outbox.add(this.receiptEvent(type, now, execution, attempt, { state, outcome: outcome.kind, errorType, providerCalled: true }));
     });
     counters.record(state, errorType);
     await this.emitProcessed(execution, updated, counters);
+  }
+
+  private receiptEvent(type: DomainEventType, at: Date, execution: Execution, attempt: Attempt, extra: Record<string, unknown>) {
+    return domainEvent(this.deps.newId, type, at, {
+      sha256: attempt.sha256,
+      attemptId: attempt.attemptId,
+      executionId: execution.executionId,
+      ...extra,
+    });
   }
 
   private async emitProcessed(execution: Execution, receipt: Receipt, counters: Counters): Promise<void> {
@@ -211,6 +231,18 @@ export class RunExecution {
         assertBatchTransition(batch.state, result);
         await tx.batches.save({ ...batch, state: result, stopReason, updatedAt: now });
       }
+      await tx.outbox.add(
+        domainEvent(newId, 'EXECUTION_FINISHED', now, { executionId: execution.executionId, result, stopReason, counters: counters.snapshot() }),
+      );
+      if (stopReason) {
+        await raiseAlert(tx, newId, {
+          alertId: newId(),
+          type: 'BATCH_STOPPED',
+          subject: execution.executionId,
+          detail: `${execution.period.toString()}/${execution.block} stopped: ${stopReason}`,
+          raisedAt: now,
+        });
+      }
       if (result === 'COMPLETED') {
         // Files are discarded once the batch is processed (D4). FAILED receipts need them uploaded again (A2).
         for (const receipt of await tx.receipts.listByBatch(execution.period, execution.block)) {
@@ -221,14 +253,5 @@ export class RunExecution {
     if (result === 'COMPLETED') await fileStore.purgeBatch(execution.period, execution.block);
 
     await this.progress.emit(execution.executionId, { type: 'FINISHED', batchState: result, stopReason, counters: counters.snapshot() });
-    if (stopReason) {
-      await raiseAlert(repository.alerts, this.deps.alertNotifiers, {
-        alertId: newId(),
-        type: 'BATCH_STOPPED',
-        subject: execution.executionId,
-        detail: `${execution.period.toString()}/${execution.block} stopped: ${stopReason}`,
-        raisedAt: now,
-      });
-    }
   }
 }

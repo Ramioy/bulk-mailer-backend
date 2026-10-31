@@ -2,6 +2,7 @@ import type { Alert } from '../domain/alert/alert';
 import type { AuditEntry } from '../domain/audit/audit';
 import type { Batch, Execution } from '../domain/batch/batch';
 import type { Manifest } from '../domain/batch/manifest';
+import type { DomainEvent } from './event-bus';
 import type { ProgressEvent, StoredProgressEvent } from './progress-notifier';
 import type { Block } from '../domain/block/block';
 import type { Concept } from '../domain/concept/concept';
@@ -91,6 +92,21 @@ export interface ConceptStore {
   save(concept: Concept): Promise<void>;
 }
 
+export interface PendingEvent {
+  readonly event: DomainEvent;
+  /** Failed deliveries so far. */
+  readonly attempts: number;
+}
+
+/** Outbox: domain events written in the same transaction as the changes they describe. */
+export interface OutboxStore {
+  add(event: DomainEvent): Promise<void>;
+  /** Oldest undelivered events, locked for this transaction (other relays skip them). */
+  lockPending(limit: number): Promise<PendingEvent[]>;
+  markDispatched(eventId: string, at: Date): Promise<void>;
+  markFailed(eventId: string, error: string): Promise<void>;
+}
+
 export interface SettingsStore {
   archiveCopyEnabled(): Promise<boolean>;
   setArchiveCopyEnabled(enabled: boolean): Promise<void>;
@@ -108,6 +124,7 @@ export interface BulkMailerStores {
   readonly audit: AuditLog;
   readonly concepts: ConceptStore;
   readonly settings: SettingsStore;
+  readonly outbox: OutboxStore;
 }
 
 /** Persistence of everything Bulk Mailer records. Records are permanent. */

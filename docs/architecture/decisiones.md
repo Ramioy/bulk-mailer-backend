@@ -90,8 +90,7 @@ P1 a P4: ✅ **aprobados** el 2026-10-31.
 - **Volver a enviar la misma versión tras una detención** procesa solo los soportes que siguen listos; un `SENT` nunca vuelve a entrar.
 - **El `409` después de una ejecución** muestra como `REMOVED` los soportes que ya se enviaron (dejaron de estar listos), junto a los nuevos `ADDED`. Coincide con la definición de "excluido".
 - **Contadores:** el total de una ejecución son los soportes listos al iniciarla.
-- **Bus de eventos (*outbox*):** no se implementa todavía. D11 se resuelve con la tabla `execution_events`. El puerto `EventBus` se mantiene para cuando exista un consumidor (Kafka a futuro).
-- **Texto del correo provisional** (`src/application/sending/email-template.ts`): pendiente de aprobación del área de negocio.
+- **Texto del correo:** ✅ aprobado el 2026-10-31 y **configurable** (ver abajo).
 - **Si el proceso cae justo entre registrar la ejecución y encolarla,** la recuperación al reiniciar la detiene como `INTERRUPTED`.
 - **Alertas:** se guardan siempre y la interfaz las lee con `GET /alerts`; `UiAlertNotifier` es el único proveedor registrado.
 
@@ -110,3 +109,13 @@ P1 a P4: ✅ **aprobados** el 2026-10-31.
 - Abrir el SSE con `fetch` y `Authorization: Bearer` (D12), no con `EventSource`.
 - Al recibir `TOKEN_EXPIRED` o perder la conexión: renovar el token y reconectar enviando `Last-Event-ID` con el último `id` recibido.
 - Al iniciar sesión: consultar `GET /executions/current` y, si hay una en curso, abrir el SSE con `Last-Event-ID = lastEventSeq`.
+
+## Plantilla del correo y bus de eventos (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D14 | ✅ La plantilla es **configurable** con `EMAIL_TEMPLATE_FILE` (JSON `{ "subject", "body" }`) y marcadores `{{conceptSubject}}`, `{{periodLabel}}`, `{{complexName}}`, `{{fileName}}`. Por defecto, el texto aprobado. Un marcador desconocido, una parte vacía o un asunto con el nombre del archivo (lleva el contrato) impiden arrancar |
+| D15 | ✅ **Bus de eventos con *outbox***: cada caso de uso escribe sus eventos de dominio en `outbox_events` dentro de la misma transacción que sus cambios. Un despachador los entrega después al `EventBus` (en proceso; Kafka a futuro), al menos una vez. Si un consumidor falla, el evento se vuelve a entregar en la siguiente pasada, hasta 10 intentos (es entrega interna, no un reenvío de correo) |
+| D16 | Las **alertas** llegan a los proveedores registrados a través del bus (`ALERT_RAISED`): un proveedor que falla nunca bloquea la operación |
+
+Eventos: `RECEIPTS_UPLOADED`, `RECEIPT_REMOVED`, `RECIPIENTS_REFRESHED`, `EXECUTION_STARTED`, `RECEIPT_SENT`, `RECEIPT_SEND_FAILED`, `RECEIPT_UNCERTAIN`, `EXECUTION_FINISHED`, `ALERT_RAISED`.

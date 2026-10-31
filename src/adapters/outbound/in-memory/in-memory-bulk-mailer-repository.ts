@@ -13,6 +13,7 @@ import type { Attempt } from '../../../domain/sending/attempt';
 import type { Suppression } from '../../../domain/suppression/suppression';
 import { DuplicateAttemptError, type BulkMailerRepository, type BulkMailerStores } from '../../../ports/bulk-mailer-repository';
 import type { StoredProgressEvent } from '../../../ports/progress-notifier';
+import type { DomainEvent } from '../../../ports/event-bus';
 
 const batchKey = (period: Period, block: Block) => `${period.toString()}|${block}`;
 
@@ -30,6 +31,7 @@ interface State {
   audit: AuditEntry[];
   concepts: Map<string, Concept>;
   archiveCopyEnabled: boolean;
+  outbox: Array<{ event: DomainEvent; attempts: number; dispatchedAt?: Date; lastError?: string }>;
 }
 
 function snapshot(state: State): State {
@@ -47,6 +49,7 @@ function snapshot(state: State): State {
     alerts: [...state.alerts],
     audit: [...state.audit],
     concepts: new Map(state.concepts),
+    outbox: state.outbox.map((e) => ({ ...e })),
   };
 }
 
@@ -66,6 +69,7 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     audit: [],
     concepts: new Map(INITIAL_CONCEPTS.map((c) => [c.key, c])),
     archiveCopyEnabled: false,
+    outbox: [],
   };
 
   readonly receipts: BulkMailerStores['receipts'] = {
@@ -176,6 +180,28 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     archiveCopyEnabled: async () => this.state.archiveCopyEnabled,
     setArchiveCopyEnabled: async (enabled) => {
       this.state.archiveCopyEnabled = enabled;
+    },
+  };
+
+  readonly outbox: BulkMailerStores['outbox'] = {
+    add: async (event) => {
+      this.state.outbox.push({ event, attempts: 0 });
+    },
+    lockPending: async (limit) =>
+      this.state.outbox
+        .filter((e) => !e.dispatchedAt)
+        .slice(0, limit)
+        .map((e) => ({ event: e.event, attempts: e.attempts })),
+    markDispatched: async (eventId, at) => {
+      const entry = this.state.outbox.find((e) => e.event.eventId === eventId);
+      if (entry) entry.dispatchedAt = at;
+    },
+    markFailed: async (eventId, error) => {
+      const entry = this.state.outbox.find((e) => e.event.eventId === eventId);
+      if (entry) {
+        entry.attempts += 1;
+        entry.lastError = error;
+      }
     },
   };
 

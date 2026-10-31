@@ -9,9 +9,11 @@ import { FakeContractSource } from '../../src/adapters/outbound/fakes/fake-contr
 import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-provider';
 import { InMemoryJobQueue } from '../../src/adapters/outbound/in-memory/in-memory-job-queue';
 import { SseProgressHub } from '../../src/adapters/outbound/sse/sse-progress-hub';
+import { InProcessEventBus } from '../../src/adapters/outbound/events/in-process-event-bus';
+import type { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { UiAlertNotifier } from '../../src/adapters/outbound/ui-alert-notifier';
 import type { JobRunner } from '../../src/adapters/inbound/jobs/job-runner';
-import { JOB_RUNNER } from '../../src/composition/tokens';
+import { JOB_RUNNER, OUTBOX_RELAY } from '../../src/composition/tokens';
 import { FixedClock } from '../../src/adapters/outbound/fakes/fixed-clock';
 import { InMemoryReceiptFileStore } from '../../src/adapters/outbound/in-memory/in-memory-receipt-file-store';
 import { BasicPdfInspector } from '../../src/adapters/outbound/pdf/basic-pdf-inspector';
@@ -32,6 +34,8 @@ export interface TestContext {
   readonly email: FakeEmailProvider;
   /** The background runner is not started in tests: call `runner.drain()` to process queued jobs. */
   readonly runner: JobRunner;
+  /** Not started in tests either: call `relay.drain()` to deliver outbox events. */
+  readonly relay: OutboxRelay;
 }
 
 /** Real LocalJwtAuthenticator over in-memory storage, with one operator account `operador`. */
@@ -57,6 +61,7 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
     emailProvider: email,
     jobQueue: new InMemoryJobQueue(() => clock.now()),
     progressHub: new SseProgressHub(),
+    eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],
     close: async () => undefined,
   };
@@ -70,5 +75,5 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
   const app = await createApp(config, adapters);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { app, adapters, repository, clock, tayrona, email, runner: app.get<JobRunner>(JOB_RUNNER) };
+  return { app, adapters, repository, clock, tayrona, email, runner: app.get<JobRunner>(JOB_RUNNER), relay: app.get<OutboxRelay>(OUTBOX_RELAY) };
 }

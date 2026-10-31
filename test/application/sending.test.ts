@@ -87,6 +87,8 @@ describe('RunExecution', () => {
     ]);
     expect(await fx.repository.executions.get(executionId)).toMatchObject({ result: 'STOPPED', stopReason: 'PROVIDER_UNAVAILABLE' });
     expect((await fx.repository.batches.get(OCT_2026, 'CASH'))).toMatchObject({ state: 'STOPPED', stopReason: 'PROVIDER_UNAVAILABLE' });
+    expect(fx.alerts.alerts).toEqual([]);
+    await fx.relay.drain();
     expect(fx.alerts.alerts).toMatchObject([{ type: 'BATCH_STOPPED' }]);
     expect(await fx.repository.alerts.list()).toHaveLength(1);
   });

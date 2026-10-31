@@ -1,6 +1,7 @@
 import type { ExecutionDependencies } from './execution-dependencies';
 import { ProgressRecorder } from './progress-recorder';
 import { raiseAlert } from '../alerts/raise-alert';
+import { domainEvent } from '../events/domain-events';
 
 /**
  * Runs at startup, before the job runner (§9.3): every receipt left SENDING becomes UNCERTAIN (it is unknown
@@ -19,6 +20,7 @@ export class RecoverAfterCrash {
       for (const receipt of sending) {
         await tx.receipts.save({ ...receipt, state: 'UNCERTAIN', updatedAt: now });
         await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'UNCERTAIN', detail: 'process restarted while sending' });
+        await tx.outbox.add(domainEvent(newId, 'RECEIPT_UNCERTAIN', now, { sha256: receipt.sha256, reason: 'process restarted while sending' }));
       }
     });
 
@@ -29,6 +31,14 @@ export class RecoverAfterCrash {
     await repository.transaction(async (tx) => {
       await tx.executions.save({ ...running, finishedAt: now, result: 'STOPPED', stopReason: 'INTERRUPTED' });
       if (batch) await tx.batches.save({ ...batch, state: 'STOPPED', stopReason: 'INTERRUPTED', updatedAt: now });
+      await tx.outbox.add(domainEvent(newId, 'EXECUTION_FINISHED', now, { executionId: running.executionId, result: 'STOPPED', stopReason: 'INTERRUPTED' }));
+      await raiseAlert(tx, newId, {
+        alertId: newId(),
+        type: 'BATCH_STOPPED',
+        subject: running.executionId,
+        detail: `${running.period.toString()}/${running.block} stopped: INTERRUPTED`,
+        raisedAt: now,
+      });
     });
     const last = await repository.executionEvents.last(running.executionId);
     const counters = last && 'counters' in last.event ? last.event.counters : { total: 0, processed: 0, byState: {}, byErrorType: {} };
@@ -37,13 +47,6 @@ export class RecoverAfterCrash {
       batchState: 'STOPPED',
       stopReason: 'INTERRUPTED',
       counters,
-    });
-    await raiseAlert(repository.alerts, this.deps.alertNotifiers, {
-      alertId: newId(),
-      type: 'BATCH_STOPPED',
-      subject: running.executionId,
-      detail: `${running.period.toString()}/${running.block} stopped: INTERRUPTED`,
-      raisedAt: now,
     });
     return { uncertain: sending.length, interrupted: running.executionId };
   }

@@ -2,7 +2,9 @@ import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplica
 
 import type { Adapters } from '../../../composition/adapters';
 import type { ExecutionUseCases } from '../../../composition/execution-use-cases';
-import { ADAPTERS, EXECUTION_USE_CASES, JOB_RUNNER } from '../../../composition/tokens';
+import { ADAPTERS, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY } from '../../../composition/tokens';
+import type { OutboxRelay } from '../../../application/events/outbox-relay';
+import { PollingLoop } from './polling-loop';
 import { APP_CONFIG, type AppConfig } from '../../../config/app-config';
 import type { JobRunner } from './job-runner';
 
@@ -10,12 +12,14 @@ import type { JobRunner } from './job-runner';
 @Injectable()
 export class BackgroundWork implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger('BackgroundWork');
+  private outboxLoop: PollingLoop | undefined;
 
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(ADAPTERS) private readonly adapters: Adapters,
     @Inject(EXECUTION_USE_CASES) private readonly executions: ExecutionUseCases,
     @Inject(JOB_RUNNER) private readonly runner: JobRunner,
+    @Inject(OUTBOX_RELAY) private readonly relay: OutboxRelay,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -26,9 +30,12 @@ export class BackgroundWork implements OnApplicationBootstrap, OnApplicationShut
     }
     await this.adapters.jobQueue.releaseAbandoned();
     this.runner.start();
+    this.outboxLoop = new PollingLoop('Outbox relay', () => this.relay.drain(), this.config.jobRunnerPollMs, this.logger);
+    this.outboxLoop.start();
   }
 
   async onApplicationShutdown(): Promise<void> {
     await this.runner.stop();
+    await this.outboxLoop?.stop();
   }
 }

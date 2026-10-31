@@ -1,5 +1,5 @@
 import type { ProviderIncidentPolicy } from '../../domain/sending/incident-policy';
-import type { AlertNotifier } from '../../ports/alert-notifier';
+import type { EmailTemplate } from './email-template';
 import type { BulkMailerRepository } from '../../ports/bulk-mailer-repository';
 import type { Clock } from '../../ports/clock';
 import type { ContractSources } from '../../ports/contract-source';
@@ -16,7 +16,6 @@ export interface ExecutionDependencies {
   readonly emailProvider: EmailProvider;
   readonly jobQueue: JobQueue;
   readonly progress: ProgressNotifier;
-  readonly alertNotifiers: readonly AlertNotifier[];
   readonly clock: Clock;
   readonly newId: () => string;
   readonly serial: SerialExecutor;
@@ -24,6 +23,7 @@ export interface ExecutionDependencies {
   /** Pause between two sends. */
   readonly pauseBetweenSendsMs: number;
   readonly incidentPolicy: ProviderIncidentPolicy;
+  readonly emailTemplate: EmailTemplate;
   /** Archive copy (bcc) address; required only while the archive copy is enabled. */
   readonly archiveCopyAddress?: string;
 }

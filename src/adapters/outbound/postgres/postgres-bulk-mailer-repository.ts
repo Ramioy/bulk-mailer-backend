@@ -27,11 +27,13 @@ import {
   type ConceptStore,
   type DeliveryEventStore,
   type ExecutionEventStore,
+  type OutboxStore,
   type ExecutionStore,
   type ReceiptStore,
   type SettingsStore,
   type SuppressionStore,
 } from '../../../ports/bulk-mailer-repository';
+import type { DomainEvent } from '../../../ports/event-bus';
 import type { ProgressEvent, StoredProgressEvent } from '../../../ports/progress-notifier';
 import { autocommit, firstRow, inTransaction, isUniqueViolation, opt, rows, type Queryable, type Row } from './queryable';
 
@@ -389,7 +391,37 @@ function stores(db: Queryable): BulkMailerStores {
     },
   };
 
-  return { receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, alerts, audit, concepts, settings };
+  const outbox: OutboxStore = {
+    async add(e) {
+      await db.query('INSERT INTO outbox_events (event_id, type, payload, occurred_at) VALUES ($1, $2, $3, $4)', [
+        e.eventId, e.type, JSON.stringify(e.payload), e.occurredAt,
+      ]);
+    },
+    async lockPending(limit) {
+      const found = await rows(
+        db,
+        'SELECT * FROM outbox_events WHERE dispatched_at IS NULL ORDER BY seq LIMIT $1 FOR UPDATE SKIP LOCKED',
+        [limit],
+      );
+      return found.map((r) => ({
+        event: {
+          eventId: r.event_id as string,
+          type: r.type as DomainEvent['type'],
+          occurredAt: r.occurred_at as Date,
+          payload: r.payload as DomainEvent['payload'],
+        },
+        attempts: r.attempts as number,
+      }));
+    },
+    async markDispatched(eventId, at) {
+      await db.query('UPDATE outbox_events SET dispatched_at = $2 WHERE event_id = $1', [eventId, at]);
+    },
+    async markFailed(eventId, error) {
+      await db.query('UPDATE outbox_events SET attempts = attempts + 1, last_error = $2 WHERE event_id = $1', [eventId, error]);
+    },
+  };
+
+  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, alerts, audit, concepts, settings };
 }
 
 export class PostgresBulkMailerRepository implements BulkMailerRepository {
@@ -404,6 +436,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
   readonly audit: AuditLog;
   readonly concepts: ConceptStore;
   readonly settings: SettingsStore;
+  readonly outbox: OutboxStore;
 
   constructor(private readonly dataSource: DataSource) {
     const s = stores(autocommit(dataSource));
@@ -418,6 +451,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
     this.audit = s.audit;
     this.concepts = s.concepts;
     this.settings = s.settings;
+    this.outbox = s.outbox;
   }
 
   async transaction<T>(work: (stores: BulkMailerStores) => Promise<T>): Promise<T> {

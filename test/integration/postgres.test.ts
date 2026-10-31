@@ -5,6 +5,7 @@ import { LocalJwtAuthenticator } from '../../src/adapters/outbound/auth/local-jw
 import { hashPassword } from '../../src/adapters/outbound/auth/password-hasher';
 import { PostgresOperatorAccountStore } from '../../src/adapters/outbound/auth/postgres-operator-account-store';
 import { FixedClock } from '../../src/adapters/outbound/fakes/fixed-clock';
+import { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { PostgresBulkMailerRepository } from '../../src/adapters/outbound/postgres/postgres-bulk-mailer-repository';
 import { PostgresJobQueue } from '../../src/adapters/outbound/postgres/postgres-job-queue';
 import { bulkMailerRepositoryContract } from '../contracts/bulk-mailer-repository.contract';
@@ -88,6 +89,18 @@ describe.skipIf(!TEST_DATABASE_URL)('PostgreSQL 18', () => {
       await expect(
         dataSource.query(`INSERT INTO operator_accounts (operator_id, username, password_hash) VALUES ('x', 'x', 'plain')`),
       ).rejects.toThrow('operator_accounts_password_hash_check');
+    });
+
+    it('two concurrent relays never deliver the same outbox event twice', async () => {
+      for (let i = 0; i < 6; i += 1) {
+        await repo.outbox.add({ eventId: `ev${i}`, type: 'RECEIPT_SENT', occurredAt: T0, payload: { i } });
+      }
+      const delivered: string[] = [];
+      const bus = { publish: async (e: { eventId: string }) => void delivered.push(e.eventId) };
+      const relays = [1, 2, 3].map(() => new OutboxRelay(repo, bus, new FixedClock(), 2));
+      await Promise.all(relays.map((r) => r.drain()));
+      await Promise.all(relays.map((r) => r.drain()));
+      expect(delivered.sort()).toEqual(['ev0', 'ev1', 'ev2', 'ev3', 'ev4', 'ev5']);
     });
 
     it('never hands the same job to two concurrent runners (SKIP LOCKED)', async () => {

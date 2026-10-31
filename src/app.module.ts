@@ -8,12 +8,14 @@ import { HealthController } from './adapters/inbound/http/health.controller';
 import { BackgroundWork } from './adapters/inbound/jobs/background-work';
 import { JobRunner } from './adapters/inbound/jobs/job-runner';
 import { ReceiptsController } from './adapters/inbound/http/receipts/receipts.controller';
+import { alertFromEvent } from './application/alerts/raise-alert';
 import { AuthUseCases } from './application/auth/auth-use-cases';
+import { OutboxRelay } from './application/events/outbox-relay';
 import { SerialExecutor } from './application/shared/serial-executor';
-import type { Adapters } from './composition/adapters';
+import { type Adapters, loadEmailTemplate } from './composition/adapters';
 import { executionUseCases } from './composition/execution-use-cases';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, AUTH_USE_CASES, AUTHENTICATOR, EXECUTION_USE_CASES, JOB_RUNNER, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, AUTH_USE_CASES, AUTHENTICATOR, EXECUTION_USE_CASES, JOB_RUNNER, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -32,7 +34,6 @@ export class AppModule {
       emailProvider: adapters.emailProvider,
       jobQueue: adapters.jobQueue,
       progress: adapters.progressHub,
-      alertNotifiers: adapters.alertNotifiers,
       clock: adapters.clock,
       newId: adapters.newId,
       serial,
@@ -40,6 +41,7 @@ export class AppModule {
       pauseBetweenSendsMs: config.sendPauseMs,
       incidentPolicy: { baseWaitSeconds: config.incidentBaseWaitSeconds, maxWaitSeconds: config.incidentMaxWaitSeconds, stopAfter: 3 },
       archiveCopyAddress: config.archiveCopyAddress,
+      emailTemplate: loadEmailTemplate(config),
     });
     const runner = new JobRunner(
       adapters.jobQueue,
@@ -48,6 +50,12 @@ export class AppModule {
       config.jobRunnerPollMs,
       new Logger('JobRunner'),
     );
+    // Consumers of domain events. Registered alert providers receive every raised alert.
+    adapters.eventBus.subscribe('ALERT_RAISED', async (event) => {
+      const alert = alertFromEvent(event.payload);
+      await Promise.all(adapters.alertNotifiers.map((notifier) => notifier.notify(alert)));
+    });
+    const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock);
     return {
       module: AppModule,
       controllers: [HealthController, AuthController, ReceiptsController, ExecutionsController],
@@ -81,6 +89,7 @@ export class AppModule {
         { provide: EXECUTION_USE_CASES, useValue: executions },
         { provide: SSE_HUB, useValue: adapters.progressHub },
         { provide: JOB_RUNNER, useValue: runner },
+        { provide: OUTBOX_RELAY, useValue: relay },
         BackgroundWork,
         { provide: APP_GUARD, useClass: BearerAuthGuard },
       ],

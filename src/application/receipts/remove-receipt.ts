@@ -1,5 +1,6 @@
 import type { Sha256 } from '../../domain/receipt/sha256';
 import { err, ok, type Result } from '../../domain/shared/result';
+import { domainEvent } from '../events/domain-events';
 import { publishNextManifest, refuseBatchCommand, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
 
 export type RemoveReceiptError = BatchCommandError | 'RECEIPT_NOT_FOUND' | 'RECEIPT_NOT_REMOVABLE';
@@ -34,6 +35,9 @@ export class RemoveReceipt {
           newValue: 'REMOVED',
           note: receipt.fileName,
         });
+        await tx.outbox.add(
+          domainEvent(this.deps.newId, 'RECEIPT_REMOVED', now, { sha256, period: receipt.period.toString(), block: receipt.block, manifestVersion: published.version }),
+        );
         return published;
       });
       await fileStore.delete({ period: receipt.period, block: receipt.block, sha256 });
