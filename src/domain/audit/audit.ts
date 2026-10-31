@@ -11,6 +11,8 @@ export const AuditAction = {
   /** The operator fetched the batch summary; recorded with its manifest version. */
   BATCH_REVIEWED: 'BATCH_REVIEWED',
   BATCH_EXECUTED: 'BATCH_EXECUTED',
+  /** D32: the operator ended an execution that stopped making progress (emergency exit, without restarting). */
+  EXECUTION_ABORTED: 'EXECUTION_ABORTED',
   RECEIPT_RESENT: 'RECEIPT_RESENT',
   UNCERTAIN_RESOLVED: 'UNCERTAIN_RESOLVED',
   /** The operator checked the delivery in the provider logs (D22). */

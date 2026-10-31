@@ -24,6 +24,8 @@ export interface ExecutionDependencies {
   readonly pauseBetweenSendsMs: number;
   readonly incidentPolicy: ProviderIncidentPolicy;
   readonly emailTemplate: EmailTemplate;
+  /** The operator may abort a running execution only after this long without progress, unless forced (D32). */
+  readonly abortAfterMinutes: number;
   /** Archive copy (bcc) address; required only while the archive copy is enabled. */
   readonly archiveCopyAddress?: string;
 }

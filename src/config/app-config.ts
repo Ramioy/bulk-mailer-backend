@@ -67,6 +67,8 @@ export interface AppConfig {
   readonly emailTemplateFile?: string;
   readonly jobRunnerEnabled: boolean;
   readonly jobRunnerPollMs: number;
+  /** The operator may abort a running execution after this many minutes without progress, or by forcing it; default 10 (D32). */
+  readonly executionAbortAfterMinutes: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -156,6 +158,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const runner = env.JOB_RUNNER_ENABLED ?? 'true';
   if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
   const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
+  const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -205,6 +208,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(emailTemplateFile === '' ? {} : { emailTemplateFile }),
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,
+    executionAbortAfterMinutes,
   };
 }
 

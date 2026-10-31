@@ -1,3 +1,4 @@
+import { AbortExecution } from '../application/sending/abort-execution';
 import type { ExecutionDependencies } from '../application/sending/execution-dependencies';
 import { GetExecution } from '../application/sending/get-execution';
 import { RecoverAfterCrash } from '../application/sending/recover-after-crash';
@@ -9,6 +10,7 @@ export interface ExecutionUseCases {
   readonly run: RunExecution;
   readonly recover: RecoverAfterCrash;
   readonly status: GetExecution;
+  readonly abort: AbortExecution;
 }
 
 export function executionUseCases(deps: ExecutionDependencies): ExecutionUseCases {
@@ -17,5 +19,6 @@ export function executionUseCases(deps: ExecutionDependencies): ExecutionUseCase
     run: new RunExecution(deps),
     recover: new RecoverAfterCrash(deps),
     status: new GetExecution(deps),
+    abort: new AbortExecution(deps),
   };
 }

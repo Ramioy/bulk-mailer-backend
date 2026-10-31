@@ -26,6 +26,9 @@ export function sha256Param(value: string): Sha256 {
 const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   PERIOD_NOT_OPERABLE: UnprocessableEntityException,
   EXECUTION_IN_PROGRESS: ConflictException,
+  EXECUTION_NOT_FOUND: NotFoundException,
+  EXECUTION_NOT_RUNNING: ConflictException,
+  EXECUTION_STILL_ACTIVE: ConflictException,
   RECEIPT_NOT_REMOVABLE: ConflictException,
   RECEIPT_NOT_FOUND: NotFoundException,
   BATCH_NOT_FOUND: NotFoundException,

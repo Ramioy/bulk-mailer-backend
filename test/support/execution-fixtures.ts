@@ -6,6 +6,7 @@ import { alertFromEvent } from '../../src/application/alerts/raise-alert';
 import { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { UploadReceipts } from '../../src/application/receipts/upload-receipts';
 import type { ExecutionDependencies } from '../../src/application/sending/execution-dependencies';
+import { AbortExecution } from '../../src/application/sending/abort-execution';
 import { GetExecution } from '../../src/application/sending/get-execution';
 import { RecoverAfterCrash } from '../../src/application/sending/recover-after-crash';
 import { RunExecution } from '../../src/application/sending/run-execution';
@@ -29,6 +30,7 @@ export interface ExecutionFixture extends ReceiptFixture {
   readonly run: RunExecution;
   readonly recover: RecoverAfterCrash;
   readonly status: GetExecution;
+  readonly abort: AbortExecution;
   /** Uploads `count` valid receipts to 2026-10/CASH and returns the manifest version. */
   uploadValid(count: number): Promise<number>;
   /** Starts the execution of the current manifest and runs it to the end. */
@@ -55,6 +57,7 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
     pauseBetweenSendsMs: 1000,
     incidentPolicy: DEFAULT_PROVIDER_INCIDENT_POLICY,
     emailTemplate: DEFAULT_EMAIL_TEMPLATE,
+    abortAfterMinutes: 10,
     ...overrides,
   };
   const bus = new InProcessEventBus();
@@ -78,6 +81,7 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
     run,
     recover: new RecoverAfterCrash(execDeps),
     status: new GetExecution(execDeps),
+    abort: new AbortExecution(execDeps),
     async uploadValid(count) {
       const files = Array.from({ length: count }, (_, i) => ({
         name: fileName(`Edificio Altos ${String(i).padStart(2, '0')}`, 'MULTA', '104522'),

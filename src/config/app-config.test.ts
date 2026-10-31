@@ -34,7 +34,14 @@ describe('loadConfig', () => {
       incidentMaxWaitSeconds: 600,
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,
+      executionAbortAfterMinutes: 10,
     });
+  });
+
+  it('D32: the abort threshold is a positive integer', () => {
+    expect(loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '3' })).toMatchObject({ executionAbortAfterMinutes: 3 });
+    expect(() => loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '0' })).toThrow('EXECUTION_ABORT_AFTER_MINUTES must be a positive integer');
+    expect(() => loadConfig({ ...REQUIRED, EXECUTION_ABORT_AFTER_MINUTES: '2.5' })).toThrow('EXECUTION_ABORT_AFTER_MINUTES must be a positive integer');
   });
 
   it('requires TLS in production, with both files', () => {

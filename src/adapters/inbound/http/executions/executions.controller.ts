@@ -50,6 +50,24 @@ export class ExecutionsController {
     return status;
   }
 
+  /**
+   * D32: emergency exit for an execution that stopped making progress. Body `{ "note": "why", "force"?: true }`.
+   * Refused while it showed progress in the last EXECUTION_ABORT_AFTER_MINUTES, unless forced.
+   */
+  @Post('executions/:executionId/abort')
+  @HttpCode(200)
+  async abort(@Param('executionId') executionId: string, @Body() body: unknown, @Req() request: AuthenticatedRequest) {
+    const { note, force } = (body ?? {}) as { note?: unknown; force?: unknown };
+    if (typeof note !== 'string') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'note' });
+    if (force !== undefined && typeof force !== 'boolean') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'force' });
+    const result = await this.useCases.abort.execute(request.operator?.username ?? 'unknown', executionId, note, force === true);
+    if (!result.ok) {
+      const { code, ...details } = result.error;
+      throw httpError(code, details);
+    }
+    return result.value;
+  }
+
   @Get('alerts')
   alerts() {
     return this.adapters.repository.alerts.list();

@@ -48,6 +48,7 @@ export class AppModule {
       incidentPolicy: { baseWaitSeconds: config.incidentBaseWaitSeconds, maxWaitSeconds: config.incidentMaxWaitSeconds, stopAfter: 3 },
       archiveCopyAddress: config.archiveCopyAddress,
       emailTemplate,
+      abortAfterMinutes: config.executionAbortAfterMinutes,
     });
     const delivery = deliveryUseCases({
       repository: adapters.repository,

@@ -170,6 +170,59 @@ describe('executions over HTTP', () => {
     expect(parseSse(body).map((e) => e.event)).toEqual(['TOKEN_EXPIRED']);
   });
 
+  it('D32: aborts an execution without progress (JWT, note, threshold or force); the job claimed later does nothing', async () => {
+    const { accessToken } = await signIn();
+    const { executionId } = (await uploadAndSend(accessToken)).json();
+    const abort = (id: string, payload: object | undefined) =>
+      ctx.app.inject({ method: 'POST', url: `/executions/${id}/abort`, headers: { authorization: `Bearer ${accessToken}` }, ...(payload ? { payload } : {}) });
+
+    expect((await ctx.app.inject({ method: 'POST', url: `/executions/${executionId}/abort`, payload: { note: 'x' } })).statusCode).toBe(401);
+    expect([(await abort(executionId, undefined)).statusCode, (await abort(executionId, undefined)).json()]).toEqual([400, { error: 'INVALID_REQUEST', field: 'note' }]);
+    expect((await abort(executionId, { note: 'x', force: 'yes' })).json()).toEqual({ error: 'INVALID_REQUEST', field: 'force' });
+    expect((await abort(executionId, { note: ' ' })).json()).toEqual({ error: 'NOTE_REQUIRED' });
+    const unknown = await abort('does-not-exist', { note: 'x' });
+    expect([unknown.statusCode, unknown.json()]).toEqual([404, { error: 'EXECUTION_NOT_FOUND' }]);
+
+    const active = await abort(executionId, { note: 'looks stuck' });
+    expect(active.statusCode).toBe(409);
+    expect(active.json()).toMatchObject({ error: 'EXECUTION_STILL_ACTIVE', abortableAt: '2026-10-15T15:10:00.000Z' });
+
+    ctx.clock.advance(10 * 60_000);
+    const aborted = await abort(executionId, { note: 'no progress for 10 minutes' });
+    expect([aborted.statusCode, aborted.json()]).toEqual([200, { executionId, result: 'STOPPED', stopReason: 'INTERRUPTED', uncertain: [] }]);
+    expect((await get('/executions/current', accessToken)).json()).toMatchObject({ executionId, result: 'STOPPED', stopReason: 'INTERRUPTED', batchState: 'STOPPED' });
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'EXECUTION_ABORTED', actor: 'operador', subject: executionId, note: 'no progress for 10 minutes' });
+
+    const again = await abort(executionId, { note: 'again', force: true });
+    expect([again.statusCode, again.json()]).toEqual([409, { error: 'EXECUTION_NOT_RUNNING' }]);
+
+    // The queued job is claimed later and finds the execution finished.
+    await ctx.runner.drain();
+    expect(ctx.email.calls).toHaveLength(0);
+  });
+
+  it('D32: force aborts at once and is audited as forced', async () => {
+    const { accessToken } = await signIn();
+    const { executionId } = (await uploadAndSend(accessToken, 1)).json();
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: `/executions/${executionId}/abort`,
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { note: 'the provider is down, stopping now', force: true },
+    });
+    expect(response.statusCode).toBe(200);
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'EXECUTION_ABORTED', note: '[forced] the provider is down, stopping now' });
+    // The lock is released: the batch can be sent again.
+    const version = (await get('/batches/2026-10/CASH', accessToken)).json().manifestVersion;
+    const restarted = await ctx.app.inject({
+      method: 'POST',
+      url: '/batches/2026-10/CASH/executions',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { manifestVersion: version },
+    });
+    expect(restarted.statusCode).toBe(202);
+  });
+
   it('lists alerts', async () => {
     const { accessToken } = await signIn();
     ctx.email.respondWith({ kind: 'ACCOUNT_ERROR', detail: 'LE_102' });
