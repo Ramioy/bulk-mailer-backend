@@ -14,6 +14,13 @@ import {
   type RecipientResolution,
 } from './receipt-dependencies';
 
+export interface RefreshResult {
+  readonly manifestVersion: number;
+  readonly refreshed: number;
+  /** D42: refreshed receipts that now have a recipient but no file: they need the PDF uploaded again. */
+  readonly withoutFile: number;
+}
+
 const refreshable = (r: Receipt) => (r.state === 'PENDING' || r.state === 'FAILED') && r.contract !== undefined;
 
 /**
@@ -24,7 +31,7 @@ const refreshable = (r: Receipt) => (r.state === 'PENDING' || r.state === 'FAILE
 export class RefreshRecipients {
   constructor(private readonly deps: ReceiptDependencies) {}
 
-  async execute(operator: string, period: Period, block: Block): Promise<Result<{ manifestVersion: number; refreshed: number }, BatchCommandError | 'BATCH_NOT_FOUND'>> {
+  async execute(operator: string, period: Period, block: Block): Promise<Result<RefreshResult, BatchCommandError | 'BATCH_NOT_FOUND'>> {
     const { repository, clock } = this.deps;
     // Phase (a): refused at once when it is already clear; one lookup per contract.
     const early = await refuseBatchCommand(this.deps, period);
@@ -44,6 +51,7 @@ export class RefreshRecipients {
         if (!(await tx.batches.get(period, block))) return err('BATCH_NOT_FOUND');
         const now = clock.now();
         let refreshed = 0;
+        let withoutFile = 0;
         for (const receipt of (await tx.receipts.listByBatch(period, block)).filter(refreshable)) {
           const lookup = lookups.get(receipt.contract as string);
           // Uploaded after phase (a): its recipient was just resolved by that upload.
@@ -55,6 +63,8 @@ export class RefreshRecipients {
           const errorType = inConflict(receipt) ? 'DUPLICATE_CONFLICT' : (resolution.errorType ?? keptError);
           await tx.receipts.save({ ...receipt, recipient: resolution.recipient, errorType, updatedAt: now });
           refreshed += 1;
+          // D42: resolvable now but its file was purged: it is not ready until the file is uploaded again.
+          if (resolution.recipient && !receipt.fileAvailable) withoutFile += 1;
         }
         const published = await publishNextManifest(tx, period, block, now);
         await tx.audit.append({
@@ -66,7 +76,7 @@ export class RefreshRecipients {
           newValue: `manifest v${published.version}`,
         });
         await tx.outbox.add(domainEvent(this.deps.newId, 'RECIPIENTS_REFRESHED', now, { period: period.toString(), block, manifestVersion: published.version }));
-        return ok({ manifestVersion: published.version, refreshed });
+        return ok({ manifestVersion: published.version, refreshed, withoutFile });
       }),
     );
   }

@@ -153,7 +153,8 @@ describe('receipt use cases', () => {
       await fx.repository.transaction((tx) => publishNextManifest(tx, OCT_2026, 'CASH', fx.clock.now()));
 
       const view = await summary.execute(OP, OCT_2026, 'CASH');
-      expect(view.needsCorrection[0]).toMatchObject({ state: 'FAILED', errorType: 'FILE_NOT_AVAILABLE' });
+      // D42: the receipt's own error stays visible next to the missing file.
+      expect(view.needsCorrection[0]).toMatchObject({ state: 'FAILED', errorType: 'PROVIDER_REJECTED', fileError: 'FILE_NOT_AVAILABLE' });
 
       const result = await uploadOk([altos]);
       expect(result.results[0]).toMatchObject({ outcome: 'REGISTERED', state: 'FAILED' });
@@ -226,7 +227,7 @@ describe('receipt use cases', () => {
     it('re-queries the source; a changed email produces a new manifest version', async () => {
       await uploadOk([altos]);
       fx.tayrona.setContract('104522', { complexName: 'Edificio Altos', email: 'nuevo@altos.com' });
-      expect(await refresh.execute(OP, OCT_2026, 'CASH')).toEqual({ ok: true, value: { manifestVersion: 2, refreshed: 1 } });
+      expect(await refresh.execute(OP, OCT_2026, 'CASH')).toEqual({ ok: true, value: { manifestVersion: 2, refreshed: 1, withoutFile: 0 } });
       expect((await summary.execute(OP, OCT_2026, 'CASH')).readyToSend[0]?.email).toBe('nuevo@altos.com');
     });
 

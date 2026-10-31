@@ -104,7 +104,7 @@ describe('receipts over HTTP', () => {
     expect([again.statusCode, again.json().error]).toEqual([409, 'RECEIPT_NOT_REMOVABLE']);
 
     const refreshed = await ctx.app.inject({ method: 'POST', url: '/batches/2026-10/CASH/refresh-recipients', headers: auth() });
-    expect(refreshed.json()).toEqual({ manifestVersion: 3, refreshed: 1 });
+    expect(refreshed.json()).toEqual({ manifestVersion: 3, refreshed: 1, withoutFile: 0 });
   });
 
   it.each([

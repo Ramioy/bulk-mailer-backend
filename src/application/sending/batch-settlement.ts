@@ -1,20 +1,32 @@
 import { assertBatchTransition } from '../../domain/batch/batch-state';
 import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
-import type { Receipt } from '../../domain/receipt/receipt';
+import { inConflict, type Receipt } from '../../domain/receipt/receipt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { domainEvent } from '../events/domain-events';
 import { retireBatchFiles } from '../files/retire-file';
 import { readyManifestEntries } from './ready-entries';
 
 /**
- * D41: the files of a processed batch that nobody needs any more: marked unavailable in this transaction, deleted by
- * a job after the commit. Used when an execution completes and when a stopped batch settles.
+ * D42: a file the processed batch no longer needs: its receipt went through a send (SENT, FAILED, or UNCERTAIN, which
+ * may still turn out not sent and then needs the operator to upload it again, as before) and is not held by a
+ * duplicate conflict. A PENDING receipt (e.g. with a recipient error, never in the manifest) or one in
+ * DUPLICATE_CONFLICT keeps its file. INVALID files are never stored.
+ */
+export function isProcessedFile(receipt: Receipt): boolean {
+  const processed = receipt.state === 'SENT' || receipt.state === 'FAILED' || receipt.state === 'UNCERTAIN';
+  return receipt.fileAvailable && processed && !inConflict(receipt);
+}
+
+/**
+ * D41: the files of a processed batch that nobody needs any more (D42: `isProcessedFile`): marked unavailable in this
+ * transaction, deleted by a job after the commit with their explicit list. Used when an execution completes and when
+ * a stopped batch settles.
  */
 export async function retireProcessedFiles(tx: BulkMailerStores, period: Period, block: Block, now: Date): Promise<void> {
   const retired: Receipt['sha256'][] = [];
   for (const receipt of await tx.receipts.listByBatch(period, block)) {
-    if (!receipt.fileAvailable) continue;
+    if (!isProcessedFile(receipt)) continue;
     await tx.receipts.save({ ...receipt, fileAvailable: false, updatedAt: now });
     retired.push(receipt.sha256);
   }

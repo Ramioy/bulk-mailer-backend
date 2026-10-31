@@ -403,8 +403,8 @@ export class RunExecution {
           raisedAt: now,
         });
       }
-      // Files are discarded once the batch is processed (D4). FAILED receipts need them uploaded again (A2).
-      // D41: deleted by a job queued here, after the commit; no crash window between the two.
+      // Files are discarded once the batch is processed (D4), only those of the receipts it processed (D42). FAILED
+      // receipts need them uploaded again (A2). D41: deleted by a job queued here; no crash window after the commit.
       if (result === 'COMPLETED') await retireProcessedFiles(tx, execution.period, execution.block, now);
       return true;
     });
