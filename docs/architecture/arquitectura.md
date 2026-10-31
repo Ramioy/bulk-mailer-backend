@@ -16,14 +16,14 @@ flowchart LR
     subgraph SVC["☁️ 3. SERVICE — single process (NestJS)"]
         direction LR
         subgraph IN["Inbound adapters"]
-            REST["REST API<br/>(Bearer JWT)"]
+            REST["REST API<br/>(Bearer JWT · CORS for the web client's origin, D49)"]
             WH["Webhook reception<br/>POST /webhooks/zeptomail<br/>(ZeptoMail credentials: HMAC + header;<br/>no operator session, returns no data — D20)"]
-            RUN["Job runner, two lanes (D21)<br/>execution: one batch at a time<br/>delivery: webhooks · reconciliation · checks"]
+            RUN["Job runner, four lanes (D21, D38, D41)<br/>execution: one batch at a time<br/>webhooks: delivery events<br/>lookups: reconciliation · sweep · checks<br/>files: deletion of receipt files<br/>only on the instance holding the lease (InstanceCoordinator, D47)"]
         end
 
         subgraph CORE["🧠 Core — domain + use cases (no infrastructure)"]
             UC["SignIn · UploadReceipts · RemoveReceipt<br/>GetBatchSummary · ExecuteBatch · ResendReceipt<br/>ResolveUncertain · ReleaseSuppressedAddress<br/>ReconcileSends · ProcessDeliveryEvent · VerifyDelivery · PurgeBatchFiles"]
-            PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock"}}
+            PORTS{{"Ports<br/>Authenticator · BulkMailerRepository · JobQueue · EventBus<br/>ReceiptFileStore · FileInspector · ContractSource<br/>EmailProvider · SendLookup · SuppressionManager<br/>ProgressNotifier · AlertNotifier · SecretStore · Clock · InstanceLease · ReadinessProbe"}}
         end
 
         subgraph OUT["Outbound adapters (initial)"]
@@ -35,6 +35,7 @@ flowchart LR
             A_ZM["ZeptoMailEmailProvider<br/>ZeptoMailSendLookup<br/>ZeptoMailConsoleSuppressionManager (D19)"]
             A_SSE["SseProgressNotifier"]
             A_AL["UiAlertNotifier"]
+            A_LOG["Operation log<br/>(consumer of domain events, D50)"]
         end
     end
 
@@ -66,21 +67,23 @@ flowchart LR
 | Port | Responsibility | Initial adapter | Future adapter |
 |---|---|---|---|
 | `Authenticator` | Sign in, issue and verify JWT (access 15 min, refresh 8 h), one role `operator` | `LocalJwtAuthenticator` (Argon2, accounts provisioned in DB) | AD / Entra ID |
-| `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit | PostgreSQL 18 | — |
-| `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash | Jobs table + outbox in PostgreSQL | Kafka / RabbitMQ |
-| `EventBus` | Domain and progress events | Outbox in PostgreSQL | Kafka |
-| `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)` | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
+| `BulkMailerRepository` | Receipts, attempts, manifests, batches, events, suppressions, alerts, audit. Receipts and batches carry a row version: a save based on a stale version fails (`ConcurrentModificationError`); manifests are insert-only (`DuplicateManifestVersionError`) (D37). Pending deliveries are read by time window and alerts by type, subject, reference, date and resolution (D46, D50, D52); an alert is marked resolved, in the transaction that resolves its cause, by type with its subject or reference (D52) | PostgreSQL 18 | — |
+| `JobQueue` | Batch execution, reconciliation, delivery-event processing; recovery after crash; `hasPending` so periodic work is not queued twice (D38). A job can also be queued inside a repository transaction (`tx.jobs`, same table): it exists if and only if the transaction commits (D40) | Jobs table in PostgreSQL | Kafka / RabbitMQ |
+| `EventBus` | Domain and progress events, at least once. An event that fails 10 deliveries is dead: it leaves the pending window, raises `OUTBOX_EVENT_DEAD` and can be retried by the operator (D39) | Outbox in PostgreSQL | Kafka |
+| `ReceiptFileStore` | Save, read and purge PDFs by `(period, block, sha256)`. Uploads are staged while received (`/data/.staging`, hashed on the way) and moved into place by a rename (D48). Files still needed are kept indefinitely until the operator releases a batch's files; the records stay (D51) | `LocalVolumeFileStore` (`/data`) | S3 / Azure Blob |
+| `InstanceLease` | One instance runs the background work: acquire, renew, release a lease judged by the database clock (D47) | `PostgresInstanceLease` (one-row table) | — |
 | `FileInspector` | Verdict on the file (see §2.1) | `BasicPdfInspector` | `QpdfClamAvInspector` |
 | `ContractSource` | `get(contract)` → recipient | `TayronaContractSource` (blocks 1–4, 6) · `SapContractSource` (block 5) · `FakeContractSource` (non-prod) | — |
 | `EmailProvider` | Send a message and classify the response | `ZeptoMailEmailProvider` | Another provider |
 | `SendLookup` | Look up a send by `client_reference` | `ZeptoMailSendLookup` (logs API, OAuth) | — |
 | `SuppressionManager` | Remove an address from the provider suppression list | `ZeptoMailConsoleSuppressionManager`: no API is documented, the operator removes it in the console and confirms it (D19) | `ZeptoMailSuppressionManager` (API), if Zoho confirms one |
-| `ProgressNotifier` | Real-time progress | `SseProgressNotifier` | WebSocket |
-| `AlertNotifier` | Deliver persisted typed alerts | `UiAlertNotifier` | Email / Teams / Slack |
+| `ProgressNotifier` | Real-time progress: publish, and subscribe to one execution (the SSE stream, D50) | `SseProgressNotifier` | WebSocket |
+| `ReadinessProbe` | Whether the database and the volume work, for `GET /health` (D50) | `SystemReadinessProbe` | — |
+| `AlertNotifier` | Deliver persisted typed alerts. The operator lists them newest first, filters them (`pending`, `resolved`, type, subject) and acknowledges them (D46). The system marks resolved those whose cause is resolved; acknowledging stays the operator's (D52) | `UiAlertNotifier` | Email / Teams / Slack |
 | `SecretStore` | Credentials | Environment secrets manager | — |
 | `Clock` | Current time, `America/Bogota` period, waits, reconciliation schedule | `SystemClock` | — |
 
-Inbound adapters: REST API (JWT on every query and command), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with two lanes (D21).
+Inbound adapters: REST API (JWT on every query and command; CORS only for the configured origins of the web client, D49), webhook reception (ZeptoMail's HMAC + custom header; no operator session and no data returned, D20), job runner with four lanes (D21, D38, D41), run together with the recovery and the periodic loops only by the instance that holds the lease (`InstanceCoordinator`, D47; any other instance serves HTTP only and takes over when the lease expires): execution (one batch at a time), webhooks (never behind a lookup), lookups in the provider logs (reconciliation, sweep, per-minute check, at most `DELIVERY_CHECK_BATCH_SIZE` sends per check) and files (deletion of receipt files that are no longer needed, and the periodic orphan sweep). Every receipt change of every lane goes through the same serial executor.
 
 ### 2.1 `BasicPdfInspector` (verificación sencilla)
 
@@ -111,25 +114,36 @@ sequenceDiagram
     Op->>W: Chooses period + block, selects files from the host
     W->>API: POST /batches/{period}/{block}/receipts (Bearer JWT, multipart)
     API->>API: Verify JWT
-    loop per file
+    loop per multipart part, as it arrives (D48)
+        API->>FS: stage(stream) → /data/.staging/<uuid>, sha256 and size computed on the way
+        Note over API: Over UPLOAD_MAX_TOTAL_BYTES or UPLOAD_MAX_FILES: 413, staged files dropped
+    end
+    Note over API,SRC: Phase (a), outside the serial executor (D36)
+    loop per file, one at a time
         API->>API: NFC name + regex + catalog + length (§4 of context)
-        API->>INS: inspect(bytes)
-        API->>API: sha256(content)
-        API->>DB: Does the hash already exist?
+        API->>INS: inspect(bytes of this file only)
+        opt Name and file valid
+            API->>SRC: GET /contratos/{contract} (once per contract)
+        end
+    end
+    Note over API,DB: Phase (b), inside the serial executor, one transaction (D36, D37)
+    API->>DB: No execution running (checked again)
+    loop per file
+        API->>DB: Does the hash already exist? (read now)
         alt Duplicate (rule §9 A1)
             API->>API: Discarded, not stored, not counted
         else New or re-evaluated
-            API->>FS: save(period, block, sha256)
-            opt Name and file valid
-                API->>SRC: GET /contratos/{contract}
-                API->>DB: Check local suppression list
-            end
-            API->>DB: Receipt PENDING or INVALID (+ error type)
+            API->>DB: Check local suppression list
+            API->>FS: commitStaged → rename into (period, block, sha256)
+            API->>DB: Receipt PENDING or INVALID (+ error type), optimistic version
         end
     end
-    API->>DB: Batch OPEN · new manifest version
+    API->>DB: Batch OPEN · new manifest version (insert-only)
+    API->>FS: discard what was not committed (rejected, invalid, duplicate)
     API-->>W: Summary: accepted · invalid · discarded duplicates · manifest version
 ```
+
+Every command follows the same two phases (D36): what calls an external service (contract sources, the inspector, the provider) runs outside the serial executor; inside it, one short transaction reads again the state the decision depends on, decides and writes. Refresh recipients, conflict resolution and resend work the same way; resend and the execution have three sections (record the attempt · call the provider outside · record the outcome).
 
 ## 4. Secuencia — Envío
 
@@ -167,20 +181,28 @@ sequenceDiagram
         R->>R: Same hash · same email as manifest · not suppressed
         R->>ZM: POST /v1.1/email (client_reference = attemptId)
         ZM-->>R: Response
-        R->>DB: SENT / FAILED / UNCERTAIN / PENDING
+        R->>DB: SENT / FAILED / UNCERTAIN / PENDING (SENT: file unavailable + DELETE_RECEIPT_FILE job, D41)
         R-->>W: Progress event (SSE)
         opt Uncertain response (1st or 2nd in a row)
             R-->>W: Wait event (reason, seconds, next send at) — before waiting
         end
     end
     alt Whole manifest processed
-        R->>DB: Batch COMPLETED
-        R->>FS: PurgeBatchFiles(period, block)
+        R->>DB: Batch COMPLETED + PURGE_BATCH_FILES job (files of the processed receipts only, D42), same transaction
+        Note over R,FS: The file lane deletes them after the commit (D41)
     else Batch error
         R->>DB: Batch STOPPED (+ reason) — files kept
+    else Unexpected exception (D32)
+        R->>DB: Receipt in progress UNCERTAIN (provider maybe called) or PENDING (not called)
+        R->>DB: Batch STOPPED (INTERNAL_ERROR) — files kept, job marked failed
+    else Shutdown signal, checked between receipts (D33)
+        R->>DB: Receipt in progress recorded first, then Batch STOPPED (INTERRUPTED)
     end
     R-->>W: Final summary, failures grouped by type
 ```
+
+- **Operator abort (D32):** `POST /executions/{executionId}/abort` `{ note, force? }` does for one execution what the recovery at startup does: its `SENDING` receipts become `UNCERTAIN` and it stops as `INTERRUPTED`. Refused (`409 EXECUTION_STILL_ACTIVE`) while the last progress event is younger than `EXECUTION_ABORT_AFTER_MINUTES` (a growing wait counts until its next send), unless forced. A run that was still alive notices it at its next write and takes no other receipt.
+- **Shutdown (D33):** the job lanes stop before the HTTP server and the database close; each waits for its job in progress at most `SHUTDOWN_TIMEOUT_SECONDS`. Past that, the recovery at the next start covers what was left `SENDING`.
 
 ## 5. Estados del soporte (envío)
 
@@ -197,15 +219,17 @@ stateDiagram-v2
     PENDING --> SENDING: execution
     FAILED --> SENDING: new execution
     SENDING --> SENT: ZeptoMail accepts (EM_104)
-    SENDING --> FAILED: error with certainty of no send
-    SENDING --> PENDING: batch stopped before calling the provider, or provider account rejection
-    SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented response, crash
+    SENDING --> FAILED: error with certainty of no send (also a 400 with an unknown code, D28)
+    SENDING --> PENDING: batch stopped before calling the provider, provider account rejection, or unexpected exception before calling it (D32)
+    SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented non-400 response, crash, unexpected exception after calling the provider, operator abort (D32)
     UNCERTAIN --> SENT: provider confirms (logs or webhook)
     UNCERTAIN --> FAILED: not found at the provider
-    SENT --> SENDING: Resend (manual, after HARD_BOUNCE or COMPLAINT, new email)
+    FAILED --> SENT: late provider evidence, only for NOT_FOUND_AT_PROVIDER (D34)
+    SENT --> SENDING: Resend (manual, after HARD_BOUNCE, COMPLAINT or PROCESS_FAILED, new email)
 ```
 
 - `SENT` and `UNCERTAIN` never go to `REMOVED`.
+- `FAILED → SENT` exists only for late evidence (webhook or logs) of the latest attempt of a receipt failed as `NOT_FOUND_AT_PROVIDER`; it raises `LATE_SEND_EVIDENCE` (D34). Any other `FAILED` is a certainty of no send and does not change.
 - A failed resend ends in `FAILED` and enters the next normal manifest (D7c).
 
 ## 6. Estado de entrega (solo `SENT`)
@@ -220,6 +244,8 @@ stateDiagram-v2
     SOFT_BOUNCE --> ACCEPTED: provider retried successfully
     SOFT_BOUNCE --> HARD_BOUNCE: provider retries exhausted
     ACCEPTED --> COMPLAINT: recipient marked it as spam
+    UNCONFIRMED --> PROCESS_FAILED: accepted, then not processed (logs only, D29)
+    SOFT_BOUNCE --> PROCESS_FAILED: accepted, then not processed (logs only, D29)
 ```
 
 The delivery state only advances. `ACCEPTED` = the recipient's server accepted it; not a guarantee of reaching the inbox.
@@ -231,14 +257,17 @@ stateDiagram-v2
     [*] --> OPEN: first upload
     OPEN --> OPEN: upload / remove (new manifest version)
     OPEN --> RUNNING: send (current version)
-    RUNNING --> COMPLETED: whole manifest processed → files purged
-    RUNNING --> STOPPED: batch error (files kept)
+    RUNNING --> COMPLETED: whole manifest processed → files of processed receipts purged (D42)
+    STOPPED --> COMPLETED: settlement only: nothing ready, nothing SENDING or UNCERTAIN (D41)
+    RUNNING --> STOPPED: batch error, unexpected exception (INTERNAL_ERROR), shutdown or operator abort (INTERRUPTED); files kept
     STOPPED --> RUNNING: send (current version)
     STOPPED --> OPEN: upload / remove
     COMPLETED --> OPEN: upload / remove
 ```
 
 Only one execution at a time in the whole system. While it runs, upload, remove, send and resend are disabled.
+
+`STOPPED → COMPLETED` exists only for settlement (D41): when whatever resolves a receipt of a stopped batch (a webhook, the logs, the operator) leaves it with nothing ready to send and nothing `SENDING` or `UNCERTAIN`, the batch completes (`BATCH_COMPLETED` event) and its processed files are purged. An `OPEN` batch is never closed automatically.
 
 ## 8. Catálogo de errores (inglés)
 
@@ -248,6 +277,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | `CONCEPTO_NO_CATALOGADO` | `UNKNOWN_CONCEPT` | File |
 | `NOMBRE_DEMASIADO_LARGO` | `NAME_TOO_LONG` | File |
 | `ADJUNTO_DEMASIADO_GRANDE` | `ATTACHMENT_TOO_LARGE` | File |
+| — (D31) | `DUPLICATE_CONFLICT` | Same content under different names; blocked until the operator chooses |
 | `ARCHIVO_NO_ES_PDF` | `NOT_A_PDF` | File |
 | `PDF_CIFRADO` | `PDF_ENCRYPTED` | File |
 | `PDF_CONTENIDO_ACTIVO` | `PDF_ACTIVE_CONTENT` | File |
@@ -272,6 +302,14 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | `INTERRUMPIDO` | `INTERRUPTED` | Batch |
 | `AUDITORIA_INMUTABLE` | `AUDIT_IMMUTABLE` | Audit |
 | `WEBHOOKS_NO_RECIBIDOS` | `WEBHOOKS_NOT_RECEIVED` | Alert |
+| — (D34) | `LATE_SEND_EVIDENCE` (a send failed as not found did go out; now SENT) | Alert |
+| — (D34) | `DUPLICATE_SEND_DETECTED` (an older send believed not sent went out, and a later one too) | Alert |
+| — (D39) | `OUTBOX_EVENT_DEAD` (a domain event could not be delivered after 10 attempts) | Alert |
+| — (D41) | `FILE_PURGE_FAILED` (receipt files no receipt needs could not be deleted) | Alert |
+| — (D43) | `UNCERTAIN_UNRESOLVED` (an uncertain send still unresolved after its last scheduled lookup) | Alert |
+| — (D45) | `WEBHOOK_UNPARSED` (an authenticated webhook with no event of ours could be read) | Alert |
+| — (D51) | `FILE_NOT_AVAILABLE` also after the operator released the batch's files (`POST /batches/{period}/{block}/release-files`); re-upload restores it | Send |
+| — (D52) | Alerts carry `resolvedAt` and `resolution` once the system saw their cause resolved: `UNCERTAIN_UNRESOLVED`, `BATCH_STOPPED`, `HARD_BOUNCE`, `COMPLAINT`, `PROCESS_FAILED`, `DUPLICATE_CONFLICT`, `OUTBOX_EVENT_DEAD`, `FILE_PURGE_FAILED`. The others are never resolved automatically | Alert |
 | `AGREGADO` / `EXCLUIDO` | `ADDED` / `REMOVED` | `409` difference |
 | `RENOMBRADO` | `RENAMED` (same hash re-uploaded with another name) | `409` difference |
 | `DESTINATARIO_CAMBIO` (409) | `RECIPIENT_CHANGED` (e.g. after *Refresh recipients*) | `409` difference |
@@ -281,7 +319,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | # | Supuesto |
 |---|---|
 | A1 | **Regla de repetidos.** Un hash que ya existe en cualquier lote o periodo se descarta como `DUPLICATE`, **excepto** si el registro existente es del mismo lote y está `INVALID`, `REMOVED` o `FAILED` sin archivo: en ese caso la carga reevalúa ese mismo registro (sirve para renombrar y para volver a subir tras la purga). Si el registro existente está `REMOVED` en **otro** lote o periodo, ese registro **se mueve** al lote nuevo y se reevalúa (D8). Nunca se crea un segundo registro |
-| A2 | **Purga y reintentos.** Con los archivos borrados al completar el lote, reintentar un `FAILED` o hacer *Resend* tras un `HARD_BOUNCE` obliga a volver a subir el mismo PDF (regla A1). Hasta entonces el soporte muestra `FILE_NOT_AVAILABLE` y no entra al manifiesto |
+| A2 | **Purga y reintentos.** Con los archivos borrados al completar el lote, reintentar un `FAILED` o hacer *Resend* tras un `HARD_BOUNCE` obliga a volver a subir el mismo PDF (regla A1). Hasta entonces el soporte muestra `FILE_NOT_AVAILABLE` y no entra al manifiesto. *Precisado por D41/D42:* el archivo se borra en cuanto el soporte queda `SENT` y, al completar el lote, solo los de soportes que pasaron por un envío; un `PENDING` o un soporte en conflicto lo conservan. El resumen muestra `fileError: FILE_NOT_AVAILABLE` junto al error propio del soporte |
 | A3 | **Retirar soporte.** El operador puede retirar un soporte no enviado desde la interfaz (`DELETE`); sin esto no hay forma de corregir un nombre equivocado |
 | A4 | **Destinatarios.** Se resuelven al cargar y se vuelven a consultar al enviar. Si cambió el correo, el soporte queda `FAILED / RECIPIENT_CHANGED`; para reintentarlo hace falta refrescar el destinatario (acción *Refresh recipients* del lote, que genera nueva versión de manifiesto) |
 | A5 | **Periodo y bloques.** Periodo en formato `YYYY-MM` (p. ej. `2026-10`); bloques `CASH`, `AVVILLAS`, `BANCOLOMBIA`, `DAVIVIENDA`, `ANGLO`, `OTHERS`. Las claves del catálogo de conceptos siguen en español porque forman parte del nombre del archivo |

@@ -25,6 +25,7 @@ export function aReceipt(overrides: Partial<Receipt> = {}): Receipt {
     attempts: 0,
     createdAt: T0,
     updatedAt: T0,
+    version: 1,
     ...overrides,
   };
 }

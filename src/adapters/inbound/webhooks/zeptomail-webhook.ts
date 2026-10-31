@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import type { DeliveryState, IncomingDeliveryEvent } from '../../../domain/receipt/delivery-state';
+import type { WebhookParseNotes } from '../../../domain/receipt/delivery-webhook';
 
 export interface ZeptoMailWebhookSecrets {
   /** Agent Authentication Key: HMAC-SHA256 key of `producer-signature`. */
@@ -67,7 +68,12 @@ function safeEqual(a: string, b: string): boolean {
 export interface ParsedWebhook {
   readonly webhookRequestId?: string;
   readonly events: IncomingDeliveryEvent[];
+  /** D45: why messages were dropped and which event names were seen; absent when nothing was dropped. */
+  readonly notes?: WebhookParseNotes;
 }
+
+/** Events that are deliberately not delivery events (if the webhook is configured to send them): dropped quietly. */
+const IGNORABLE = new Set(['emailopen', 'open', 'opened', 'emailclick', 'click', 'clicked', 'linkclick']);
 
 type Json = Record<string, unknown>;
 
@@ -94,21 +100,37 @@ export function parseZeptoMailWebhook(json: string, receivedAt: Date, redirected
   try {
     root = JSON.parse(json) as Json;
   } catch {
-    return { events: [] };
+    return { events: [], notes: { eventNames: [], dropped: [{ index: 'body', reason: 'not JSON' }], onlyIgnorable: false } };
   }
   const webhookRequestId = text(root.webhook_request_id);
-  const names = list(root.event_name).map((n) => normalise(text(n) ?? ''));
+  const rawNames = list(root.event_name).map((n) => text(n) ?? '');
+  const names = rawNames.map(normalise);
   const events: IncomingDeliveryEvent[] = [];
+  const seen = new Set(rawNames.filter(Boolean));
+  const dropped: Array<{ index: string; reason: string; ignorable: boolean }> = [];
+  const drop = (index: string, reason: string, ignorable = false) => dropped.push({ index, reason, ignorable });
 
-  list(root.event_message).forEach((message, m) => {
+  const messages = list(root.event_message);
+  if (messages.length === 0) drop('event_message', 'no event_message');
+  messages.forEach((message, m) => {
     const info = (message.email_info ?? {}) as Json;
     const attemptId = text(info.client_reference);
-    if (!attemptId) return;
+    if (!attemptId) {
+      drop(`${m}`, 'no email_info.client_reference');
+      return;
+    }
     const onlyRecipient = singleRecipient(info);
     const data = list(message.event_data);
+    if (data.length === 0) drop(`${m}`, 'no event_data');
     data.forEach((item, d) => {
-      const state = STATES[normalise(text(item.object) ?? '')] ?? STATES[names[m] ?? names[0] ?? ''];
-      if (!state) return;
+      const object = text(item.object);
+      if (object) seen.add(object);
+      const name = normalise(object ?? '') || (names[m] ?? names[0] ?? '');
+      const state = STATES[normalise(object ?? '')] ?? STATES[names[m] ?? names[0] ?? ''];
+      if (!state) {
+        drop(`${m}.${d}`, IGNORABLE.has(name) ? `not a delivery event: "${object ?? rawNames[m] ?? rawNames[0] ?? ''}"` : `unknown event "${object ?? rawNames[m] ?? rawNames[0] ?? ''}"`, IGNORABLE.has(name));
+        return;
+      }
       const details = list(item.details);
       (details.length > 0 ? details : [{}]).forEach((detail, i) => {
         let recipient = text(detail.bounced_recipient) ?? text(detail.fblFrom) ?? text(detail.delivered_to) ?? onlyRecipient;
@@ -129,7 +151,15 @@ export function parseZeptoMailWebhook(json: string, receivedAt: Date, redirected
       });
     });
   });
-  return { ...(webhookRequestId ? { webhookRequestId } : {}), events };
+  const notes: WebhookParseNotes | undefined =
+    dropped.length > 0
+      ? {
+          eventNames: [...seen],
+          dropped: dropped.map(({ index, reason }) => ({ index, reason })),
+          onlyIgnorable: events.length === 0 && dropped.every((d) => d.ignorable),
+        }
+      : undefined;
+  return { ...(webhookRequestId ? { webhookRequestId } : {}), events, ...(notes ? { notes } : {}) };
 }
 
 /** The address when the email had exactly one recipient (no cc, no bcc). */
@@ -141,7 +171,9 @@ function singleRecipient(info: Json): string | undefined {
 }
 
 function list(value: unknown): Json[] {
-  if (Array.isArray(value)) return value.filter((v): v is Json => typeof v === 'object' && v !== null);
+  // D45: an array of plain strings (e.g. `event_name: ["hardbounce"]`) was dropped here before, so the event name
+  // never served as the fallback for the event.
+  if (Array.isArray(value)) return value.flatMap((v) => (typeof v === 'string' ? [{ value: v } as Json] : typeof v === 'object' && v !== null ? [v as Json] : []));
   if (typeof value === 'object' && value !== null) return [value as Json];
   if (typeof value === 'string') return [{ value } as Json];
   return [];

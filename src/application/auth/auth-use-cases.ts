@@ -20,7 +20,9 @@ export class AuthUseCases {
     if (result.ok) {
       await this.record('SIGN_IN', result.value.operator.username, result.value.sessionId);
     } else {
-      await this.record('SIGN_IN_FAILED', username, username, result.error);
+      // D50 (B5): the name comes from an anonymous client: kept short and printable in the immutable audit.
+      const attempted = attemptedName(username);
+      await this.record('SIGN_IN_FAILED', attempted, attempted, result.error);
     }
     return result;
   }
@@ -40,4 +42,14 @@ export class AuthUseCases {
   private async record(action: AuditAction, actor: string, subject: string, newValue?: string): Promise<void> {
     await this.deps.audit.append({ auditId: this.deps.newId(), actor, action, at: this.deps.clock.now(), subject, newValue });
   }
+}
+
+/** Longest attempted user name kept in the audit (D50, B5). */
+export const MAX_ATTEMPTED_NAME = 100;
+
+/** Control characters removed, edges trimmed, cut to MAX_ATTEMPTED_NAME characters. */
+export function attemptedName(username: string): string {
+  const printable = [...username].filter((c) => c >= ' ' && c !== '\u007f').join('').trim();
+  const name = printable.length > MAX_ATTEMPTED_NAME ? `${printable.slice(0, MAX_ATTEMPTED_NAME)}…` : printable;
+  return name === '' ? '(empty)' : name;
 }

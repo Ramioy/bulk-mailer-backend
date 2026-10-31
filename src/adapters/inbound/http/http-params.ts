@@ -26,6 +26,9 @@ export function sha256Param(value: string): Sha256 {
 const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   PERIOD_NOT_OPERABLE: UnprocessableEntityException,
   EXECUTION_IN_PROGRESS: ConflictException,
+  EXECUTION_NOT_FOUND: NotFoundException,
+  EXECUTION_NOT_RUNNING: ConflictException,
+  EXECUTION_STILL_ACTIVE: ConflictException,
   RECEIPT_NOT_REMOVABLE: ConflictException,
   RECEIPT_NOT_FOUND: NotFoundException,
   BATCH_NOT_FOUND: NotFoundException,
@@ -51,6 +54,12 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   CONCEPT_ALREADY_EXISTS: ConflictException,
   INVALID_CONCEPT_KEY: UnprocessableEntityException,
   INVALID_CONCEPT_SUBJECT: UnprocessableEntityException,
+  RECEIPT_NOT_IN_CONFLICT: ConflictException,
+  NAME_NOT_IN_CONFLICT: UnprocessableEntityException,
+  CHOSEN_NAME_INVALID: UnprocessableEntityException,
+  OUTBOX_EVENT_NOT_DEAD: NotFoundException,
+  ALERT_NOT_FOUND: NotFoundException,
+  ALERT_ALREADY_ACKNOWLEDGED: ConflictException,
 };
 
 /** Typed use-case errors → HTTP status with `{ error, ...details }` body. */

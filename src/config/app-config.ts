@@ -14,6 +14,11 @@ export interface AppConfig {
   readonly databaseUrl: string;
   /** Required in production. */
   readonly tls?: TlsConfig;
+  /**
+   * D49: exact origins of the web client allowed by CORS (`https://host[:port]`). Required in production, never `*`
+   * there; empty elsewhere means CORS is off (same-origin only).
+   */
+  readonly corsAllowedOrigins: readonly string[];
   readonly accessTokenMinutes: number;
   /** Absolute lifetime of a session (refresh credential). */
   readonly sessionHours: number;
@@ -51,9 +56,15 @@ export interface AppConfig {
   readonly reconcileSweepMaxHours: number;
   /** How often the sweep runs; default 60 minutes. */
   readonly reconcileSweepIntervalMinutes: number;
+  /** Lookups per hourly sweep, oldest sends first (D44); default 50. */
+  readonly reconcileSweepBatchSize: number;
   /** While a batch runs and `deliveryCheckTailMinutes` after, its sends are checked this often; default 60 s (D21). */
   readonly deliveryCheckIntervalSeconds: number;
   readonly deliveryCheckTailMinutes: number;
+  /** Sends looked up per per-minute check (D38); default 20. */
+  readonly deliveryCheckBatchSize: number;
+  /** Checks skipped by a send whose lookup found the logs API unavailable (D38); default 2. */
+  readonly deliveryCheckBackoffCycles: number;
   /** Outside production every email goes to this test mailbox (§15). Required with ZeptoMail outside production. */
   readonly redirectAllEmailTo?: string;
   /** Pause between two sends; default 1000 ms. */
@@ -69,8 +80,28 @@ export interface AppConfig {
   readonly archiveCopyAddress?: string;
   /** JSON file `{ "subject": "…", "body": "…" }` replacing the default email template. */
   readonly emailTemplateFile?: string;
+  /** How often the orphan file sweep runs (D41); default 360 minutes. */
+  readonly fileOrphanSweepIntervalMinutes: number;
+  /** The sweep leaves alone files younger than this (D41); default 60 minutes. */
+  readonly fileOrphanMinAgeMinutes: number;
+  /** D48: at most this many bytes of files per upload request; default 200 MB. */
+  readonly uploadMaxTotalBytes: number;
+  /** D48: at most this many files per upload request; default 300. */
+  readonly uploadMaxFiles: number;
+  /** D50: finished jobs and dispatched outbox events are deleted after this many days; default 30. */
+  readonly workRetentionDays: number;
+  /** D50: largest attachment accepted (the inspector and the multipart limit); default 15 MB, as before. */
+  readonly maxAttachmentBytes: number;
+  /** D50 (B5): requests per minute and client IP to the public auth routes; default 20. */
+  readonly authRateLimitPerMinute: number;
+  /** D47: lease of the instance that runs the background work; renewed every third of it. Default 30 s. */
+  readonly instanceLeaseTtlSeconds: number;
   readonly jobRunnerEnabled: boolean;
   readonly jobRunnerPollMs: number;
+  /** The operator may abort a running execution after this many minutes without progress, or by forcing it; default 10 (D32). */
+  readonly executionAbortAfterMinutes: number;
+  /** On shutdown, how long the job lanes may take to finish the job in progress; default 25 s (D33). */
+  readonly shutdownTimeoutSeconds: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -108,6 +139,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if ((certFile === '') !== (keyFile === '')) problems.push('TLS_CERT_FILE and TLS_KEY_FILE go together');
   if (nodeEnv === 'production' && certFile === '') problems.push('TLS_CERT_FILE and TLS_KEY_FILE are required in production');
 
+  const corsAllowedOrigins = (env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter((o) => o !== '');
+  if (nodeEnv === 'production' && corsAllowedOrigins.length === 0) problems.push('CORS_ALLOWED_ORIGINS is required in production');
+  if (nodeEnv === 'production' && corsAllowedOrigins.includes('*')) problems.push('CORS_ALLOWED_ORIGINS cannot be * in production');
+  for (const origin of corsAllowedOrigins) {
+    if (origin !== '*' && !isOrigin(origin)) problems.push(`CORS_ALLOWED_ORIGINS: "${origin}" is not an origin (http(s)://host[:port], no path, no trailing slash)`);
+  }
   const accessTokenMinutes = positiveInteger(env.ACCESS_TOKEN_MINUTES ?? '15', 'ACCESS_TOKEN_MINUTES', problems);
   const sessionHours = positiveInteger(env.SESSION_HOURS ?? '8', 'SESSION_HOURS', problems);
   const pdfMaxIncrementalUpdates = Number(env.PDF_MAX_INCREMENTAL_UPDATES ?? '0');
@@ -149,8 +189,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const reconcileSweepMaxHours = positiveInteger(env.RECONCILE_SWEEP_MAX_HOURS ?? '72', 'RECONCILE_SWEEP_MAX_HOURS', problems);
   if (reconcileSweepMaxHours <= reconcileSweepAfterHours) problems.push('RECONCILE_SWEEP_MAX_HOURS must be greater than RECONCILE_SWEEP_AFTER_HOURS');
   const reconcileSweepIntervalMinutes = positiveInteger(env.RECONCILE_SWEEP_INTERVAL_MINUTES ?? '60', 'RECONCILE_SWEEP_INTERVAL_MINUTES', problems);
+  const reconcileSweepBatchSize = positiveInteger(env.RECONCILE_SWEEP_BATCH_SIZE ?? '50', 'RECONCILE_SWEEP_BATCH_SIZE', problems);
   const deliveryCheckIntervalSeconds = positiveInteger(env.DELIVERY_CHECK_INTERVAL_SECONDS ?? '60', 'DELIVERY_CHECK_INTERVAL_SECONDS', problems);
   const deliveryCheckTailMinutes = nonNegativeInteger(env.DELIVERY_CHECK_TAIL_MINUTES ?? '30', 'DELIVERY_CHECK_TAIL_MINUTES', problems);
+  const deliveryCheckBatchSize = positiveInteger(env.DELIVERY_CHECK_BATCH_SIZE ?? '20', 'DELIVERY_CHECK_BATCH_SIZE', problems);
+  const deliveryCheckBackoffCycles = nonNegativeInteger(env.DELIVERY_CHECK_BACKOFF_CYCLES ?? '2', 'DELIVERY_CHECK_BACKOFF_CYCLES', problems);
   const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
   const waitForDelivery = env.SEND_WAIT_FOR_DELIVERY ?? 'false';
   if (waitForDelivery !== 'true' && waitForDelivery !== 'false') problems.push('SEND_WAIT_FOR_DELIVERY must be true or false');
@@ -164,6 +207,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const runner = env.JOB_RUNNER_ENABLED ?? 'true';
   if (runner !== 'true' && runner !== 'false') problems.push('JOB_RUNNER_ENABLED must be true or false');
   const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
+  const fileOrphanSweepIntervalMinutes = positiveInteger(env.FILE_ORPHAN_SWEEP_INTERVAL_MINUTES ?? '360', 'FILE_ORPHAN_SWEEP_INTERVAL_MINUTES', problems);
+  const fileOrphanMinAgeMinutes = positiveInteger(env.FILE_ORPHAN_MIN_AGE_MINUTES ?? '60', 'FILE_ORPHAN_MIN_AGE_MINUTES', problems);
+  const uploadMaxTotalBytes = positiveInteger(env.UPLOAD_MAX_TOTAL_BYTES ?? String(200 * 1024 * 1024), 'UPLOAD_MAX_TOTAL_BYTES', problems);
+  const uploadMaxFiles = positiveInteger(env.UPLOAD_MAX_FILES ?? '300', 'UPLOAD_MAX_FILES', problems);
+  const workRetentionDays = positiveInteger(env.WORK_RETENTION_DAYS ?? '30', 'WORK_RETENTION_DAYS', problems);
+  const maxAttachmentBytes = positiveInteger(env.MAX_ATTACHMENT_BYTES ?? String(15 * 1024 * 1024), 'MAX_ATTACHMENT_BYTES', problems);
+  const authRateLimitPerMinute = positiveInteger(env.AUTH_RATE_LIMIT_PER_MINUTE ?? '20', 'AUTH_RATE_LIMIT_PER_MINUTE', problems);
+  const instanceLeaseTtlSeconds = positiveInteger(env.INSTANCE_LEASE_TTL_SECONDS ?? '30', 'INSTANCE_LEASE_TTL_SECONDS', problems);
+  if (instanceLeaseTtlSeconds < 3) problems.push('INSTANCE_LEASE_TTL_SECONDS must be at least 3');
+  const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
+  const shutdownTimeoutSeconds = positiveInteger(env.SHUTDOWN_TIMEOUT_SECONDS ?? '25', 'SHUTDOWN_TIMEOUT_SECONDS', problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -175,6 +229,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataDir,
     databaseUrl,
     ...(certFile === '' ? {} : { tls: { certFile, keyFile } }),
+    corsAllowedOrigins,
     accessTokenMinutes,
     sessionHours,
     pdfMaxIncrementalUpdates,
@@ -204,8 +259,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reconcileSweepAfterHours,
     reconcileSweepMaxHours,
     reconcileSweepIntervalMinutes,
+    reconcileSweepBatchSize,
     deliveryCheckIntervalSeconds,
     deliveryCheckTailMinutes,
+    deliveryCheckBatchSize,
+    deliveryCheckBackoffCycles,
     sendPauseMs,
     sendWaitForDelivery: waitForDelivery === 'true',
     deliveryWaitMaxSeconds,
@@ -214,8 +272,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     incidentMaxWaitSeconds,
     ...(archiveCopyAddress === '' ? {} : { archiveCopyAddress }),
     ...(emailTemplateFile === '' ? {} : { emailTemplateFile }),
+    fileOrphanSweepIntervalMinutes,
+    fileOrphanMinAgeMinutes,
+    uploadMaxTotalBytes,
+    uploadMaxFiles,
+    workRetentionDays,
+    maxAttachmentBytes,
+    authRateLimitPerMinute,
+    instanceLeaseTtlSeconds,
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,
+    executionAbortAfterMinutes,
+    shutdownTimeoutSeconds,
   };
 }
 
@@ -233,6 +301,16 @@ function nonNegativeInteger(text: string, name: string, problems: string[]): num
   const value = Number(text);
   if (!Number.isInteger(value) || value < 0) problems.push(`${name} must be an integer >= 0`);
   return value;
+}
+
+/** `http(s)://host[:port]` exactly as a browser sends it in `Origin`. */
+function isOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value;
+  } catch {
+    return false;
+  }
 }
 
 function isNodeEnv(value: string): value is AppConfig['nodeEnv'] {

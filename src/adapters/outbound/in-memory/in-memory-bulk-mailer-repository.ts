@@ -12,9 +12,16 @@ import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
 import type { Attempt } from '../../../domain/sending/attempt';
 import type { Suppression } from '../../../domain/suppression/suppression';
-import { DuplicateAttemptError, type BulkMailerRepository, type BulkMailerStores } from '../../../ports/bulk-mailer-repository';
+import {
+  ConcurrentModificationError,
+  DuplicateAttemptError,
+  DuplicateManifestVersionError,
+  type BulkMailerRepository,
+  type BulkMailerStores,
+} from '../../../ports/bulk-mailer-repository';
 import type { StoredProgressEvent } from '../../../ports/progress-notifier';
 import type { DomainEvent } from '../../../ports/event-bus';
+import { InMemoryJobTable } from './in-memory-job-queue';
 
 const batchKey = (period: Period, block: Block) => `${period.toString()}|${block}`;
 
@@ -33,7 +40,8 @@ interface State {
   audit: AuditEntry[];
   concepts: Map<string, Concept>;
   archiveCopyEnabled: boolean;
-  outbox: Array<{ event: DomainEvent; attempts: number; dispatchedAt?: Date; lastError?: string }>;
+  outbox: Array<{ event: DomainEvent; attempts: number; dispatchedAt?: Date; lastError?: string; deadAt?: Date }>;
+  jobs: InMemoryJobTable;
 }
 
 function snapshot(state: State): State {
@@ -53,7 +61,15 @@ function snapshot(state: State): State {
     audit: [...state.audit],
     concepts: new Map(state.concepts),
     outbox: state.outbox.map((e) => ({ ...e })),
+    jobs: state.jobs.clone(),
   };
+}
+
+/** D37: new rows are stored as given; an update needs the stored version and bumps it. */
+function optimistic<T extends { readonly version: number }>(entity: 'receipt' | 'batch', key: string, stored: T | undefined, next: T): T {
+  if (!stored) return next;
+  if (stored.version !== next.version) throw new ConcurrentModificationError(entity, key, next.version);
+  return { ...next, version: next.version + 1 };
 }
 
 /** Reference implementation of the repository, for tests and local runs without a database. */
@@ -74,18 +90,35 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     concepts: new Map(INITIAL_CONCEPTS.map((c) => [c.key, c])),
     archiveCopyEnabled: false,
     outbox: [],
+    jobs: new InMemoryJobTable(),
+  };
+
+  /** The jobs table, shared with an InMemoryJobQueue (D40); a function because a failed transaction replaces it. */
+  jobTable(): InMemoryJobTable {
+    return this.state.jobs;
+  }
+
+  readonly jobs: BulkMailerStores['jobs'] = {
+    enqueue: async (job) => this.state.jobs.insert(job, new Date()),
   };
 
   readonly receipts: BulkMailerStores['receipts'] = {
     get: async (sha256) => this.state.receipts.get(sha256),
     save: async (receipt) => {
-      this.state.receipts.set(receipt.sha256, receipt);
+      const saved = optimistic('receipt', receipt.sha256, this.state.receipts.get(receipt.sha256), receipt);
+      this.state.receipts.set(receipt.sha256, saved);
+      return saved;
     },
     listByBatch: async (period, block) =>
       [...this.state.receipts.values()]
         .filter((r) => r.period.equals(period) && r.block === block)
         .sort((a, b) => a.fileName.localeCompare(b.fileName, 'es')),
     listByState: async (state: ReceiptState) => [...this.state.receipts.values()].filter((r) => r.state === state),
+    listPendingDeliveriesSince: async (since) =>
+      [...this.state.receipts.values()].filter(
+        (r) =>
+          r.updatedAt >= since && (r.state === 'UNCERTAIN' || (r.state === 'SENT' && (r.deliveryState === 'UNCONFIRMED' || r.deliveryState === 'SOFT_BOUNCE'))),
+      ),
     appendHistory: async (entry) => {
       this.state.history.push(entry);
     },
@@ -95,10 +128,15 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
   readonly batches: BulkMailerStores['batches'] = {
     get: async (period, block) => this.state.batches.get(batchKey(period, block)),
     save: async (batch) => {
-      this.state.batches.set(batchKey(batch.period, batch.block), batch);
+      const key = batchKey(batch.period, batch.block);
+      const saved = optimistic('batch', key, this.state.batches.get(key), batch);
+      this.state.batches.set(key, saved);
+      return saved;
     },
     saveManifest: async (period, block, manifest) => {
-      this.state.manifests.set(`${batchKey(period, block)}|${manifest.version}`, manifest);
+      const key = `${batchKey(period, block)}|${manifest.version}`;
+      if (this.state.manifests.has(key)) throw new DuplicateManifestVersionError(batchKey(period, block), manifest.version);
+      this.state.manifests.set(key, manifest);
     },
     getManifest: async (period, block, version) => this.state.manifests.get(`${batchKey(period, block)}|${version}`),
   };
@@ -187,7 +225,41 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     insert: async (alert) => {
       this.state.alerts.push(alert);
     },
-    list: async () => [...this.state.alerts],
+    get: async (alertId) => this.state.alerts.find((a) => a.alertId === alertId),
+    list: async (filter = {}) => {
+      const found = this.state.alerts.filter(
+        (a) =>
+          (!filter.pending || !a.acknowledgedAt) &&
+          (filter.resolved === undefined || (a.resolvedAt !== undefined) === filter.resolved) &&
+          (!filter.type || a.type === filter.type) &&
+          (filter.subject === undefined || a.subject === filter.subject) &&
+          (filter.reference === undefined || a.reference === filter.reference) &&
+          (filter.since === undefined || a.raisedAt >= filter.since),
+      );
+      const ordered = filter.newestFirst ? found.reverse() : found;
+      return filter.limit === undefined ? ordered : ordered.slice(0, filter.limit);
+    },
+    acknowledge: async (alertId, by, at) => {
+      const index = this.state.alerts.findIndex((a) => a.alertId === alertId && !a.acknowledgedAt);
+      if (index < 0) return false;
+      this.state.alerts[index] = { ...(this.state.alerts[index] as Alert), acknowledgedAt: at, acknowledgedBy: by };
+      return true;
+    },
+    resolve: async (match, at, resolution) => {
+      let resolved = 0;
+      this.state.alerts = this.state.alerts.map((a) => {
+        const matches =
+          a.type === match.type &&
+          (match.subject === undefined || a.subject === match.subject) &&
+          (match.reference === undefined || a.reference === match.reference) &&
+          (match.raisedNotAfter === undefined || a.raisedAt <= match.raisedNotAfter) &&
+          a.resolvedAt === undefined;
+        if (!matches) return a;
+        resolved += 1;
+        return { ...a, resolvedAt: at, resolution };
+      });
+      return resolved;
+    },
   };
 
   readonly audit: BulkMailerStores['audit'] = {
@@ -217,19 +289,39 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     },
     lockPending: async (limit) =>
       this.state.outbox
-        .filter((e) => !e.dispatchedAt)
+        .filter((e) => !e.dispatchedAt && !e.deadAt)
         .slice(0, limit)
         .map((e) => ({ event: e.event, attempts: e.attempts })),
     markDispatched: async (eventId, at) => {
       const entry = this.state.outbox.find((e) => e.event.eventId === eventId);
       if (entry) entry.dispatchedAt = at;
     },
-    markFailed: async (eventId, error) => {
+    markFailed: async (eventId, error, deadAt) => {
       const entry = this.state.outbox.find((e) => e.event.eventId === eventId);
       if (entry) {
         entry.attempts += 1;
         entry.lastError = error;
+        if (deadAt) entry.deadAt = deadAt;
       }
+    },
+    listDead: async (limit) =>
+      this.state.outbox
+        .filter((e) => e.deadAt && !e.dispatchedAt)
+        .sort((a, b) => (b.deadAt as Date).getTime() - (a.deadAt as Date).getTime())
+        .slice(0, limit)
+        .map((e) => ({ event: e.event, attempts: e.attempts, lastError: e.lastError, deadAt: e.deadAt as Date })),
+    purgeDispatched: async (before) => {
+      const kept = this.state.outbox.filter((e) => !(e.dispatchedAt && e.dispatchedAt < before));
+      const purged = this.state.outbox.length - kept.length;
+      this.state.outbox = kept;
+      return purged;
+    },
+    revive: async (eventId) => {
+      const entry = this.state.outbox.find((e) => e.event.eventId === eventId && e.deadAt && !e.dispatchedAt);
+      if (!entry) return false;
+      entry.deadAt = undefined;
+      entry.attempts = 0;
+      return true;
     },
   };
 

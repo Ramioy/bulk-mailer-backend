@@ -206,12 +206,44 @@ describe('SweepUnconfirmed and WEBHOOKS_NOT_RECEIVED (§9.4)', () => {
     const { attempt } = await fx.sendOne();
     await fx.deliver('w1', { attemptId: attempt.attemptId, recipient: 'admin@altos.com', state: 'SOFT_BOUNCE' });
     fx.clock.advance(7 * HOUR);
-    expect(await fx.sweep.execute()).toEqual({ lookedUp: 0, updated: 0, alerts: 0 });
+    // D44 (M3): a SOFT_BOUNCE is looked up too (it may have become a hard bounce); a webhook arrived, so no alert.
+    expect(await fx.sweep.execute()).toEqual({ lookedUp: 1, updated: 0, alerts: 0 });
 
     const other = deliveryFixture();
     await other.sendOne();
     other.clock.advance(73 * HOUR);
     expect(await other.sweep.execute()).toEqual({ lookedUp: 0, updated: 0, alerts: 0 });
+  });
+});
+
+describe('process failed after acceptance (M2)', () => {
+  it('a SENT receipt the logs show as process failed: delivery PROCESS_FAILED, alert, no suppression, no WEBHOOKS_NOT_RECEIVED, resendable', async () => {
+    const fx = deliveryFixture();
+    const { receipt, attempt } = await fx.sendOne();
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'PROCESS_FAILED', detail: 'Process failed' });
+
+    fx.clock.advance(7 * HOUR);
+    expect(await fx.sweep.execute()).toEqual({ lookedUp: 1, updated: 1, alerts: 0 });
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'PROCESS_FAILED' });
+    expect((await fx.repository.alerts.list()).map((a) => [a.type, a.subject])).toEqual([['PROCESS_FAILED', receipt.sha256]]);
+    expect(await fx.repository.suppressions.get('admin@altos.com')).toBeUndefined();
+    // A second lookup changes nothing and raises nothing else.
+    expect(await fx.sweep.execute()).toEqual({ lookedUp: 0, updated: 0, alerts: 0 });
+
+    // Resend (§10.4 extended by M2): the file is uploaded again after the purge (A2), then it goes out.
+    expect(await fx.resend.execute('operador', receipt.sha256)).toEqual({ ok: false, error: 'FILE_NOT_AVAILABLE' });
+    await fx.upload.execute('operador', OCT_2026, 'CASH', [{ name: fileName('Edificio Altos 00', 'MULTA', '104522'), content: pdfBytes('receipt-0') }]);
+    expect(await fx.resend.execute('operador', receipt.sha256)).toMatchObject({ ok: true, value: { state: 'SENT' } });
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'UNCONFIRMED' });
+  });
+
+  it('an UNCERTAIN send the logs show as process failed is still FAILED / PROVIDER_REJECTED (unchanged)', async () => {
+    const fx = deliveryFixture();
+    fx.email.respondWith({ kind: 'UNCERTAIN', detail: 'timeout' });
+    const { receipt, attempt } = await fx.sendOne();
+    fx.lookup.setResult(attempt.attemptId, { kind: 'FOUND', status: 'PROCESS_FAILED' });
+    expect(await fx.reconcile.execute(attempt.attemptId, false)).toBe('FAILED');
+    expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'FAILED', errorType: 'PROVIDER_REJECTED' });
   });
 });
 
@@ -338,6 +370,9 @@ describe('ResendReceipt (§10.4)', () => {
     expect(await fx.repository.attempts.get(resent?.attemptId as string)).toMatchObject({ kind: 'RESEND', outcome: 'ACCEPTED' });
     expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'UNCONFIRMED', fileAvailable: false, attempts: 2, recipient: { email: 'nuevo@altos.com' } });
     expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'RECEIPT_RESENT', previousValue: 'admin@altos.com', newValue: 'nuevo@altos.com' });
+    // D41: deleted by the job queued with the outcome, once the file lane runs it.
+    expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: receipt.sha256 })).toBeDefined();
+    expect(await fx.runFileJobs()).toBe(1);
     expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: receipt.sha256 })).toBeUndefined();
 
     // A late event of the first attempt no longer changes the receipt.

@@ -19,6 +19,12 @@ export interface ReconciliationPolicy {
   readonly sweepMaxHours: number;
   /** The sends of a running execution are checked every minute while it runs and this many minutes after (D21). */
   readonly recentCheckTailMinutes: number;
+  /** At most this many sends are looked up per per-minute check, those checked longest ago first (D38). Default 20. */
+  readonly recentCheckBatchSize: number;
+  /** A send whose lookup found the logs API unavailable is skipped for this many checks (D38). Default 2. */
+  readonly recentCheckBackoffCycles: number;
+  /** At most this many lookups per hourly sweep, the oldest sends first (D44). Default 50. */
+  readonly sweepBatchSize: number;
 }
 
 export const DEFAULT_RECONCILIATION_POLICY: ReconciliationPolicy = {
@@ -26,6 +32,9 @@ export const DEFAULT_RECONCILIATION_POLICY: ReconciliationPolicy = {
   sweepAfterHours: 6,
   sweepMaxHours: 72,
   recentCheckTailMinutes: 30,
+  recentCheckBatchSize: 20,
+  recentCheckBackoffCycles: 2,
+  sweepBatchSize: 50,
 };
 
 export interface DeliveryDependencies {

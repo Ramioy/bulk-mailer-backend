@@ -9,8 +9,8 @@ import type { Block } from '../../../domain/block/block';
 import type { Concept } from '../../../domain/concept/concept';
 import { Period } from '../../../domain/period/period';
 import type { DeliveryEvent, DeliveryState, IncomingDeliveryEvent } from '../../../domain/receipt/delivery-state';
-import type { DeliveryWebhook } from '../../../domain/receipt/delivery-webhook';
-import type { Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
+import type { DeliveryWebhook, WebhookParseNotes } from '../../../domain/receipt/delivery-webhook';
+import type { ConflictingName, Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
 import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
 import type { Attempt } from '../../../domain/sending/attempt';
@@ -18,7 +18,9 @@ import type { SendOutcomeKind } from '../../../domain/sending/send-outcome';
 import type { BatchStopReason, ReceiptErrorType } from '../../../domain/shared/error-types';
 import type { Suppression } from '../../../domain/suppression/suppression';
 import {
+  ConcurrentModificationError,
   DuplicateAttemptError,
+  DuplicateManifestVersionError,
   type AlertStore,
   type AttemptStore,
   type AuditLog,
@@ -30,6 +32,7 @@ import {
   type ExecutionEventStore,
   type OutboxStore,
   type ExecutionStore,
+  type JobStore,
   type ReceiptStore,
   type SettingsStore,
   type SuppressionStore,
@@ -37,6 +40,7 @@ import {
 } from '../../../ports/bulk-mailer-repository';
 import type { DomainEvent } from '../../../ports/event-bus';
 import type { ProgressEvent, StoredProgressEvent } from '../../../ports/progress-notifier';
+import { insertJob } from './postgres-job-queue';
 import { autocommit, firstRow, inTransaction, isUniqueViolation, opt, rows, type Queryable, type Row } from './queryable';
 
 const period = (row: Row): Period => {
@@ -63,10 +67,44 @@ function toReceipt(r: Row): Receipt {
     fileAvailable: r.file_available as boolean,
     attempts: r.attempts as number,
     deliveryState: opt<DeliveryState>(r.delivery_state),
+    conflictingNames: conflictingNames(r.conflicting_names),
     createdAt: r.created_at as Date,
     updatedAt: r.updated_at as Date,
+    version: r.version as number,
   };
 }
+
+function toAlert(r: Row): Alert {
+  return {
+    alertId: r.alert_id as string,
+    type: r.type as AlertType,
+    subject: r.subject as string,
+    detail: r.detail as string,
+    raisedAt: r.raised_at as Date,
+    ...(r.reference ? { reference: r.reference as string } : {}),
+    ...(r.acknowledged_at ? { acknowledgedAt: r.acknowledged_at as Date, acknowledgedBy: r.acknowledged_by as string } : {}),
+    ...(r.resolved_at ? { resolvedAt: r.resolved_at as Date, resolution: r.resolution as string } : {}),
+  };
+}
+
+interface StoredConflictingName {
+  readonly fileName: string;
+  readonly period: string;
+  readonly block: Block;
+  readonly conceptKey: string;
+  readonly contract: string;
+  readonly uploadedAt: string;
+}
+
+function conflictingNames(value: unknown): ConflictingName[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return (value as StoredConflictingName[]).map((n) => ({ ...n, period: period({ period: n.period }), uploadedAt: new Date(n.uploadedAt) }));
+}
+
+const storedConflictingNames = (names: readonly ConflictingName[] | undefined): string | null =>
+  names && names.length > 0
+    ? JSON.stringify(names.map((n): StoredConflictingName => ({ ...n, period: n.period.toString(), uploadedAt: n.uploadedAt.toISOString() })))
+    : null;
 
 function toExecution(r: Row): Execution {
   return {
@@ -97,6 +135,7 @@ function toAttempt(r: Row): Attempt {
     detail: opt(r.detail),
     providerRequestId: opt(r.provider_request_id),
     emailReference: opt(r.email_reference),
+    redirectedTo: opt(r.redirected_to),
   };
 }
 
@@ -124,6 +163,7 @@ function toWebhook(r: Row): DeliveryWebhook {
     receivedAt: r.received_at as Date,
     body: r.body as string,
     events: (r.events as StoredIncomingEvent[]).map((e) => ({ ...e, occurredAt: new Date(e.occurredAt) })),
+    ...(r.parse_notes ? { parseNotes: r.parse_notes as WebhookParseNotes } : {}),
     processedAt: opt(r.processed_at),
   };
 }
@@ -138,9 +178,10 @@ const toSuppression = (r: Row): Suppression => ({
 const attemptParams = (a: Attempt) => [
   a.attemptId, a.sha256, a.executionId ?? null, a.kind, a.to, a.copyAddress ?? null, a.startedAt,
   a.finishedAt ?? null, a.outcome ?? null, a.detail ?? null, a.providerRequestId ?? null, a.emailReference ?? null,
+  a.redirectedTo ?? null,
 ];
 const ATTEMPT_COLUMNS = `attempt_id, sha256, execution_id, kind, to_address, copy_address, started_at,
-  finished_at, outcome, detail, provider_request_id, email_reference`;
+  finished_at, outcome, detail, provider_request_id, email_reference, redirected_to`;
 
 const executionParams = (e: Execution) => [
   e.executionId, e.period.toString(), e.block, e.manifestVersion, e.startedBy, e.startedAt,
@@ -156,23 +197,33 @@ function stores(db: Queryable): BulkMailerStores {
       return row && toReceipt(row);
     },
     async save(r) {
-      await db.query(
-        `INSERT INTO receipts (sha256, period, block, state, file_name, concept_key, contract, size_bytes, error_type,
-           error_detail, recipient_email, recipient_complex_name, file_available, attempts, delivery_state, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-         ON CONFLICT (sha256) DO UPDATE SET
-           period = EXCLUDED.period, block = EXCLUDED.block, state = EXCLUDED.state, file_name = EXCLUDED.file_name,
-           concept_key = EXCLUDED.concept_key, contract = EXCLUDED.contract, size_bytes = EXCLUDED.size_bytes,
-           error_type = EXCLUDED.error_type, error_detail = EXCLUDED.error_detail, recipient_email = EXCLUDED.recipient_email,
-           recipient_complex_name = EXCLUDED.recipient_complex_name, file_available = EXCLUDED.file_available,
-           attempts = EXCLUDED.attempts, delivery_state = EXCLUDED.delivery_state, created_at = EXCLUDED.created_at,
-           updated_at = EXCLUDED.updated_at`,
-        [
-          r.sha256, r.period.toString(), r.block, r.state, r.fileName, r.conceptKey ?? null, r.contract ?? null, r.sizeBytes,
-          r.errorType ?? null, r.errorDetail ?? null, r.recipient?.email ?? null, r.recipient?.complexName ?? null,
-          r.fileAvailable, r.attempts, r.deliveryState ?? null, r.createdAt, r.updatedAt,
-        ],
+      const params = [
+        r.sha256, r.period.toString(), r.block, r.state, r.fileName, r.conceptKey ?? null, r.contract ?? null, r.sizeBytes,
+        r.errorType ?? null, r.errorDetail ?? null, r.recipient?.email ?? null, r.recipient?.complexName ?? null,
+        r.fileAvailable, r.attempts, r.deliveryState ?? null, r.createdAt, r.updatedAt, storedConflictingNames(r.conflictingNames), r.version,
+      ];
+      // D37: an update only if nobody saved it since this version was read; a new receipt is inserted as given.
+      const updated = await rows(
+        db,
+        `UPDATE receipts SET period = $2, block = $3, state = $4, file_name = $5, concept_key = $6, contract = $7,
+           size_bytes = $8, error_type = $9, error_detail = $10, recipient_email = $11, recipient_complex_name = $12,
+           file_available = $13, attempts = $14, delivery_state = $15, created_at = $16, updated_at = $17,
+           conflicting_names = $18, version = version + 1
+         WHERE sha256 = $1 AND version = $19 RETURNING version`,
+        params,
       );
+      if (updated[0]) return { ...r, version: updated[0].version as number };
+      const inserted = await rows(
+        db,
+        `INSERT INTO receipts (sha256, period, block, state, file_name, concept_key, contract, size_bytes, error_type,
+           error_detail, recipient_email, recipient_complex_name, file_available, attempts, delivery_state, created_at, updated_at,
+           conflicting_names, version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         ON CONFLICT (sha256) DO NOTHING RETURNING version`,
+        params,
+      );
+      if (inserted[0]) return r;
+      throw new ConcurrentModificationError('receipt', r.sha256, r.version);
     },
     async listByBatch(p, block) {
       const found = await rows(db, 'SELECT * FROM receipts WHERE period = $1 AND block = $2', [p.toString(), block]);
@@ -180,6 +231,15 @@ function stores(db: Queryable): BulkMailerStores {
     },
     async listByState(state) {
       return (await rows(db, 'SELECT * FROM receipts WHERE state = $1', [state])).map(toReceipt);
+    },
+    async listPendingDeliveriesSince(since) {
+      const found = await rows(
+        db,
+        `SELECT * FROM receipts WHERE updated_at >= $1
+           AND (state = 'UNCERTAIN' OR (state = 'SENT' AND delivery_state IN ('UNCONFIRMED', 'SOFT_BOUNCE')))`,
+        [since],
+      );
+      return found.map(toReceipt);
     },
     async appendHistory(entry) {
       await db.query('INSERT INTO receipt_history (sha256, at, event, detail) VALUES ($1, $2, $3, $4)', [
@@ -208,22 +268,38 @@ function stores(db: Queryable): BulkMailerStores {
         manifestVersion: r.manifest_version as number,
         stopReason: opt<BatchStopReason>(r.stop_reason),
         updatedAt: r.updated_at as Date,
+        version: r.version as number,
       } satisfies Batch;
     },
     async save(b) {
-      await db.query(
-        `INSERT INTO batches (period, block, state, manifest_version, stop_reason, updated_at) VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (period, block) DO UPDATE SET state = EXCLUDED.state, manifest_version = EXCLUDED.manifest_version,
-           stop_reason = EXCLUDED.stop_reason, updated_at = EXCLUDED.updated_at`,
-        [b.period.toString(), b.block, b.state, b.manifestVersion, b.stopReason ?? null, b.updatedAt],
+      const params = [b.period.toString(), b.block, b.state, b.manifestVersion, b.stopReason ?? null, b.updatedAt, b.version];
+      // D37: same optimistic rule as receipts.
+      const updated = await rows(
+        db,
+        `UPDATE batches SET state = $3, manifest_version = $4, stop_reason = $5, updated_at = $6, version = version + 1
+         WHERE period = $1 AND block = $2 AND version = $7 RETURNING version`,
+        params,
       );
+      if (updated[0]) return { ...b, version: updated[0].version as number };
+      const inserted = await rows(
+        db,
+        `INSERT INTO batches (period, block, state, manifest_version, stop_reason, updated_at, version) VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (period, block) DO NOTHING RETURNING version`,
+        params,
+      );
+      if (inserted[0]) return b;
+      throw new ConcurrentModificationError('batch', `${b.period.toString()}|${b.block}`, b.version);
     },
     async saveManifest(p, block, manifest) {
-      await db.query(
+      // D37: insert only. "Never two manifests with the same version" is guarded by the database, not only by the
+      // serial executor; a repeated version is a bug and surfaces as an error.
+      const inserted = await rows(
+        db,
         `INSERT INTO manifests (period, block, version, entries) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (period, block, version) DO UPDATE SET entries = EXCLUDED.entries`,
+         ON CONFLICT (period, block, version) DO NOTHING RETURNING version`,
         [p.toString(), block, manifest.version, JSON.stringify(manifest.entries)],
       );
+      if (!inserted[0]) throw new DuplicateManifestVersionError(`${p.toString()}|${block}`, manifest.version);
     },
     async getManifest(p, block, version) {
       const r = await firstRow(db, 'SELECT * FROM manifests WHERE period = $1 AND block = $2 AND version = $3', [
@@ -299,7 +375,7 @@ function stores(db: Queryable): BulkMailerStores {
   const attempts: AttemptStore = {
     async insert(a) {
       try {
-        await db.query(`INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, attemptParams(a));
+        await db.query(`INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, attemptParams(a));
       } catch (error) {
         if (isUniqueViolation(error)) throw new DuplicateAttemptError(a.attemptId);
         throw error;
@@ -307,7 +383,7 @@ function stores(db: Queryable): BulkMailerStores {
     },
     async save(a) {
       await db.query(
-        `INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        `INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (attempt_id) DO UPDATE SET finished_at = EXCLUDED.finished_at, outcome = EXCLUDED.outcome,
            detail = EXCLUDED.detail, provider_request_id = EXCLUDED.provider_request_id, email_reference = EXCLUDED.email_reference`,
         attemptParams(a),
@@ -318,10 +394,10 @@ function stores(db: Queryable): BulkMailerStores {
       return r && toAttempt(r);
     },
     async listByReceipt(sha256) {
-      return (await rows(db, 'SELECT * FROM attempts WHERE sha256 = $1 ORDER BY started_at, attempt_id', [sha256])).map(toAttempt);
+      return (await rows(db, 'SELECT * FROM attempts WHERE sha256 = $1 ORDER BY started_at, seq', [sha256])).map(toAttempt);
     },
     async listByExecution(executionId) {
-      return (await rows(db, 'SELECT * FROM attempts WHERE execution_id = $1 ORDER BY started_at, attempt_id', [executionId])).map(toAttempt);
+      return (await rows(db, 'SELECT * FROM attempts WHERE execution_id = $1 ORDER BY started_at, seq', [executionId])).map(toAttempt);
     },
   };
 
@@ -368,9 +444,9 @@ function stores(db: Queryable): BulkMailerStores {
     async record(w) {
       const inserted = await rows(
         db,
-        `INSERT INTO webhook_events (webhook_request_id, provider, received_at, body, events) VALUES ($1,$2,$3,$4,$5)
+        `INSERT INTO webhook_events (webhook_request_id, provider, received_at, body, events, parse_notes) VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (webhook_request_id) DO NOTHING RETURNING webhook_request_id`,
-        [w.webhookRequestId, w.provider, w.receivedAt, w.body, JSON.stringify(w.events)],
+        [w.webhookRequestId, w.provider, w.receivedAt, w.body, JSON.stringify(w.events), w.parseNotes ? JSON.stringify(w.parseNotes) : null],
       );
       return inserted.length === 1;
     },
@@ -388,18 +464,44 @@ function stores(db: Queryable): BulkMailerStores {
 
   const alerts: AlertStore = {
     async insert(a) {
-      await db.query('INSERT INTO alerts (alert_id, type, subject, detail, raised_at) VALUES ($1,$2,$3,$4,$5)', [
-        a.alertId, a.type, a.subject, a.detail, a.raisedAt,
+      await db.query('INSERT INTO alerts (alert_id, type, subject, detail, raised_at, reference) VALUES ($1,$2,$3,$4,$5,$6)', [
+        a.alertId, a.type, a.subject, a.detail, a.raisedAt, a.reference ?? null,
       ]);
     },
-    async list() {
-      return (await rows(db, 'SELECT * FROM alerts ORDER BY seq')).map((r): Alert => ({
-        alertId: r.alert_id as string,
-        type: r.type as AlertType,
-        subject: r.subject as string,
-        detail: r.detail as string,
-        raisedAt: r.raised_at as Date,
-      }));
+    async get(alertId) {
+      const r = await firstRow(db, 'SELECT * FROM alerts WHERE alert_id = $1', [alertId]);
+      return r && toAlert(r);
+    },
+    async list(filter = {}) {
+      const found = await rows(
+        db,
+        `SELECT * FROM alerts
+         WHERE ($1::boolean IS NOT TRUE OR acknowledged_at IS NULL) AND ($2::text IS NULL OR type = $2) AND ($3::text IS NULL OR subject = $3)
+           AND ($5::text IS NULL OR reference = $5) AND ($6::timestamptz IS NULL OR raised_at >= $6)
+           AND ($7::boolean IS NULL OR (resolved_at IS NOT NULL) = $7)
+         ORDER BY seq ${filter.newestFirst ? 'DESC' : 'ASC'} LIMIT $4`,
+        [filter.pending ?? null, filter.type ?? null, filter.subject ?? null, filter.limit ?? null, filter.reference ?? null, filter.since ?? null, filter.resolved ?? null],
+      );
+      return found.map(toAlert);
+    },
+    async acknowledge(alertId, by, at) {
+      const updated = await rows(
+        db,
+        'UPDATE alerts SET acknowledged_at = $3, acknowledged_by = $2 WHERE alert_id = $1 AND acknowledged_at IS NULL RETURNING alert_id',
+        [alertId, by, at],
+      );
+      return updated.length > 0;
+    },
+    async resolve(match, at, resolution) {
+      const updated = await rows(
+        db,
+        `UPDATE alerts SET resolved_at = $4, resolution = $5
+         WHERE type = $1 AND ($2::text IS NULL OR subject = $2) AND ($3::text IS NULL OR reference = $3) AND resolved_at IS NULL
+           AND ($6::timestamptz IS NULL OR raised_at <= $6)
+         RETURNING alert_id`,
+        [match.type, match.subject ?? null, match.reference ?? null, at, resolution, match.raisedNotAfter ?? null],
+      );
+      return updated.length;
     },
   };
 
@@ -461,7 +563,7 @@ function stores(db: Queryable): BulkMailerStores {
     async lockPending(limit) {
       const found = await rows(
         db,
-        'SELECT * FROM outbox_events WHERE dispatched_at IS NULL ORDER BY seq LIMIT $1 FOR UPDATE SKIP LOCKED',
+        'SELECT * FROM outbox_events WHERE dispatched_at IS NULL AND dead_at IS NULL ORDER BY seq LIMIT $1 FOR UPDATE SKIP LOCKED',
         [limit],
       );
       return found.map((r) => ({
@@ -477,12 +579,41 @@ function stores(db: Queryable): BulkMailerStores {
     async markDispatched(eventId, at) {
       await db.query('UPDATE outbox_events SET dispatched_at = $2 WHERE event_id = $1', [eventId, at]);
     },
-    async markFailed(eventId, error) {
-      await db.query('UPDATE outbox_events SET attempts = attempts + 1, last_error = $2 WHERE event_id = $1', [eventId, error]);
+    async markFailed(eventId, error, deadAt) {
+      await db.query('UPDATE outbox_events SET attempts = attempts + 1, last_error = $2, dead_at = $3 WHERE event_id = $1', [eventId, error, deadAt ?? null]);
+    },
+    async listDead(limit) {
+      const found = await rows(
+        db,
+        'SELECT * FROM outbox_events WHERE dead_at IS NOT NULL AND dispatched_at IS NULL ORDER BY dead_at DESC, seq DESC LIMIT $1',
+        [limit],
+      );
+      return found.map((r) => ({
+        event: { eventId: r.event_id as string, type: r.type as DomainEvent['type'], occurredAt: r.occurred_at as Date, payload: r.payload as DomainEvent['payload'] },
+        attempts: r.attempts as number,
+        lastError: opt<string>(r.last_error),
+        deadAt: r.dead_at as Date,
+      }));
+    },
+    async purgeDispatched(before) {
+      return (await rows(db, 'DELETE FROM outbox_events WHERE dispatched_at IS NOT NULL AND dispatched_at < $1 RETURNING event_id', [before])).length;
+    },
+    async revive(eventId) {
+      const revived = await rows(
+        db,
+        'UPDATE outbox_events SET dead_at = NULL, attempts = 0 WHERE event_id = $1 AND dead_at IS NOT NULL AND dispatched_at IS NULL RETURNING event_id',
+        [eventId],
+      );
+      return revived.length > 0;
     },
   };
 
-  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, webhooks, alerts, audit, concepts, settings };
+  // D40: the same table the PostgresJobQueue claims from, written with the transaction's connection.
+  const jobs: JobStore = {
+    enqueue: (job) => insertJob(db, job),
+  };
+
+  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, webhooks, alerts, audit, concepts, settings, jobs };
 }
 
 export class PostgresBulkMailerRepository implements BulkMailerRepository {
@@ -499,6 +630,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
   readonly concepts: ConceptStore;
   readonly settings: SettingsStore;
   readonly outbox: OutboxStore;
+  readonly jobs: JobStore;
 
   constructor(private readonly dataSource: DataSource) {
     const s = stores(autocommit(dataSource));
@@ -515,6 +647,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
     this.concepts = s.concepts;
     this.settings = s.settings;
     this.outbox = s.outbox;
+    this.jobs = s.jobs;
   }
 
   async transaction<T>(work: (stores: BulkMailerStores) => Promise<T>): Promise<T> {

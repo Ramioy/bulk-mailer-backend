@@ -10,6 +10,11 @@ export type SendOutcome =
   | { readonly kind: 'ACCEPTED'; readonly providerRequestId: string }
   /** The provider rejected this receipt (invalid address, mime type, size limits…). */
   | { readonly kind: 'RECEIPT_REJECTED'; readonly detail: string }
+  /**
+   * The provider rejected the request with a code we do not know (M1): it was not sent, but the cause is unknown.
+   * It may be this receipt or the account; three in a row stop the batch.
+   */
+  | { readonly kind: 'UNKNOWN_REJECTION'; readonly detail: string }
   /** Credits, API key, IP, domain, account review or block. */
   | { readonly kind: 'ACCOUNT_ERROR'; readonly detail: string }
   /** Our request was malformed. */
@@ -34,6 +39,7 @@ export function resolveSendOutcome(outcome: SendOutcome): SendResolution {
     case 'ACCEPTED':
       return { receiptState: 'SENT' };
     case 'RECEIPT_REJECTED':
+    case 'UNKNOWN_REJECTION':
       return { receiptState: 'FAILED', errorType: SendErrorType.PROVIDER_REJECTED };
     case 'ACCOUNT_ERROR':
       return { receiptState: 'PENDING', stopBatch: BatchStopReason.PROVIDER_ACCOUNT };

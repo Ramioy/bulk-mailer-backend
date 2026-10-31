@@ -1,41 +1,71 @@
 import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
-import type { Receipt } from '../../domain/receipt/receipt';
+import { inConflict, type Receipt } from '../../domain/receipt/receipt';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
 import {
-  cachedResolver,
   isRecipientError,
+  lookupRecipient,
   publishNextManifest,
   refuseBatchCommand,
+  withSuppression,
   type BatchCommandError,
   type ReceiptDependencies,
+  type RecipientResolution,
 } from './receipt-dependencies';
 
-/** Queries the source again for every PENDING or FAILED receipt of the batch (assumption A4). */
+export interface RefreshResult {
+  readonly manifestVersion: number;
+  readonly refreshed: number;
+  /** D42: refreshed receipts that now have a recipient but no file: they need the PDF uploaded again. */
+  readonly withoutFile: number;
+}
+
+const refreshable = (r: Receipt) => (r.state === 'PENDING' || r.state === 'FAILED') && r.contract !== undefined;
+
+/**
+ * Queries the source again for every PENDING or FAILED receipt of the batch (assumption A4). In two phases (D36): the
+ * lookups outside the serial executor, then the receipts, the suppression list and the manifest inside it, in one
+ * transaction, on the current state.
+ */
 export class RefreshRecipients {
   constructor(private readonly deps: ReceiptDependencies) {}
 
-  execute(operator: string, period: Period, block: Block): Promise<Result<{ manifestVersion: number; refreshed: number }, BatchCommandError | 'BATCH_NOT_FOUND'>> {
-    return this.deps.serial.run(async () => {
-      const refusal = await refuseBatchCommand(this.deps, period);
-      if (refusal) return err(refusal);
-      const { repository, clock } = this.deps;
-      if (!(await repository.batches.get(period, block))) return err('BATCH_NOT_FOUND');
+  async execute(operator: string, period: Period, block: Block): Promise<Result<RefreshResult, BatchCommandError | 'BATCH_NOT_FOUND'>> {
+    const { repository, clock } = this.deps;
+    // Phase (a): refused at once when it is already clear; one lookup per contract.
+    const early = await refuseBatchCommand(this.deps, period);
+    if (early) return err(early);
+    if (!(await repository.batches.get(period, block))) return err('BATCH_NOT_FOUND');
+    const lookups = new Map<string, RecipientResolution>();
+    for (const receipt of (await repository.receipts.listByBatch(period, block)).filter(refreshable)) {
+      const contract = receipt.contract as string;
+      if (!lookups.has(contract)) lookups.set(contract, await lookupRecipient(this.deps, block, contract));
+    }
 
-      const resolve = cachedResolver(this.deps, block);
-      const now = clock.now();
-      const updated: Receipt[] = [];
-      for (const receipt of await repository.receipts.listByBatch(period, block)) {
-        if ((receipt.state !== 'PENDING' && receipt.state !== 'FAILED') || receipt.contract === undefined) continue;
-        const resolution = await resolve(receipt.contract);
-        // A send error of a FAILED receipt stays visible unless a recipient error replaces it.
-        const keptError = isRecipientError(receipt.errorType) ? undefined : receipt.errorType;
-        updated.push({ ...receipt, recipient: resolution.recipient, errorType: resolution.errorType ?? keptError, updatedAt: now });
-      }
-
-      const manifest = await repository.transaction(async (tx) => {
-        for (const receipt of updated) await tx.receipts.save(receipt);
+    // Phase (b).
+    return this.deps.serial.run(() =>
+      repository.transaction(async (tx) => {
+        const refusal = await refuseBatchCommand(this.deps, period, tx);
+        if (refusal) return err(refusal);
+        if (!(await tx.batches.get(period, block))) return err('BATCH_NOT_FOUND');
+        const now = clock.now();
+        let refreshed = 0;
+        let withoutFile = 0;
+        for (const receipt of (await tx.receipts.listByBatch(period, block)).filter(refreshable)) {
+          const lookup = lookups.get(receipt.contract as string);
+          // Uploaded after phase (a): its recipient was just resolved by that upload.
+          if (!lookup) continue;
+          const resolution = await withSuppression(tx, lookup);
+          // A send error of a FAILED receipt stays visible unless a recipient error replaces it.
+          const keptError = isRecipientError(receipt.errorType) ? undefined : receipt.errorType;
+          // D31: a duplicate conflict stays the visible reason until the operator resolves it.
+          const errorType = inConflict(receipt) ? 'DUPLICATE_CONFLICT' : (resolution.errorType ?? keptError);
+          await tx.receipts.save({ ...receipt, recipient: resolution.recipient, errorType, updatedAt: now });
+          refreshed += 1;
+          // D42: resolvable now but its file was purged: it is not ready until the file is uploaded again.
+          if (resolution.recipient && !receipt.fileAvailable) withoutFile += 1;
+        }
         const published = await publishNextManifest(tx, period, block, now);
         await tx.audit.append({
           auditId: this.deps.newId(),
@@ -45,12 +75,9 @@ export class RefreshRecipients {
           subject: `${period.toString()}/${block}`,
           newValue: `manifest v${published.version}`,
         });
-        await tx.outbox.add(
-          domainEvent(this.deps.newId, 'RECIPIENTS_REFRESHED', now, { period: period.toString(), block, manifestVersion: published.version }),
-        );
-        return published;
-      });
-      return ok({ manifestVersion: manifest.version, refreshed: updated.length });
-    });
+        await tx.outbox.add(domainEvent(this.deps.newId, 'RECIPIENTS_REFRESHED', now, { period: period.toString(), block, manifestVersion: published.version }));
+        return ok({ manifestVersion: published.version, refreshed, withoutFile });
+      }),
+    );
   }
 }

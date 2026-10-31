@@ -170,6 +170,106 @@ describe('executions over HTTP', () => {
     expect(parseSse(body).map((e) => e.event)).toEqual(['TOKEN_EXPIRED']);
   });
 
+  it('D32: aborts an execution without progress (JWT, note, threshold or force); the job claimed later does nothing', async () => {
+    const { accessToken } = await signIn();
+    const { executionId } = (await uploadAndSend(accessToken)).json();
+    const abort = (id: string, payload: object | undefined) =>
+      ctx.app.inject({ method: 'POST', url: `/executions/${id}/abort`, headers: { authorization: `Bearer ${accessToken}` }, ...(payload ? { payload } : {}) });
+
+    expect((await ctx.app.inject({ method: 'POST', url: `/executions/${executionId}/abort`, payload: { note: 'x' } })).statusCode).toBe(401);
+    expect([(await abort(executionId, undefined)).statusCode, (await abort(executionId, undefined)).json()]).toEqual([400, { error: 'INVALID_REQUEST', field: 'note' }]);
+    expect((await abort(executionId, { note: 'x', force: 'yes' })).json()).toEqual({ error: 'INVALID_REQUEST', field: 'force' });
+    expect((await abort(executionId, { note: ' ' })).json()).toEqual({ error: 'NOTE_REQUIRED' });
+    const unknown = await abort('does-not-exist', { note: 'x' });
+    expect([unknown.statusCode, unknown.json()]).toEqual([404, { error: 'EXECUTION_NOT_FOUND' }]);
+
+    const active = await abort(executionId, { note: 'looks stuck' });
+    expect(active.statusCode).toBe(409);
+    expect(active.json()).toMatchObject({ error: 'EXECUTION_STILL_ACTIVE', abortableAt: '2026-10-15T15:10:00.000Z' });
+
+    ctx.clock.advance(10 * 60_000);
+    const aborted = await abort(executionId, { note: 'no progress for 10 minutes' });
+    expect([aborted.statusCode, aborted.json()]).toEqual([200, { executionId, result: 'STOPPED', stopReason: 'INTERRUPTED', uncertain: [] }]);
+    expect((await get('/executions/current', accessToken)).json()).toMatchObject({ executionId, result: 'STOPPED', stopReason: 'INTERRUPTED', batchState: 'STOPPED' });
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'EXECUTION_ABORTED', actor: 'operador', subject: executionId, note: 'no progress for 10 minutes' });
+
+    const again = await abort(executionId, { note: 'again', force: true });
+    expect([again.statusCode, again.json()]).toEqual([409, { error: 'EXECUTION_NOT_RUNNING' }]);
+
+    // The queued job is claimed later and finds the execution finished.
+    await ctx.runner.drain();
+    expect(ctx.email.calls).toHaveLength(0);
+  });
+
+  it('D32: force aborts at once and is audited as forced', async () => {
+    const { accessToken } = await signIn();
+    const { executionId } = (await uploadAndSend(accessToken, 1)).json();
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: `/executions/${executionId}/abort`,
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { note: 'the provider is down, stopping now', force: true },
+    });
+    expect(response.statusCode).toBe(200);
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'EXECUTION_ABORTED', note: '[forced] the provider is down, stopping now' });
+    // The lock is released: the batch can be sent again.
+    const version = (await get('/batches/2026-10/CASH', accessToken)).json().manifestVersion;
+    const restarted = await ctx.app.inject({
+      method: 'POST',
+      url: '/batches/2026-10/CASH/executions',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { manifestVersion: version },
+    });
+    expect(restarted.statusCode).toBe(202);
+  });
+
+  it('D46: lists alerts newest first with filters, and acknowledges one once (audited)', async () => {
+    const { accessToken } = await signIn();
+    ctx.email.respondWith({ kind: 'ACCOUNT_ERROR', detail: 'LE_102' });
+    await uploadAndSend(accessToken, 1);
+    await ctx.runner.drain();
+    await ctx.repository.alerts.insert({ alertId: 'later', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: ctx.clock.now() });
+    const call = (method: 'GET' | 'POST', url: string, payload?: object) =>
+      ctx.app.inject({ method, url, headers: { authorization: `Bearer ${accessToken}` }, ...(payload ? { payload } : {}) });
+
+    expect((await call('GET', '/alerts')).json().map((a: { type: string }) => a.type)).toEqual(['HARD_BOUNCE', 'BATCH_STOPPED']);
+    expect((await call('GET', '/alerts?type=BATCH_STOPPED')).json()).toHaveLength(1);
+    expect((await call('GET', '/alerts?limit=1')).json().map((a: { alertId: string }) => a.alertId)).toEqual(['later']);
+    expect((await call('GET', '/alerts?subject=r1')).json()).toHaveLength(1);
+    expect((await call('GET', '/alerts?type=NOPE')).statusCode).toBe(400);
+    expect((await call('GET', '/alerts?limit=0')).statusCode).toBe(400);
+
+    expect((await ctx.app.inject({ method: 'POST', url: '/alerts/later/acknowledge' })).statusCode).toBe(401);
+    const acknowledged = await call('POST', '/alerts/later/acknowledge', { note: 'mailbox fixed' });
+    expect(acknowledged.statusCode).toBe(200);
+    expect(acknowledged.json()).toMatchObject({ alertId: 'later', acknowledgedBy: 'operador' });
+    expect((await ctx.repository.audit.list()).at(-1)).toMatchObject({ action: 'ALERT_ACKNOWLEDGED', subject: 'later', note: 'mailbox fixed' });
+    const again = await call('POST', '/alerts/later/acknowledge');
+    expect([again.statusCode, again.json()]).toEqual([409, { error: 'ALERT_ALREADY_ACKNOWLEDGED' }]);
+    const unknown = await call('POST', '/alerts/nope/acknowledge');
+    expect([unknown.statusCode, unknown.json()]).toEqual([404, { error: 'ALERT_NOT_FOUND' }]);
+    expect((await call('GET', '/alerts?pending=true')).json().map((a: { type: string }) => a.type)).toEqual(['BATCH_STOPPED']);
+  });
+
+  it('D52: filters alerts by resolution; a resolved alert stays pending until acknowledged', async () => {
+    const { accessToken } = await signIn();
+    const at = ctx.clock.now();
+    await ctx.repository.alerts.insert({ alertId: 'open', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: at });
+    await ctx.repository.alerts.insert({ alertId: 'fixed', type: 'HARD_BOUNCE', subject: 'r2', detail: 'x', raisedAt: at });
+    await ctx.repository.alerts.resolve({ type: 'HARD_BOUNCE', subject: 'r2' }, at, 'sent again (attempt a2)');
+    const ids = async (query: string) =>
+      (await ctx.app.inject({ method: 'GET', url: `/alerts${query}`, headers: { authorization: `Bearer ${accessToken}` } })).json().map((a: { alertId: string }) => a.alertId);
+
+    expect(await ids('')).toEqual(['fixed', 'open']);
+    expect(await ids('?pending=true&resolved=false')).toEqual(['open']);
+    expect(await ids('?pending=true&resolved=true')).toEqual(['fixed']);
+    const fixed = (await ctx.app.inject({ method: 'GET', url: '/alerts?resolved=true', headers: { authorization: `Bearer ${accessToken}` } })).json()[0];
+    expect(fixed).toMatchObject({ alertId: 'fixed', resolution: 'sent again (attempt a2)', resolvedAt: at.toISOString() });
+    expect(fixed.acknowledgedAt).toBeUndefined();
+    const invalid = await ctx.app.inject({ method: 'GET', url: '/alerts?resolved=maybe', headers: { authorization: `Bearer ${accessToken}` } });
+    expect([invalid.statusCode, invalid.json()]).toEqual([400, { error: 'INVALID_REQUEST', field: 'resolved' }]);
+  });
+
   it('lists alerts', async () => {
     const { accessToken } = await signIn();
     ctx.email.respondWith({ kind: 'ACCOUNT_ERROR', detail: 'LE_102' });

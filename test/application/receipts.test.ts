@@ -4,6 +4,7 @@ import { GetBatchSummary } from '../../src/application/receipts/get-batch-summar
 import { publishNextManifest } from '../../src/application/receipts/receipt-dependencies';
 import { RefreshRecipients } from '../../src/application/receipts/refresh-recipients';
 import { RemoveReceipt } from '../../src/application/receipts/remove-receipt';
+import { ResolveDuplicateConflict } from '../../src/application/receipts/resolve-duplicate-conflict';
 import { UploadReceipts } from '../../src/application/receipts/upload-receipts';
 import { Period } from '../../src/domain/period/period';
 import type { Receipt } from '../../src/domain/receipt/receipt';
@@ -108,8 +109,8 @@ describe('receipt use cases', () => {
       expect((await uploadOk([altos])).results[0]).toMatchObject({ state: 'PENDING', errorType: 'EMAIL_SUPPRESSED' });
     });
 
-    it('discards repeated content, also within the same upload, without counting it', async () => {
-      const first = await uploadOk([altos, { ...altos, name: fileName('Copia', 'MULTA', '104522') }]);
+    it('discards repeated content under the same name, also within the same upload and in another batch, without counting it', async () => {
+      const first = await uploadOk([altos, altos]);
       expect(first.results.map((r) => r.outcome)).toEqual(['REGISTERED', 'DUPLICATE']);
 
       const again = await uploadOk([altos]);
@@ -152,7 +153,8 @@ describe('receipt use cases', () => {
       await fx.repository.transaction((tx) => publishNextManifest(tx, OCT_2026, 'CASH', fx.clock.now()));
 
       const view = await summary.execute(OP, OCT_2026, 'CASH');
-      expect(view.needsCorrection[0]).toMatchObject({ state: 'FAILED', errorType: 'FILE_NOT_AVAILABLE' });
+      // D42: the receipt's own error stays visible next to the missing file.
+      expect(view.needsCorrection[0]).toMatchObject({ state: 'FAILED', errorType: 'PROVIDER_REJECTED', fileError: 'FILE_NOT_AVAILABLE' });
 
       const result = await uploadOk([altos]);
       expect(result.results[0]).toMatchObject({ outcome: 'REGISTERED', state: 'FAILED' });
@@ -203,6 +205,8 @@ describe('receipt use cases', () => {
     it('removes an unsent receipt, deletes its file and publishes a new manifest', async () => {
       const sha256 = (await uploadOk([altos, palmas])).results[0]?.sha256 as never;
       expect(await remove.execute(OP, sha256)).toEqual({ ok: true, value: { manifestVersion: 2 } });
+      // D50: deleted by the job queued with the removal (D41).
+      expect(await fx.runFileJobs()).toBe(1);
       expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256 })).toBeUndefined();
       const view = await summary.execute(OP, OCT_2026, 'CASH');
       expect(view.readyToSend).toHaveLength(1);
@@ -211,8 +215,9 @@ describe('receipt use cases', () => {
 
     it('never removes a SENT or UNCERTAIN receipt', async () => {
       const sha256 = (await uploadOk([altos])).results[0]?.sha256 as never;
-      const receipt = await fx.repository.receipts.get(sha256);
       for (const state of ['SENT', 'UNCERTAIN'] as const) {
+        // Read before each save: a save needs the stored version (D37).
+        const receipt = await fx.repository.receipts.get(sha256);
         await fx.repository.receipts.save({ ...(receipt as Receipt), state });
         expect(await remove.execute(OP, sha256)).toEqual({ ok: false, error: 'RECEIPT_NOT_REMOVABLE' });
       }
@@ -224,7 +229,7 @@ describe('receipt use cases', () => {
     it('re-queries the source; a changed email produces a new manifest version', async () => {
       await uploadOk([altos]);
       fx.tayrona.setContract('104522', { complexName: 'Edificio Altos', email: 'nuevo@altos.com' });
-      expect(await refresh.execute(OP, OCT_2026, 'CASH')).toEqual({ ok: true, value: { manifestVersion: 2, refreshed: 1 } });
+      expect(await refresh.execute(OP, OCT_2026, 'CASH')).toEqual({ ok: true, value: { manifestVersion: 2, refreshed: 1, withoutFile: 0 } });
       expect((await summary.execute(OP, OCT_2026, 'CASH')).readyToSend[0]?.email).toBe('nuevo@altos.com');
     });
 
@@ -246,5 +251,145 @@ describe('receipt use cases', () => {
       await summary.execute(OP, OCT_2026, 'CASH');
       expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'BATCH_REVIEWED', newValue: 'manifest v1' });
     });
+  });
+});
+
+describe('same content under different names (D31)', () => {
+  let fx: ReceiptFixture;
+  let upload: UploadReceipts;
+  let remove: RemoveReceipt;
+  let refresh: RefreshRecipients;
+  let summary: GetBatchSummary;
+  let resolve: ResolveDuplicateConflict;
+
+  beforeEach(() => {
+    fx = receiptFixture();
+    upload = new UploadReceipts(fx.deps);
+    remove = new RemoveReceipt(fx.deps);
+    refresh = new RefreshRecipients(fx.deps);
+    summary = new GetBatchSummary(fx.deps);
+    resolve = new ResolveDuplicateConflict(fx.deps);
+  });
+
+  const content = pdfBytes('same-content');
+  const forAltos = { name: fileName('Edificio Altos', 'MULTA', '104522'), content };
+  const forPalmas = { name: fileName('Conjunto Las Palmas', 'MULTA', '98765'), content };
+  const forAnglo = { name: fileName('Anglo Torre', 'MULTA', '7001'), content };
+  const uploadOk = async (files: Parameters<UploadReceipts['execute']>[3], block: 'CASH' | 'ANGLO' = 'CASH') => {
+    const result = await upload.execute(OP, OCT_2026, block, files);
+    if (!result.ok) throw new Error(result.error);
+    return result.value;
+  };
+  const only = async () => {
+    const all = [...(await fx.repository.receipts.listByBatch(OCT_2026, 'CASH')), ...(await fx.repository.receipts.listByBatch(OCT_2026, 'ANGLO'))];
+    expect(all).toHaveLength(1);
+    return all[0]!;
+  };
+  const entries = async (block: 'CASH' | 'ANGLO') => {
+    const batch = await fx.repository.batches.get(OCT_2026, block);
+    return batch ? ((await fx.repository.batches.getManifest(OCT_2026, block, batch.manifestVersion))?.entries ?? []) : [];
+  };
+
+  it('in the same upload, with two contracts: both are marked, nothing is ready to send, the summary shows both names', async () => {
+    const result = await uploadOk([forAltos, forPalmas]);
+    expect(result.results).toMatchObject([
+      { fileName: forAltos.name, outcome: 'REGISTERED', state: 'PENDING', errorType: 'DUPLICATE_CONFLICT' },
+      { fileName: forPalmas.name, outcome: 'DUPLICATE_CONFLICT', conflictWith: { fileName: forAltos.name, contract: '104522', conceptKey: 'MULTA', block: 'CASH' } },
+    ]);
+    expect(await only()).toMatchObject({ state: 'PENDING', errorType: 'DUPLICATE_CONFLICT', conflictingNames: [{ fileName: forPalmas.name, contract: '98765' }] });
+    expect(await entries('CASH')).toEqual([]);
+    const view = await summary.execute(OP, OCT_2026, 'CASH');
+    expect(view.readyToSend).toEqual([]);
+    expect(view.needsCorrection).toMatchObject([{ fileName: forAltos.name, errorType: 'DUPLICATE_CONFLICT', conflictingNames: [{ fileName: forPalmas.name, contract: '98765' }] }]);
+  });
+
+  it('even with the same contract and concept: any other name is a conflict', async () => {
+    const renamed = { name: fileName('Edificio Altos oct', 'MULTA', '104522'), content };
+    expect((await uploadOk([forAltos, renamed])).results.map((r) => r.outcome)).toEqual(['REGISTERED', 'DUPLICATE_CONFLICT']);
+  });
+
+  it('in a later upload of another batch (point c): the registered receipt is blocked where it is and its manifest changes', async () => {
+    await uploadOk([forAltos]);
+    expect(await entries('CASH')).toHaveLength(1);
+    const later = await uploadOk([forAnglo], 'ANGLO');
+    expect(later.results).toMatchObject([{ outcome: 'DUPLICATE_CONFLICT', conflictWith: { block: 'CASH', contract: '104522' } }]);
+    expect(await only()).toMatchObject({ block: 'CASH', errorType: 'DUPLICATE_CONFLICT', conflictingNames: [{ block: 'ANGLO', contract: '7001' }] });
+    expect((await fx.repository.batches.get(OCT_2026, 'CASH'))?.manifestVersion).toBe(2);
+    expect(await entries('CASH')).toEqual([]);
+  });
+
+  it('the operator chooses a name of another batch: the receipt moves there, with that contract, and can be sent; audited', async () => {
+    await uploadOk([forAltos]);
+    await uploadOk([forAnglo], 'ANGLO');
+    const sha = (await only()).sha256;
+    expect(await resolve.execute(OP, sha, forAnglo.name, '')).toEqual({ ok: false, error: { code: 'NOTE_REQUIRED' } });
+    expect(await resolve.execute(OP, sha, fileName('Otro', 'MULTA', '1'), 'x')).toEqual({ ok: false, error: { code: 'NAME_NOT_IN_CONFLICT' } });
+
+    const resolved = await resolve.execute(OP, sha, forAnglo.name, 'El negocio confirmó que es de Anglo Torre');
+    expect(resolved).toEqual({ ok: true, value: { sha256: sha, fileName: forAnglo.name, period: '2026-10', block: 'ANGLO', state: 'PENDING', errorType: undefined, email: 'anglo@sap.co' } });
+    const receipt = await only();
+    expect(receipt).toMatchObject({ block: 'ANGLO', contract: '7001', recipient: { email: 'anglo@sap.co' } });
+    expect(receipt.conflictingNames).toBeUndefined();
+    expect(await entries('CASH')).toEqual([]);
+    expect((await entries('ANGLO')).map((e) => e.fileName)).toEqual([forAnglo.name]);
+    expect(await fx.files.read({ period: OCT_2026, block: 'ANGLO', sha256: sha })).toBeDefined();
+    // D50: the copy in the old batch is deleted by the job queued with the resolution (D41).
+    expect(await fx.runFileJobs()).toBe(1);
+    expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: sha })).toBeUndefined();
+    expect(await fx.files.read({ period: OCT_2026, block: 'ANGLO', sha256: sha })).toBeDefined();
+    expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'DUPLICATE_CONFLICT_RESOLVED', subject: sha, newValue: `${forAnglo.name} (2026-10/ANGLO)`, note: 'El negocio confirmó que es de Anglo Torre' });
+    expect(await resolve.execute(OP, sha, forAnglo.name, 'otra vez')).toEqual({ ok: false, error: { code: 'RECEIPT_NOT_IN_CONFLICT' } });
+  });
+
+  it('the operator keeps the first name: it stays in its batch and is ready to send', async () => {
+    await uploadOk([forAltos, forPalmas]);
+    const sha = (await only()).sha256;
+    expect(await resolve.execute(OP, sha, forAltos.name, 'Es de Altos')).toMatchObject({ ok: true, value: { block: 'CASH', email: 'admin@altos.com' } });
+    expect((await entries('CASH')).map((e) => e.contract)).toEqual(['104522']);
+  });
+
+  it('the chosen name must still be valid (its concept may have been retired since)', async () => {
+    await uploadOk([forAltos, forPalmas]);
+    await fx.repository.concepts.save({ key: 'MULTA', subject: 'Multa', active: false });
+    expect(await resolve.execute(OP, (await only()).sha256, forPalmas.name, 'x')).toEqual({ ok: false, error: { code: 'CHOSEN_NAME_INVALID', reason: 'UNKNOWN_CONCEPT' } });
+  });
+
+  it('removing the receipt ends the conflict; uploading it again under the right name registers it normally', async () => {
+    await uploadOk([forAltos, forPalmas]);
+    const sha = (await only()).sha256;
+    expect((await remove.execute(OP, sha)).ok).toBe(true);
+    expect((await only()).conflictingNames).toBeUndefined();
+    const again = await uploadOk([forPalmas]);
+    expect(again.results).toMatchObject([{ outcome: 'REGISTERED', state: 'PENDING' }]);
+    expect(await only()).toMatchObject({ contract: '98765', recipient: { email: 'palmas@correo.co' } });
+    expect((await entries('CASH')).map((e) => e.contract)).toEqual(['98765']);
+  });
+
+  it('refreshing the recipients keeps it blocked', async () => {
+    await uploadOk([forAltos, forPalmas]);
+    await refresh.execute(OP, OCT_2026, 'CASH');
+    expect(await only()).toMatchObject({ errorType: 'DUPLICATE_CONFLICT' });
+    expect(await entries('CASH')).toEqual([]);
+  });
+
+  it('point a: already sent, it cannot be held back; the new upload is reported and an alert raised, nothing else changes', async () => {
+    await uploadOk([forAltos]);
+    const sent = await only();
+    await fx.repository.receipts.save({ ...sent, state: 'SENT', deliveryState: 'UNCONFIRMED', attempts: 1 });
+    const later = await uploadOk([forPalmas]);
+    expect(later.results).toMatchObject([{ outcome: 'DUPLICATE_CONFLICT', conflictWith: { fileName: forAltos.name, state: 'SENT' } }]);
+    expect(await only()).toMatchObject({ state: 'SENT', fileName: forAltos.name });
+    expect((await only()).conflictingNames).toBeUndefined();
+    expect((await fx.repository.alerts.list()).map((a) => [a.type, a.subject])).toEqual([['DUPLICATE_CONFLICT', sent.sha256]]);
+    expect((await fx.repository.receipts.history(sent.sha256)).map((h) => h.event)).toContain('DUPLICATE_CONFLICT');
+  });
+
+  it('point b: an invalid name is not a destination: A1 applies, no conflict', async () => {
+    const invalid = { name: 'Edificio Altos CNCPT  MULTA CNTRT 104522.pdf', content };
+    const result = await uploadOk([invalid, forPalmas]);
+    expect(result.results.map((r) => r.outcome)).toEqual(['REGISTERED', 'REGISTERED']);
+    expect(await only()).toMatchObject({ fileName: forPalmas.name, state: 'PENDING' });
+    expect((await only()).conflictingNames).toBeUndefined();
+    expect((await uploadOk([invalid])).results[0]?.outcome).toBe('DUPLICATE');
   });
 });

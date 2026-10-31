@@ -53,7 +53,11 @@ export interface StoredProgressEvent {
   readonly event: ProgressEvent;
 }
 
+export type ProgressListener = (event: StoredProgressEvent) => void;
+
 /** Pushes already stored events to whoever is watching live (SSE). Never throws. */
 export interface ProgressNotifier {
   publish(event: StoredProgressEvent): void;
+  /** D50 (B4): watch one execution's events as they are published; returns the unsubscribe function. */
+  subscribe(executionId: string, listener: ProgressListener): () => void;
 }

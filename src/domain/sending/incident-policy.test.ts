@@ -15,6 +15,27 @@ describe('ProviderIncidentTracker (§9.2.1)', () => {
     expect(tracker.register(uncertain())).toEqual({ action: 'STOP', reason: 'PROVIDER_UNAVAILABLE', consecutiveIncidents: 3 });
   });
 
+  it('M1: a rejection with an unknown code does not wait, resets the uncertain count and stops at the third in a row', () => {
+    const unknown: SendOutcome = { kind: 'UNKNOWN_REJECTION', detail: 'undocumented HTTP 400: TM_3004' };
+    const tracker = new ProviderIncidentTracker();
+    expect(tracker.register(uncertain())).toMatchObject({ action: 'WAIT', consecutiveIncidents: 1 });
+    expect(tracker.register(unknown)).toEqual({ action: 'CONTINUE' });
+    expect(tracker.register(uncertain())).toMatchObject({ action: 'WAIT', seconds: 30, consecutiveIncidents: 1 });
+    expect(tracker.register(unknown)).toEqual({ action: 'CONTINUE' });
+    expect(tracker.register(unknown)).toEqual({ action: 'CONTINUE' });
+    expect(tracker.register(unknown)).toEqual({ action: 'STOP', reason: 'PROVIDER_UNKNOWN_ERROR', consecutiveIncidents: 3 });
+  });
+
+  it('M1: any other answer resets the unknown-rejection count', () => {
+    const unknown: SendOutcome = { kind: 'UNKNOWN_REJECTION', detail: 'x' };
+    const tracker = new ProviderIncidentTracker();
+    tracker.register(unknown);
+    tracker.register(unknown);
+    tracker.register(accepted);
+    expect(tracker.register(unknown)).toEqual({ action: 'CONTINUE' });
+    expect(tracker.register(unknown)).toEqual({ action: 'CONTINUE' });
+  });
+
   it('honours a longer Retry-After', () => {
     expect(new ProviderIncidentTracker().register(uncertain(120))).toMatchObject({ action: 'WAIT', seconds: 120 });
   });

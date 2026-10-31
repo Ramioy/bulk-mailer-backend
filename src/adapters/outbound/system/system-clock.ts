@@ -7,7 +7,11 @@ export class SystemClock implements Clock {
     return new Date();
   }
 
-  async sleep(milliseconds: number): Promise<void> {
-    await delay(milliseconds);
+  async sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
+    // An aborted wait is not an error for the caller: it just checks the signal and stops (D33).
+    await delay(milliseconds, undefined, { signal }).catch((error: unknown) => {
+      if (!signal?.aborted) throw error;
+    });
   }
 }

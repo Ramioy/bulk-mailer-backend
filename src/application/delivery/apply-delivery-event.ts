@@ -1,9 +1,13 @@
 import type { Receipt } from '../../domain/receipt/receipt';
+import { DomainError } from '../../domain/shared/domain-error';
 import { applyDeliveryEvent, eventRecipientRole, type DeliveryEvent, type IncomingDeliveryEvent } from '../../domain/receipt/delivery-state';
-import { assertTransition } from '../../domain/receipt/receipt-state';
+import { assertTransition, awaitsLateEvidence } from '../../domain/receipt/receipt-state';
 import type { Attempt } from '../../domain/sending/attempt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { raiseAlert } from '../alerts/raise-alert';
+import { resolveReceiptAlerts } from '../alerts/resolve-alerts';
+import { retireFile } from '../files/retire-file';
+import { settleBatchIfDone } from '../sending/batch-settlement';
 import { domainEvent } from '../events/domain-events';
 
 export type ApplyResult =
@@ -24,7 +28,7 @@ export async function latestAttempt(stores: Pick<BulkMailerStores, 'attempts'>, 
 
 /**
  * The provider proved the email went out (a delivery event, or the logs): UNCERTAIN → SENT, delivery UNCONFIRMED.
- * Returns the updated receipt.
+ * `receipt` must have been read in `tx` (D37). Returns it as stored, with its new version.
  */
 export async function confirmSent(
   tx: BulkMailerStores,
@@ -35,11 +39,62 @@ export async function confirmSent(
   evidence: string,
 ): Promise<Receipt> {
   assertTransition(receipt.state, 'SENT');
-  const sent: Receipt = { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, updatedAt: now };
-  await tx.receipts.save(sent);
+  const sent = await tx.receipts.save(sentWithoutFile(receipt, now));
+  await retireFile(tx, receipt, now);
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `confirmed by ${evidence} (attempt ${attempt.attemptId})` });
+  await resolveReceiptAlerts(tx, now, { sha256: receipt.sha256, from: receipt.state, to: 'SENT', attempt });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence }));
+  await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
   return sent;
+}
+
+/**
+ * D34: late evidence that a send failed as NOT_FOUND_AT_PROVIDER did go out: FAILED → SENT, delivery UNCONFIRMED
+ * (the caller then applies the event's delivery state), with the LATE_SEND_EVIDENCE alert. Returns the updated receipt.
+ */
+export async function confirmLateSent(
+  tx: BulkMailerStores,
+  newId: () => string,
+  now: Date,
+  receipt: Receipt,
+  attempt: Attempt,
+  evidence: string,
+  what: string,
+): Promise<Receipt> {
+  // FAILED → SENT is only for this case (D34): anything else is a bug, like any other forbidden transition.
+  if (!awaitsLateEvidence(receipt.state, receipt.errorType)) throw new DomainError(`Receipt ${receipt.sha256} cannot be confirmed late from ${receipt.state}`);
+  assertTransition(receipt.state, 'SENT');
+  const failedAt = (await tx.receipts.history(receipt.sha256)).filter((h) => h.event === 'FAILED').at(-1)?.at ?? receipt.updatedAt;
+  const sent = await tx.receipts.save(sentWithoutFile(receipt, now));
+  await retireFile(tx, receipt, now);
+  await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `SENT confirmed late by ${evidence} (attempt ${attempt.attemptId})` });
+  await resolveReceiptAlerts(tx, now, { sha256: receipt.sha256, from: receipt.state, to: 'SENT', attempt });
+  await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence, late: true }));
+  await raiseAlert(tx, newId, {
+    alertId: newId(),
+    type: 'LATE_SEND_EVIDENCE',
+    subject: receipt.sha256,
+    reference: attempt.attemptId,
+    detail:
+      `${receipt.fileName}: attempt ${attempt.attemptId} to ${attempt.to}, marked FAILED / NOT_FOUND_AT_PROVIDER at ${failedAt.toISOString()}, ` +
+      `did go out: ${what} from the ${evidence}. It is SENT now; if it was sent again meanwhile, the client received it twice.`,
+    raisedAt: now,
+  });
+  await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
+  return sent;
+}
+
+/**
+ * The receipt confirmed SENT: delivery UNCONFIRMED, no error, and its file no longer needed (D41; the caller queues
+ * its deletion with `retireFile` in the same transaction).
+ */
+export function sentWithoutFile(receipt: Receipt, now: Date): Receipt {
+  return { ...receipt, state: 'SENT', deliveryState: 'UNCONFIRMED', errorType: undefined, errorDetail: undefined, fileAvailable: false, updatedAt: now };
+}
+
+/** A process failure (M2, logs only) says the provider did not deliver it: it is no proof that the email went out. */
+function provesSending(event: DeliveryEvent): boolean {
+  return event.state !== 'PROCESS_FAILED';
 }
 
 /**
@@ -88,8 +143,17 @@ export async function applyPendingEvents(tx: BulkMailerStores, newId: () => stri
 async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Date, attempt: Attempt, event: DeliveryEvent): Promise<ApplyResult> {
   let receipt = await tx.receipts.get(attempt.sha256);
   if (!receipt) return 'RECORDED';
-  if ((await latestAttempt(tx, receipt))?.attemptId !== attempt.attemptId) {
+  const attempts = await tx.attempts.listByReceipt(receipt.sha256);
+  const evidence = event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs';
+  if (attempts.at(-1)?.attemptId !== attempt.attemptId) {
+    // D50: an older send believed not sent went out, and the latest one was not found at the provider either: the
+    // receipt was sent (by the older attempt). Without this it stayed ready and would be sent a third time.
+    if (awaitsLateEvidence(receipt.state, receipt.errorType) && provesSending(event) && attempt.outcome !== 'ACCEPTED') {
+      receipt = await confirmLateSent(tx, newId, now, receipt, attempt, evidence, event.state);
+      return applyDelivery(tx, newId, now, receipt, attempt, event);
+    }
     await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'DELIVERY_EVENT_IGNORED', detail: `${event.state} of an older attempt ${attempt.attemptId}` });
+    await detectDuplicateSend(tx, newId, now, receipt, attempts, attempt, event);
     return 'RECORDED';
   }
 
@@ -103,12 +167,18 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
 
   if (receipt.state === 'SENDING') return 'PENDING_SEND';
   if (receipt.state === 'UNCERTAIN') {
-    receipt = await confirmSent(tx, newId, now, receipt, attempt, event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs');
+    receipt = await confirmSent(tx, newId, now, receipt, attempt, evidence);
+  } else if (awaitsLateEvidence(receipt.state, receipt.errorType) && provesSending(event)) {
+    receipt = await confirmLateSent(tx, newId, now, receipt, attempt, evidence, event.state);
   } else if (receipt.state !== 'SENT') {
     await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'DELIVERY_EVENT_IGNORED', detail: `${event.state} while ${receipt.state}` });
     return 'RECORDED';
   }
+  return applyDelivery(tx, newId, now, receipt, attempt, event);
+}
 
+/** The delivery state the event reports, on a SENT receipt (the delivery state only advances). */
+async function applyDelivery(tx: BulkMailerStores, newId: () => string, now: Date, receipt: Receipt, attempt: Attempt, event: DeliveryEvent): Promise<ApplyResult> {
   const outcome = applyDeliveryEvent(receipt.deliveryState ?? 'UNCONFIRMED', event.state);
   if (outcome.kind === 'ANOMALY') {
     await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'DELIVERY_ANOMALY', detail: `${event.state} after ${outcome.state}` });
@@ -122,7 +192,8 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
     domainEvent(newId, 'DELIVERY_UPDATED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, deliveryState: outcome.state, source: event.source }),
   );
   if (outcome.state === 'HARD_BOUNCE' || outcome.state === 'COMPLAINT') {
-    if (!(await tx.suppressions.get(attempt.to))) {
+    // B6 (D50): outside production the bounce is the test mailbox's, not the real address's: alert, do not suppress.
+    if (!attempt.redirectedTo && !(await tx.suppressions.get(attempt.to))) {
       await tx.suppressions.save({ email: attempt.to, reason: outcome.state, since: now, attemptId: attempt.attemptId });
       await tx.outbox.add(domainEvent(newId, 'ADDRESS_SUPPRESSED', now, { email: attempt.to, reason: outcome.state, attemptId: attempt.attemptId }));
     }
@@ -130,9 +201,59 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
       alertId: newId(),
       type: outcome.state,
       subject: receipt.sha256,
-      detail: `${receipt.fileName}: ${attempt.to}${event.reason ? ` (${event.reason})` : ''}`,
+      reference: attempt.attemptId,
+      detail: `${receipt.fileName}: ${attempt.to}${event.reason ? ` (${event.reason})` : ''}${attempt.redirectedTo ? `; sent to the test mailbox ${attempt.redirectedTo}, address not suppressed` : ''}`,
+      raisedAt: now,
+    });
+  }
+  // M2: the provider did not process it; the address is not at fault, so it is not suppressed.
+  if (outcome.state === 'PROCESS_FAILED') {
+    await raiseAlert(tx, newId, {
+      alertId: newId(),
+      type: 'PROCESS_FAILED',
+      subject: receipt.sha256,
+      reference: attempt.attemptId,
+      detail: `${receipt.fileName}: ${attempt.to} accepted but not processed by the provider${event.reason ? ` (${event.reason})` : ''}; it can be resent`,
       raisedAt: now,
     });
   }
   return 'APPLIED';
+}
+
+/**
+ * D34: evidence that an older attempt went out, while a later attempt holds the receipt. If the older one was believed
+ * not sent (the attempt right after it is a batch send, which only takes PENDING or FAILED receipts; after a send
+ * that went out only a manual Resend follows), the client probably received the email twice. The state is kept;
+ * the alert is raised once per older attempt.
+ */
+async function detectDuplicateSend(
+  tx: BulkMailerStores,
+  newId: () => string,
+  now: Date,
+  receipt: Receipt,
+  attempts: readonly Attempt[],
+  older: Attempt,
+  event: DeliveryEvent,
+): Promise<void> {
+  if (!provesSending(event) || older.outcome === 'ACCEPTED') return;
+  // D50: the receipt was confirmed SENT by this very attempt (late evidence while the latest one was not found): its
+  // further events are no duplicate.
+  if ((await tx.alerts.list({ type: 'LATE_SEND_EVIDENCE', subject: receipt.sha256, reference: older.attemptId, limit: 1 })).length > 0) return;
+  if (receipt.state !== 'SENDING' && receipt.state !== 'SENT' && receipt.state !== 'UNCERTAIN') return;
+  const index = attempts.findIndex((a) => a.attemptId === older.attemptId);
+  if (index < 0 || attempts[index + 1]?.kind !== 'BATCH') return;
+  const latest = attempts.at(-1) as Attempt;
+  const raised = (await tx.alerts.list({ type: 'DUPLICATE_SEND_DETECTED', subject: receipt.sha256, reference: older.attemptId, limit: 1 })).length > 0;
+  if (raised) return;
+  await raiseAlert(tx, newId, {
+    alertId: newId(),
+    type: 'DUPLICATE_SEND_DETECTED',
+    subject: receipt.sha256,
+    reference: older.attemptId,
+    detail:
+      `${receipt.fileName}: attempt ${older.attemptId} to ${older.to}, believed not sent, did go out (${event.state} from the ` +
+      `${event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs'}); attempt ${latest.attemptId} to ${latest.to} is ${receipt.state}: ` +
+      'the client probably received the email twice.',
+    raisedAt: now,
+  });
 }

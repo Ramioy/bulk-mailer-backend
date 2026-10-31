@@ -1,6 +1,7 @@
 export const DomainEventType = {
   RECEIPTS_UPLOADED: 'RECEIPTS_UPLOADED',
   RECEIPT_REMOVED: 'RECEIPT_REMOVED',
+  DUPLICATE_CONFLICT_RESOLVED: 'DUPLICATE_CONFLICT_RESOLVED',
   RECIPIENTS_REFRESHED: 'RECIPIENTS_REFRESHED',
   EXECUTION_STARTED: 'EXECUTION_STARTED',
   RECEIPT_SENT: 'RECEIPT_SENT',
@@ -18,6 +19,10 @@ export const DomainEventType = {
   /** A concept was added, retired, reactivated or got a new subject. */
   CONCEPT_CHANGED: 'CONCEPT_CHANGED',
   ARCHIVE_COPY_CHANGED: 'ARCHIVE_COPY_CHANGED',
+  /** D41: a stopped batch completed because nothing was left to send or to resolve. */
+  BATCH_COMPLETED: 'BATCH_COMPLETED',
+  /** D51: the operator released the files of a batch; its receipts keep their state. */
+  BATCH_FILES_RELEASED: 'BATCH_FILES_RELEASED',
 } as const;
 export type DomainEventType = (typeof DomainEventType)[keyof typeof DomainEventType];
 

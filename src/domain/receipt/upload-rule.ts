@@ -14,7 +14,7 @@ export interface ExistingReceipt {
 export const UploadDecision = {
   /** Unknown hash: a new receipt is registered. */
   NEW: 'NEW',
-  /** Same hash in the same batch, INVALID, REMOVED or FAILED without file: that record is re-evaluated. */
+  /** Same hash in the same batch, INVALID, REMOVED, or FAILED or PENDING without file: that record is re-evaluated. */
   RE_EVALUATE: 'RE_EVALUATE',
   /** Same hash REMOVED from another batch: that record moves to this batch and is re-evaluated (D8). */
   MOVE: 'MOVE',
@@ -31,7 +31,8 @@ export function decideUpload(existing: ExistingReceipt | undefined, period: Peri
   const sameBatch = existing.period.equals(period) && existing.block === block;
   if (!sameBatch) return existing.state === 'REMOVED' ? UploadDecision.MOVE : UploadDecision.DUPLICATE;
   if (!existing.fileAvailable && canResend(existing.state, existing.deliveryState ?? 'UNCONFIRMED')) return UploadDecision.RESTORE_FILE;
+  // D51: a PENDING receipt whose file the operator released gets it back the same way as a FAILED one.
   const reEvaluable =
-    existing.state === 'INVALID' || existing.state === 'REMOVED' || (existing.state === 'FAILED' && !existing.fileAvailable);
+    existing.state === 'INVALID' || existing.state === 'REMOVED' || ((existing.state === 'FAILED' || existing.state === 'PENDING') && !existing.fileAvailable);
   return reEvaluable ? UploadDecision.RE_EVALUATE : UploadDecision.DUPLICATE;
 }

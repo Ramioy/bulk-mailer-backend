@@ -10,6 +10,8 @@ export interface Attempt {
   readonly kind: 'BATCH' | 'RESEND';
   readonly to: string;
   readonly copyAddress?: string;
+  /** D50 (B6): outside production the email went to this test mailbox, not to `to`. */
+  readonly redirectedTo?: string;
   readonly startedAt: Date;
   readonly finishedAt?: Date;
   readonly outcome?: SendOutcomeKind;

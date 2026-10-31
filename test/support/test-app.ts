@@ -10,6 +10,7 @@ import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-
 import { FakeSendLookup } from '../../src/adapters/outbound/fakes/fake-send-lookup';
 import { FakeSuppressionManager } from '../../src/adapters/outbound/fakes/fake-suppression-manager';
 import type { ZeptoMailWebhookSecrets } from '../../src/adapters/inbound/webhooks/zeptomail-webhook';
+import { InMemoryInstanceLease } from '../../src/adapters/outbound/in-memory/in-memory-instance-lease';
 import { InMemoryJobQueue } from '../../src/adapters/outbound/in-memory/in-memory-job-queue';
 import { SseProgressHub } from '../../src/adapters/outbound/sse/sse-progress-hub';
 import { InProcessEventBus } from '../../src/adapters/outbound/events/in-process-event-bus';
@@ -69,14 +70,16 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     authenticator,
     clock,
     newId: randomUUID,
-    fileStore: new InMemoryReceiptFileStore(),
+    fileStore: new InMemoryReceiptFileStore(() => clock.now()),
     fileInspector: new BasicPdfInspector(),
     contractSources: { TAYRONA: tayrona, SAP: new FakeContractSource() },
     emailProvider: email,
     sendLookup: lookup,
     suppressionManager,
     webhookSecrets: WEBHOOK_SECRETS,
-    jobQueue: new InMemoryJobQueue(() => clock.now()),
+    jobQueue: new InMemoryJobQueue(() => clock.now(), () => repository.jobTable()),
+    instanceLease: new InMemoryInstanceLease(() => clock.now()),
+    readiness: { check: async () => ({ database: true, volume: true }) },
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],
@@ -88,6 +91,8 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     DATA_DIR: '/tmp/bulk-mailer-test',
     DATABASE_URL: 'postgres://unused',
     JOB_RUNNER_ENABLED: 'false',
+    // Tests sign in many times from one address; the limit itself is tested with its own value (D50, B5).
+    AUTH_RATE_LIMIT_PER_MINUTE: '10000',
     ...env,
   });
   const app = await createApp(config, adapters);

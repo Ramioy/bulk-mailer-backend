@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Period } from '../../src/domain/period/period';
-import { DuplicateAttemptError, type BulkMailerRepository } from '../../src/ports/bulk-mailer-repository';
+import {
+  ConcurrentModificationError,
+  DuplicateAttemptError,
+  DuplicateManifestVersionError,
+  type BulkMailerRepository,
+} from '../../src/ports/bulk-mailer-repository';
 import { aReceipt, anAttempt, anExecution, hashOf, OCT_2026, T0 } from '../support/builders';
 
 /** Behaviour every BulkMailerRepository adapter must have. Run against in-memory now, PostgreSQL in step 3. */
@@ -18,8 +23,23 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         const receipt = aReceipt({ errorDetail: 'x', deliveryState: 'UNCONFIRMED' });
         await repo.receipts.save(receipt);
         await repo.receipts.save({ ...receipt, state: 'SENT', attempts: 1 });
-        expect(await repo.receipts.get(receipt.sha256)).toEqual({ ...receipt, state: 'SENT', attempts: 1 });
+        expect(await repo.receipts.get(receipt.sha256)).toEqual({ ...receipt, state: 'SENT', attempts: 1, version: 2 });
         expect(await repo.receipts.get(hashOf('f'))).toBeUndefined();
+      });
+
+      it('keeps the names in conflict and clears them (D31)', async () => {
+        const conflictingNames = [{ fileName: 'Otro CNCPT MULTA CNTRT 7001.pdf', period: OCT_2026, block: 'ANGLO' as const, conceptKey: 'MULTA', contract: '7001', uploadedAt: T0 }];
+        const receipt = aReceipt({ errorType: 'DUPLICATE_CONFLICT', conflictingNames });
+        await repo.receipts.save(receipt);
+        expect(await repo.receipts.get(receipt.sha256)).toEqual(receipt);
+        await repo.receipts.save({ ...receipt, errorType: undefined, conflictingNames: undefined });
+        expect((await repo.receipts.get(receipt.sha256))?.conflictingNames).toBeUndefined();
+      });
+
+      it('keeps the PROCESS_FAILED delivery state (M2)', async () => {
+        const receipt = aReceipt({ state: 'SENT', deliveryState: 'PROCESS_FAILED' });
+        await repo.receipts.save(receipt);
+        expect((await repo.receipts.get(receipt.sha256))?.deliveryState).toBe('PROCESS_FAILED');
       });
 
       it('lists by batch ordered by file name, and by state', async () => {
@@ -29,6 +49,26 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         await repo.receipts.save(aReceipt({ sha256: hashOf('d'), period: Period.of(2026, 9) }));
         expect((await repo.receipts.listByBatch(OCT_2026, 'CASH')).map((r) => r.fileName)).toEqual(['a.pdf', 'b.pdf']);
         expect((await repo.receipts.listByState('INVALID')).map((r) => r.sha256)).toEqual([hashOf('b')]);
+      });
+
+      it('D37: a new receipt is stored as given; each save needs the stored version and bumps it', async () => {
+        const receipt = aReceipt();
+        expect(await repo.receipts.save(receipt)).toEqual(receipt);
+        const read = (await repo.receipts.get(receipt.sha256)) ?? receipt;
+        const saved = await repo.receipts.save({ ...read, state: 'SENDING' });
+        expect(saved.version).toBe(2);
+        expect(await repo.receipts.save({ ...saved, state: 'SENT' })).toMatchObject({ state: 'SENT', version: 3 });
+        expect(await repo.receipts.get(receipt.sha256)).toMatchObject({ state: 'SENT', version: 3 });
+      });
+
+      it('D37: two saves from the same read: the second fails and changes nothing', async () => {
+        await repo.receipts.save(aReceipt());
+        const read = (await repo.receipts.get(hashOf('a'))) ?? aReceipt();
+        await repo.receipts.save({ ...read, state: 'SENDING' });
+        await expect(repo.receipts.save({ ...read, state: 'REMOVED' })).rejects.toBeInstanceOf(ConcurrentModificationError);
+        // A "new" receipt for a hash already stored is the same mistake.
+        await expect(repo.receipts.save(aReceipt({ state: 'INVALID' }))).rejects.toBeInstanceOf(ConcurrentModificationError);
+        expect(await repo.receipts.get(hashOf('a'))).toMatchObject({ state: 'SENDING', version: 2 });
       });
 
       it('keeps the history of a receipt in order', async () => {
@@ -41,7 +81,7 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
 
     describe('batches and manifests', () => {
       it('saves a batch and its manifest versions', async () => {
-        const batch = { period: OCT_2026, block: 'CASH' as const, state: 'OPEN' as const, manifestVersion: 2, updatedAt: T0 };
+        const batch = { period: OCT_2026, block: 'CASH' as const, state: 'OPEN' as const, manifestVersion: 2, updatedAt: T0, version: 1 };
         await repo.batches.save(batch);
         expect(await repo.batches.get(OCT_2026, 'CASH')).toEqual(batch);
         expect(await repo.batches.get(OCT_2026, 'ANGLO')).toBeUndefined();
@@ -53,6 +93,23 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         await repo.batches.saveManifest(OCT_2026, 'CASH', manifest);
         expect(await repo.batches.getManifest(OCT_2026, 'CASH', 2)).toEqual(manifest);
         expect(await repo.batches.getManifest(OCT_2026, 'CASH', 1)).toBeUndefined();
+      });
+
+      it('D37: a batch save needs the stored version; a stale one fails', async () => {
+        const batch = { period: OCT_2026, block: 'CASH' as const, state: 'OPEN' as const, manifestVersion: 1, updatedAt: T0, version: 1 };
+        await repo.batches.save(batch);
+        expect(await repo.batches.save({ ...batch, state: 'RUNNING' })).toMatchObject({ state: 'RUNNING', version: 2 });
+        await expect(repo.batches.save({ ...batch, state: 'STOPPED' })).rejects.toBeInstanceOf(ConcurrentModificationError);
+        expect(await repo.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'RUNNING', version: 2 });
+      });
+
+      it('D37: a manifest version is written once; a second write fails and keeps the first', async () => {
+        for (const block of ['CASH', 'ANGLO'] as const) await repo.batches.save({ period: OCT_2026, block, state: 'OPEN', manifestVersion: 1, updatedAt: T0, version: 1 });
+        const first = { version: 1, entries: [{ sha256: hashOf('a'), fileName: 'a.pdf', conceptKey: 'MULTA', contract: '1', email: 'a@x.co' }] };
+        await repo.batches.saveManifest(OCT_2026, 'CASH', first);
+        await expect(repo.batches.saveManifest(OCT_2026, 'CASH', { version: 1, entries: [] })).rejects.toBeInstanceOf(DuplicateManifestVersionError);
+        expect(await repo.batches.getManifest(OCT_2026, 'CASH', 1)).toEqual(first);
+        await repo.batches.saveManifest(OCT_2026, 'ANGLO', { version: 1, entries: [] });
       });
     });
 
@@ -111,6 +168,29 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
       });
     });
 
+    describe('D50: attempts with the same start time', () => {
+      it('keep their insertion order', async () => {
+        await repo.receipts.save(aReceipt());
+        await repo.executions.tryStart(anExecution({ executionId: 'exec-1' }));
+        for (const id of ['z-first', 'a-second', 'm-third']) await repo.attempts.insert(anAttempt({ attemptId: id, startedAt: T0 }));
+        expect((await repo.attempts.listByReceipt(hashOf('a'))).map((a) => a.attemptId)).toEqual(['z-first', 'a-second', 'm-third']);
+        expect((await repo.attempts.listByExecution('exec-1')).map((a) => a.attemptId)).toEqual(['z-first', 'a-second', 'm-third']);
+      });
+    });
+
+    describe('D50: pending deliveries updated within a window', () => {
+      it('lists SENT with UNCONFIRMED or SOFT_BOUNCE delivery and UNCERTAIN, updated since the given instant', async () => {
+        const at = (h: number) => new Date(T0.getTime() + h * 3_600_000);
+        await repo.receipts.save(aReceipt({ sha256: hashOf('a'), state: 'SENT', deliveryState: 'UNCONFIRMED', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('b'), state: 'SENT', deliveryState: 'SOFT_BOUNCE', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('c'), state: 'SENT', deliveryState: 'ACCEPTED', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('d'), state: 'UNCERTAIN', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('e'), state: 'SENT', deliveryState: 'UNCONFIRMED', updatedAt: at(1) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('f'), state: 'PENDING', updatedAt: at(10) }));
+        expect((await repo.receipts.listPendingDeliveriesSince(at(5))).map((r) => r.sha256).sort()).toEqual([hashOf('a'), hashOf('b'), hashOf('d')].sort());
+      });
+    });
+
     describe('suppressions', () => {
       it('saves, reads and removes an address', async () => {
         await repo.suppressions.save({ email: 'x@y.co', reason: 'HARD_BOUNCE', since: T0 });
@@ -137,7 +217,9 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect(await repo.deliveryEvents.record(event)).toBe(false);
         const fromLogs = { ...event, eventId: 'logs:r1', state: 'HARD_BOUNCE' as const, source: 'LOGS' as const, providerRequestId: 'r1', emailReference: 'e1' };
         await repo.deliveryEvents.record(fromLogs);
-        expect(await repo.deliveryEvents.listByAttempt('a1')).toEqual([event, fromLogs]);
+        const processFailed = { ...fromLogs, eventId: 'logs:r2', state: 'PROCESS_FAILED' as const };
+        await repo.deliveryEvents.record(processFailed);
+        expect(await repo.deliveryEvents.listByAttempt('a1')).toEqual([event, fromLogs, processFailed]);
       });
     });
 
@@ -164,6 +246,60 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
     });
 
     describe('alerts, audit, concepts and settings', () => {
+      it('D46: filters alerts by pending, type and subject, newest first with a limit, and acknowledges once', async () => {
+        const at = (s: number) => new Date(T0.getTime() + s * 1000);
+        await repo.alerts.insert({ alertId: 'a1', type: 'HARD_BOUNCE', subject: 'r1', detail: 'one', raisedAt: at(1) });
+        await repo.alerts.insert({ alertId: 'a2', type: 'BATCH_STOPPED', subject: 'e1', detail: 'two', raisedAt: at(2) });
+        await repo.alerts.insert({ alertId: 'a3', type: 'HARD_BOUNCE', subject: 'r2', detail: 'three', raisedAt: at(3) });
+        expect((await repo.alerts.list()).map((a) => a.alertId)).toEqual(['a1', 'a2', 'a3']);
+        expect((await repo.alerts.list({ newestFirst: true, limit: 2 })).map((a) => a.alertId)).toEqual(['a3', 'a2']);
+        expect((await repo.alerts.list({ type: 'HARD_BOUNCE' })).map((a) => a.alertId)).toEqual(['a1', 'a3']);
+        expect((await repo.alerts.list({ type: 'HARD_BOUNCE', subject: 'r2' })).map((a) => a.alertId)).toEqual(['a3']);
+        expect(await repo.alerts.list({ subject: 'nope' })).toEqual([]);
+
+        expect(await repo.alerts.acknowledge('a1', 'operador', at(10))).toBe(true);
+        expect(await repo.alerts.acknowledge('a1', 'otro', at(11))).toBe(false);
+        expect(await repo.alerts.acknowledge('nope', 'operador', at(11))).toBe(false);
+        expect(await repo.alerts.get('a1')).toEqual({ alertId: 'a1', type: 'HARD_BOUNCE', subject: 'r1', detail: 'one', raisedAt: at(1), acknowledgedAt: at(10), acknowledgedBy: 'operador' });
+        expect(await repo.alerts.get('nope')).toBeUndefined();
+        expect((await repo.alerts.list({ pending: true })).map((a) => a.alertId)).toEqual(['a2', 'a3']);
+        expect((await repo.alerts.list({ pending: true, type: 'HARD_BOUNCE', newestFirst: true })).map((a) => a.alertId)).toEqual(['a3']);
+      });
+
+      it('D50: filters alerts by reference and by when they were raised', async () => {
+        const at = (sec: number) => new Date(T0.getTime() + sec * 1000);
+        await repo.alerts.insert({ alertId: 'b1', type: 'UNCERTAIN_UNRESOLVED', subject: 'r1', detail: 'x', raisedAt: at(1), reference: 'att-1' });
+        await repo.alerts.insert({ alertId: 'b2', type: 'UNCERTAIN_UNRESOLVED', subject: 'r1', detail: 'x', raisedAt: at(5), reference: 'att-2' });
+        expect((await repo.alerts.list({ type: 'UNCERTAIN_UNRESOLVED', subject: 'r1', reference: 'att-2' })).map((a) => a.alertId)).toEqual(['b2']);
+        expect((await repo.alerts.list({ since: at(2) })).map((a) => a.alertId)).toEqual(['b2']);
+        expect(await repo.alerts.get('b1')).toMatchObject({ reference: 'att-1' });
+      });
+
+      it('D52: resolves the matching alerts not resolved yet, by type with subject, reference and age; filters by resolution', async () => {
+        const at = (sec: number) => new Date(T0.getTime() + sec * 1000);
+        await repo.alerts.insert({ alertId: 'c1', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: at(1), reference: 'att-1' });
+        await repo.alerts.insert({ alertId: 'c2', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: at(5), reference: 'att-2' });
+        await repo.alerts.insert({ alertId: 'c3', type: 'COMPLAINT', subject: 'r1', detail: 'x', raisedAt: at(1) });
+        await repo.alerts.insert({ alertId: 'c4', type: 'HARD_BOUNCE', subject: 'r2', detail: 'x', raisedAt: at(1) });
+        await repo.alerts.insert({ alertId: 'c5', type: 'BATCH_STOPPED', subject: 'e1', detail: 'x', raisedAt: at(1), reference: '2026-10/CASH' });
+        expect(await repo.alerts.acknowledge('c1', 'operador', at(2))).toBe(true);
+
+        expect(await repo.alerts.resolve({ type: 'HARD_BOUNCE', subject: 'r1', raisedNotAfter: at(4) }, at(10), 'sent again')).toBe(1);
+        expect(await repo.alerts.get('c1')).toMatchObject({ resolvedAt: at(10), resolution: 'sent again', acknowledgedAt: at(2) });
+        expect((await repo.alerts.get('c2'))?.resolvedAt).toBeUndefined();
+        expect(await repo.alerts.resolve({ type: 'HARD_BOUNCE', subject: 'r1' }, at(11), 'again')).toBe(1);
+        // Already resolved: kept as it was.
+        expect(await repo.alerts.get('c1')).toMatchObject({ resolvedAt: at(10), resolution: 'sent again' });
+        expect(await repo.alerts.resolve({ type: 'BATCH_STOPPED', reference: '2026-10/CASH' }, at(12), 'completed')).toBe(1);
+        expect(await repo.alerts.resolve({ type: 'BATCH_STOPPED', reference: '2026-10/CASH' }, at(13), 'completed')).toBe(0);
+
+        expect((await repo.alerts.list({ resolved: true })).map((a) => a.alertId)).toEqual(['c1', 'c2', 'c5']);
+        expect((await repo.alerts.list({ resolved: false })).map((a) => a.alertId)).toEqual(['c3', 'c4']);
+        expect((await repo.alerts.list({ pending: true, resolved: true })).map((a) => a.alertId)).toEqual(['c2', 'c5']);
+        expect((await repo.alerts.get('c3'))?.resolvedAt).toBeUndefined();
+        expect((await repo.alerts.get('c4'))?.resolvedAt).toBeUndefined();
+      });
+
       it('keeps alerts and audit entries in order', async () => {
         await repo.alerts.insert({ alertId: 'al1', type: 'BATCH_STOPPED', subject: 'e1', detail: 'd', raisedAt: T0 });
         expect(await repo.alerts.list()).toHaveLength(1);
@@ -207,6 +343,38 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
           await tx.outbox.markFailed('ev2', 'consumer down');
         });
         expect(await repo.transaction((tx) => tx.outbox.lockPending(10))).toEqual([{ event: event('ev2'), attempts: 1 }]);
+      });
+
+      it('D39: dead events leave the pending window: 60 dead and 1 live → the live one is locked; they are listed and revived', async () => {
+        for (let i = 0; i < 60; i += 1) {
+          await repo.outbox.add(event(`dead-${i}`));
+          await repo.outbox.markFailed(`dead-${i}`, 'poisoned', new Date(T0.getTime() + i));
+        }
+        await repo.outbox.add(event('live'));
+        expect(await repo.transaction((tx) => tx.outbox.lockPending(50))).toEqual([{ event: event('live'), attempts: 0 }]);
+        const dead = await repo.outbox.listDead(500);
+        expect(dead).toHaveLength(60);
+        expect(dead[0]).toEqual({ event: event('dead-59'), attempts: 1, lastError: 'poisoned', deadAt: new Date(T0.getTime() + 59) });
+        expect(await repo.outbox.listDead(2)).toHaveLength(2);
+
+        expect(await repo.outbox.revive('dead-0')).toBe(true);
+        expect(await repo.outbox.revive('dead-0')).toBe(false);
+        expect(await repo.outbox.revive('live')).toBe(false);
+        expect(await repo.transaction((tx) => tx.outbox.lockPending(50))).toEqual([
+          { event: event('dead-0'), attempts: 0 },
+          { event: event('live'), attempts: 0 },
+        ]);
+      });
+
+      it('D50: purges dispatched events older than the given instant; pending and dead ones stay', async () => {
+        for (const id of ['old', 'recent', 'pending', 'dead']) await repo.outbox.add(event(id));
+        await repo.outbox.markDispatched('old', T0);
+        await repo.outbox.markDispatched('recent', new Date(T0.getTime() + 10_000));
+        await repo.outbox.markFailed('dead', 'poisoned', T0);
+        expect(await repo.outbox.purgeDispatched(new Date(T0.getTime() + 5_000))).toBe(1);
+        expect((await repo.transaction((tx) => tx.outbox.lockPending(10))).map((p) => p.event.eventId)).toEqual(['pending']);
+        expect((await repo.outbox.listDead(10)).map((d) => d.event.eventId)).toEqual(['dead']);
+        expect(await repo.outbox.purgeDispatched(new Date(T0.getTime() + 20_000))).toBe(1);
       });
 
       it('discards events of a transaction that fails', async () => {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { BulkMailerRepository } from '../../src/ports/bulk-mailer-repository';
 import type { JobQueue } from '../../src/ports/job-queue';
 import { T0 } from '../support/builders';
 
@@ -46,11 +47,63 @@ export function jobQueueContract(name: string, create: () => Promise<JobQueue>):
       expect(await queue.claimNext(later(1))).toBeUndefined();
     });
 
+    it('D38: says whether a job of a type is waiting or running, not once it is done or failed', async () => {
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
+      const a = await queue.enqueue({ type: 'CHECK_RECENT_SENDS', payload: {}, runAt: T0 });
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(true);
+      expect(await queue.hasPending('SWEEP_UNCONFIRMED')).toBe(false);
+      await queue.claimNext(T0);
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(true);
+      await queue.complete(a);
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
+      const b = await queue.enqueue({ type: 'CHECK_RECENT_SENDS', payload: {}, runAt: T0 });
+      await queue.claimNext(T0);
+      await queue.fail(b, 'boom');
+      expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
+    });
+
+    it('D50: purges only finished jobs older than the given instant', async () => {
+      const done = await queue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {}, runAt: T0 });
+      const failed = await queue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {}, runAt: T0 });
+      await queue.claimNext(T0);
+      await queue.claimNext(T0);
+      await queue.complete(done);
+      await queue.fail(failed, 'boom');
+      await queue.enqueue({ type: 'RECONCILE_ATTEMPT', payload: {}, runAt: T0 });
+      expect(await queue.purgeFinished(new Date(Date.now() - 3_600_000))).toBe(0);
+      expect(await queue.purgeFinished(new Date(Date.now() + 3_600_000))).toBe(2);
+      expect(await queue.hasPending('RECONCILE_ATTEMPT')).toBe(true);
+    });
+
     it('releases jobs claimed by a process that died', async () => {
       const id = await queue.enqueue({ type: 'EXECUTE_BATCH', payload: { batch: 'x' }, runAt: T0 });
       await queue.claimNext(T0);
       expect(await queue.releaseAbandoned()).toBe(1);
       expect(await queue.claimNext(T0)).toMatchObject({ jobId: id, payload: { batch: 'x' }, attempts: 2 });
+    });
+  });
+}
+
+/** D40: a job queued in a repository transaction lives in the queue's table: it exists if and only if it commits. */
+export function transactionalJobsContract(name: string, create: () => Promise<{ repository: BulkMailerRepository; queue: JobQueue }>): void {
+  describe(`Transactional jobs contract: ${name}`, () => {
+    it('a job queued in a transaction that commits is claimed by the queue', async () => {
+      const { repository, queue } = await create();
+      const jobId = await repository.transaction((tx) => tx.jobs.enqueue({ type: 'EXECUTE_BATCH', payload: { executionId: 'e1' }, runAt: T0 }));
+      expect(await queue.hasPending('EXECUTE_BATCH')).toBe(true);
+      expect(await queue.claimNext(later(1))).toMatchObject({ jobId, type: 'EXECUTE_BATCH', payload: { executionId: 'e1' }, attempts: 1 });
+    });
+
+    it('a job queued in a transaction that fails does not exist', async () => {
+      const { repository, queue } = await create();
+      await expect(
+        repository.transaction(async (tx) => {
+          await tx.jobs.enqueue({ type: 'EXECUTE_BATCH', payload: {}, runAt: T0 });
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+      expect(await queue.hasPending('EXECUTE_BATCH')).toBe(false);
+      expect(await queue.claimNext(later(1))).toBeUndefined();
     });
   });
 }

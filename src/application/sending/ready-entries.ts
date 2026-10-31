@@ -1,4 +1,5 @@
 import { isReadyToSend, type Manifest, type ManifestEntry } from '../../domain/batch/manifest';
+import { inConflict } from '../../domain/receipt/receipt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 
 /**
@@ -19,6 +20,7 @@ export async function readyManifestEntries(stores: Pick<BulkMailerStores, 'recei
         contract: receipt.contract ?? '',
         email: receipt.recipient?.email,
         fileAvailable: receipt.fileAvailable,
+        inConflict: inConflict(receipt),
       })
     ) {
       ready.push(entry);
