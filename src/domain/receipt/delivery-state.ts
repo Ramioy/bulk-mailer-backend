@@ -37,3 +37,17 @@ export function applyDeliveryEvent(current: DeliveryState, incoming: DeliverySta
   if (incoming === current || LEVEL[incoming] < LEVEL[current]) return { kind: 'IGNORED', state: current };
   return { kind: 'ANOMALY', state: current };
 }
+
+/** Delivery event normalised by the inbound webhook adapter or by reconciliation. */
+export interface DeliveryEvent {
+  /** Provider id of the event, used to discard duplicates. */
+  readonly eventId: string;
+  /** `client_reference` of the send. */
+  readonly attemptId: string;
+  readonly recipient: string;
+  /** Only the primary recipient's events change the receipt's delivery state. */
+  readonly isPrimaryRecipient: boolean;
+  readonly state: Exclude<DeliveryState, 'UNCONFIRMED'>;
+  readonly reason?: string;
+  readonly occurredAt: Date;
+}

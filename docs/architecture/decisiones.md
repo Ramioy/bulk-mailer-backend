@@ -45,4 +45,4 @@ A4 (*Refresh recipients*) y A5 (periodo `YYYY-MM`, bloques en inglés) quedan **
 | P5 | ✅ **Aprobado.** Se permite `UNCONFIRMED → COMPLAINT`: una queja que llega sin evento de aceptación previo sí cambia el estado (y dispara la supresión) | Una queja implica que el correo llegó al buzón |
 | D8 | ✅ **Aprobado.** Un archivo `REMOVED` de un lote puede subirse en otro lote o periodo: el mismo registro se mueve y se reevalúa, conservando su historial | Permite corregir un archivo puesto en el bloque equivocado |
 
-P1 a P4: pendientes de aprobación.
+P1 a P4: ✅ **aprobados** el 2026-10-31.

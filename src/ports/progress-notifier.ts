@@ -1,0 +1,39 @@
+import type { BatchState } from '../domain/batch/batch-state';
+import type { ReceiptState } from '../domain/receipt/receipt-state';
+import type { Sha256 } from '../domain/receipt/sha256';
+import type { BatchStopReason, ReceiptErrorType } from '../domain/shared/error-types';
+
+export interface ProgressCounters {
+  readonly total: number;
+  readonly processed: number;
+  readonly byState: Readonly<Partial<Record<ReceiptState, number>>>;
+  readonly byErrorType: Readonly<Partial<Record<ReceiptErrorType, number>>>;
+}
+
+export type ProgressEvent =
+  | {
+      readonly type: 'RECEIPT_PROCESSED';
+      readonly sha256: Sha256;
+      readonly fileName: string;
+      readonly state: ReceiptState;
+      readonly errorType?: ReceiptErrorType;
+      readonly counters: ProgressCounters;
+    }
+  /** Emitted before the wait starts, so the operator knows the batch is waiting, not stuck. */
+  | {
+      readonly type: 'WAITING';
+      readonly reason: string;
+      readonly seconds: number;
+      readonly consecutiveIncidents: number;
+      readonly nextSendAt: Date;
+    }
+  | {
+      readonly type: 'FINISHED';
+      readonly batchState: Extract<BatchState, 'COMPLETED' | 'STOPPED'>;
+      readonly stopReason?: BatchStopReason;
+      readonly counters: ProgressCounters;
+    };
+
+export interface ProgressNotifier {
+  publish(executionId: string, event: ProgressEvent): void;
+}
