@@ -21,7 +21,17 @@ Responde al usuario en **español**. El código, los identificadores y los mensa
 
 Hechos y en `main`: pasos 0 a 11 (el 10 quedó cubierto por el 7), plantilla de correo configurable (D14), bus de eventos con *outbox* (D15, D16). Los pasos 7, 8 y 9 están construidos **contra simuladores** (`mocks/`, D17) porque las APIs reales y la cuenta de ZeptoMail aún no están disponibles. El paso 9 dejó supuestos por validar con la cuenta real (ver `decisiones.md`, "Paso 9") y la liberación de direcciones confirmada desde la consola (D19), porque Zoho no documenta API de supresiones. Después se agregaron D20 (toda consulta exige JWT; el webhook solo recibe), D21 (seguimiento cada minuto durante el lote y 30 min después; dos carriles de trabajo) y D22 (verificación manual de entrega). El paso 11 (administración del catálogo de conceptos y de la copia `bcc`, D23 a D26) agregó `src/application/admin/` y `AdminController` (`/concepts`, `/settings/archive-copy`).
 
-**Siguiente: paso 12** (preparación del piloto: validaciones de §12.7 con la cuenta real, respaldos de PostgreSQL, registros de operación, despliegue). Antes de empezar, el usuario debe dar el visto bueno; buena parte depende de pendientes externos (cuenta de ZeptoMail, APIs de Tayrona y SAP).
+Después del paso 11, con lo aprendido en el mes simulado de la rama `simulacion` (nunca se fusiona con `main`; decisiones S1 a S5 e informes en `sim/reports/` de esa rama): D27 (correos en minúsculas), D28 (un 400 con código desconocido es rechazo, sin pausa), D29 (`PROCESS_FAILED` con alerta y reenvío), D30 (simulador sin distinguir mayúsculas) y D31 (mismo contenido con nombres distintos: bloqueado hasta que el operador elige, `POST /receipts/{sha256}/resolve-conflict`). Último commit: "Same content under different names blocks it until the operator chooses (D31)"; CI en verde, 459 pruebas.
+
+### ⏸ EN ESPERA: paso 12
+
+**El paso 12 (preparación del piloto) está en espera por decisión del usuario (2026-10-31).** No empezarlo, ni siquiera las partes que no dependen de terceros, hasta que el usuario avise que tiene:
+
+1. la **cuenta de ZeptoMail** aprobada,
+2. la **API de Tayrona** y
+3. la **API de SAP**.
+
+Contenido del paso 12: validaciones de §12.7 con la cuenta real (demora de aparición en los logs para calibrar `RECONCILE_DELAYS_MINUTES`, respuesta a direcciones suprimidas, 429/5xx, reintentos de webhooks, evento *Delivered* real, centro de datos, filtro de `client_reference`, alcance OAuth de supresiones) y los supuestos del paso 9; respaldos de PostgreSQL; registros de operación; despliegue (la simulación ya probó modo producción, TLS y `roles.sql` en Docker).
 
 **Preguntas abiertas al usuario** (el usuario construye las APIs de Tayrona y SAP):
 - ¿El token de servicio de las APIs de contratos va como `Authorization: Bearer <token>`? ¿La respuesta 200 trae exactamente `contrato`, `activo`, `nombre_conjunto`, `correo`?

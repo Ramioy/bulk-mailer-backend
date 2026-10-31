@@ -35,7 +35,7 @@ simulados, y al final los sistemas externos, que dependen de terceros.
 | # | Componente | Estado |
 |---|---|---|
 | 11 | Administración: catálogo de conceptos y copia `bcc`, auditados (D23–D26) | ✅ |
-| 12 | Preparación del piloto: validaciones de §12.7 con la cuenta real, respaldos de PostgreSQL, registros de operación, despliegue | ⏳ |
+| 12 | Preparación del piloto: validaciones de §12.7 con la cuenta real, respaldos de PostgreSQL, registros de operación, despliegue | ⏸ **En espera** (2026-10-31): se inicia cuando estén la cuenta de ZeptoMail y las APIs de Tayrona y SAP |
 
 ## En paralelo
 
