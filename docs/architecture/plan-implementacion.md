@@ -9,7 +9,7 @@ simulados, y al final los sistemas externos, que dependen de terceros.
 | # | Componente | Contenido | Listo cuando… | Estado |
 |---|---|---|---|---|
 | 0 | Estructura del proyecto | NestJS 12 sobre Fastify, Node 26, pnpm, Vitest, oxlint, PostgreSQL 18 en Docker Compose. Carpetas `domain/`, `application/`, `ports/`, `adapters/` y un único punto de composición por configuración | `pnpm test` y `pnpm lint` corren en CI | ✅ |
-| 1 | Dominio puro | Periodo (`YYYY-MM`, `America/Bogota`), bloques, validación del nombre (NFC, regex, catálogo, 150 caracteres), los 3 diagramas de estado, manifiesto versionado y diferencias `ADDED`/`REMOVED`, clasificación de respuestas de ZeptoMail, espera creciente, regla de repetidos (A1) | Pruebas unitarias con todos los ejemplos del contexto | ⏳ |
+| 1 | Dominio puro | Periodo (`YYYY-MM`, `America/Bogota`), bloques, validación del nombre (NFC, regex, catálogo, 150 caracteres), los 3 diagramas de estado, manifiesto versionado y diferencias `ADDED`/`REMOVED`, clasificación de respuestas de ZeptoMail, espera creciente, regla de repetidos (A1) | Pruebas unitarias con todos los ejemplos del contexto | ✅ |
 | 2 | Puertos + adaptadores simulados | Las 14 interfaces; `InMemoryRepository`, `FakeContractSource`, `FakeEmailProvider` (timeout, `429`, `5xx`), `FixedClock` | Casos de uso probados de punta a punta sin infraestructura | ⏳ |
 
 ## Etapa 2 — Flujos de punta a punta con simulados

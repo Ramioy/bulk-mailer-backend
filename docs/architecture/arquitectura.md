@@ -149,7 +149,7 @@ sequenceDiagram
     Op->>W: Reviews the summary, presses "Send"
     W->>API: POST /batches/{period}/{block}/executions {manifestVersion}
     alt Version is not the current one
-        API-->>W: 409 + differences (ADDED / REMOVED)
+        API-->>W: 409 + differences (ADDED / REMOVED / RENAMED / RECIPIENT_CHANGED)
     else Another execution is running
         API-->>W: 409 EXECUTION_IN_PROGRESS
     else OK
@@ -193,6 +193,7 @@ stateDiagram-v2
     INVALID --> REMOVED: operator removes it
     FAILED --> REMOVED: operator removes it
     REMOVED --> PENDING: same hash re-uploaded
+    REMOVED --> INVALID: same hash re-uploaded with an invalid name
     PENDING --> SENDING: execution
     FAILED --> SENDING: new execution
     SENDING --> SENT: ZeptoMail accepts (EM_104)
@@ -271,8 +272,8 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | `AUDITORIA_INMUTABLE` | `AUDIT_IMMUTABLE` | Audit |
 | `WEBHOOKS_NO_RECIBIDOS` | `WEBHOOKS_NOT_RECEIVED` | Alert |
 | `AGREGADO` / `EXCLUIDO` | `ADDED` / `REMOVED` | `409` difference |
-| `RENOMBRADO` | — (no synchronisation) | — |
-| `DESTINATARIO_CAMBIO` (409) | — (checked per receipt at send) | — |
+| `RENOMBRADO` | `RENAMED` (same hash re-uploaded with another name) | `409` difference |
+| `DESTINATARIO_CAMBIO` (409) | `RECIPIENT_CHANGED` (e.g. after *Refresh recipients*) | `409` difference |
 
 ## 9. Supuestos (aprobados el 2026-10-31)
 
