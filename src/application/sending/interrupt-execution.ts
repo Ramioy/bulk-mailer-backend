@@ -64,8 +64,16 @@ export async function stopExecution(
   });
 }
 
-/** Counters of the last progress event, for the FINISHED event of an execution ended from outside its run. */
+/**
+ * Counters of the last progress event that carries them, for the FINISHED event of an execution ended from outside its
+ * run. D54: the very last event may be a `WAITING` (or another event without counters); taking only that one lost the
+ * progress of an interrupted execution for good.
+ */
 export async function lastCounters(stores: Pick<BulkMailerStores, 'executionEvents'>, executionId: string): Promise<ProgressCounters> {
-  const last = await stores.executionEvents.last(executionId);
-  return last && 'counters' in last.event ? last.event.counters : { total: 0, processed: 0, byState: {}, byErrorType: {} };
+  const events = await stores.executionEvents.listAfter(executionId, 0);
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i]?.event;
+    if (event && 'counters' in event) return event.counters;
+  }
+  return { total: 0, processed: 0, byState: {}, byErrorType: {} };
 }
