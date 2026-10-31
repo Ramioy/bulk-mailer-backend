@@ -64,6 +64,24 @@ describe('D51: the operator releases the files of a batch, keeping its records',
     expect(await fx.repository.batches.getManifest(OCT_2026, 'CASH', versionBefore + 1)).toMatchObject({ entries: [] });
   });
 
+  it('D55: releasing the files of a COMPLETED batch keeps it COMPLETED (a new manifest version, no reopening)', async () => {
+    const fx = await batchWithNeededFiles();
+    await fx.startAndRun();
+    const before = await fx.repository.batches.get(OCT_2026, 'CASH');
+    expect(before).toMatchObject({ state: 'COMPLETED' });
+
+    const result = await release(fx);
+    expect(result).toMatchObject({ ok: true, value: { manifestVersion: (before?.manifestVersion ?? 0) + 1 } });
+    expect(await fx.repository.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'COMPLETED', manifestVersion: (before?.manifestVersion ?? 0) + 1 });
+    expect((await summary(fx)).state).toBe('COMPLETED');
+  });
+
+  it('keeps an OPEN batch OPEN', async () => {
+    const fx = await batchWithNeededFiles();
+    await release(fx);
+    expect(await fx.repository.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'OPEN' });
+  });
+
   it('audits it with the note and publishes BATCH_FILES_RELEASED', async () => {
     const fx = await batchWithNeededFiles();
     await release(fx, '  retention reviewed  ');
