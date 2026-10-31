@@ -3,6 +3,7 @@ import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
 import { inConflict, type Receipt } from '../../domain/receipt/receipt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
+import { resolveBatchStopped } from '../alerts/resolve-alerts';
 import { domainEvent } from '../events/domain-events';
 import { retireBatchFiles } from '../files/retire-file';
 import { readyManifestEntries } from './ready-entries';
@@ -51,5 +52,7 @@ export async function settleBatchIfDone(tx: BulkMailerStores, newId: () => strin
   await tx.batches.save({ ...batch, state: 'COMPLETED', stopReason: undefined, updatedAt: now });
   await retireProcessedFiles(tx, period, block, now);
   await tx.outbox.add(domainEvent(newId, 'BATCH_COMPLETED', now, { period: period.toString(), block, by: 'settlement' }));
+  // D52: nothing of the stopped batch is left to send or to resolve.
+  await resolveBatchStopped(tx, period, block, now, 'batch settled: nothing left to send or to resolve');
   return true;
 }

@@ -2,10 +2,11 @@ import type { Receipt } from '../../domain/receipt/receipt';
 import type { Sha256 } from '../../domain/receipt/sha256';
 import { SendErrorType } from '../../domain/shared/error-types';
 import { err, ok, type Result } from '../../domain/shared/result';
+import { resolveReceiptAlerts } from '../alerts/resolve-alerts';
 import { domainEvent } from '../events/domain-events';
 import { retireFile } from '../files/retire-file';
 import { settleBatchIfDone } from '../sending/batch-settlement';
-import { sentWithoutFile } from './apply-delivery-event';
+import { latestAttempt, sentWithoutFile } from './apply-delivery-event';
 import type { DeliveryDependencies } from './delivery-dependencies';
 
 export type ResolveUncertainError = 'RECEIPT_NOT_FOUND' | 'RECEIPT_NOT_UNCERTAIN' | 'NOTE_REQUIRED';
@@ -35,6 +36,8 @@ export class ResolveUncertain {
         // D41: a SENT receipt no longer needs its file; a FAILED one keeps it for the next execution.
         if (resolved.state === 'SENT') await retireFile(tx, receipt, now);
         await tx.receipts.appendHistory({ sha256, at: now, event: resolved.state, detail: `resolved by ${operator}: ${note.trim()}` });
+        // D52: the UNCERTAIN attempt is the latest one.
+        await resolveReceiptAlerts(tx, now, { sha256, from: receipt.state, to: resolved.state, attempt: await latestAttempt(tx, receipt) });
         await tx.audit.append({
           auditId: newId(),
           actor: operator,

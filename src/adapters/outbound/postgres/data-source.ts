@@ -14,8 +14,9 @@ import { WebhookParseNotes1761908400000 } from './migrations/1761908400000-webho
 import { InstanceLease1761912000000 } from './migrations/1761912000000-instance-lease';
 import { Hygiene1761915600000 } from './migrations/1761915600000-hygiene';
 import { AttemptRedirect1761919200000 } from './migrations/1761919200000-attempt-redirect';
+import { AlertResolution1761922800000 } from './migrations/1761922800000-alert-resolution';
 
-export const MIGRATIONS = [InitialSchema1761868800000, OperatorAccounts1761872400000, ExecutionEvents1761876000000, Outbox1761879600000, DeliveryTracking1761883200000, ProcessFailed1761890400000, DuplicateConflicts1761894000000, OptimisticVersions1761897600000, OutboxDeadEvents1761901200000, AlertAcknowledgement1761904800000, WebhookParseNotes1761908400000, InstanceLease1761912000000, Hygiene1761915600000, AttemptRedirect1761919200000];
+export const MIGRATIONS = [InitialSchema1761868800000, OperatorAccounts1761872400000, ExecutionEvents1761876000000, Outbox1761879600000, DeliveryTracking1761883200000, ProcessFailed1761890400000, DuplicateConflicts1761894000000, OptimisticVersions1761897600000, OutboxDeadEvents1761901200000, AlertAcknowledgement1761904800000, WebhookParseNotes1761908400000, InstanceLease1761912000000, Hygiene1761915600000, AttemptRedirect1761919200000, AlertResolution1761922800000];
 
 /** TypeORM is used for connections, transactions and migrations; queries are explicit SQL. */
 export function createDataSource(url: string): DataSource {

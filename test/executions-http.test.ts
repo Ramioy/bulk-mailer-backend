@@ -251,6 +251,25 @@ describe('executions over HTTP', () => {
     expect((await call('GET', '/alerts?pending=true')).json().map((a: { type: string }) => a.type)).toEqual(['BATCH_STOPPED']);
   });
 
+  it('D52: filters alerts by resolution; a resolved alert stays pending until acknowledged', async () => {
+    const { accessToken } = await signIn();
+    const at = ctx.clock.now();
+    await ctx.repository.alerts.insert({ alertId: 'open', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: at });
+    await ctx.repository.alerts.insert({ alertId: 'fixed', type: 'HARD_BOUNCE', subject: 'r2', detail: 'x', raisedAt: at });
+    await ctx.repository.alerts.resolve({ type: 'HARD_BOUNCE', subject: 'r2' }, at, 'sent again (attempt a2)');
+    const ids = async (query: string) =>
+      (await ctx.app.inject({ method: 'GET', url: `/alerts${query}`, headers: { authorization: `Bearer ${accessToken}` } })).json().map((a: { alertId: string }) => a.alertId);
+
+    expect(await ids('')).toEqual(['fixed', 'open']);
+    expect(await ids('?pending=true&resolved=false')).toEqual(['open']);
+    expect(await ids('?pending=true&resolved=true')).toEqual(['fixed']);
+    const fixed = (await ctx.app.inject({ method: 'GET', url: '/alerts?resolved=true', headers: { authorization: `Bearer ${accessToken}` } })).json()[0];
+    expect(fixed).toMatchObject({ alertId: 'fixed', resolution: 'sent again (attempt a2)', resolvedAt: at.toISOString() });
+    expect(fixed.acknowledgedAt).toBeUndefined();
+    const invalid = await ctx.app.inject({ method: 'GET', url: '/alerts?resolved=maybe', headers: { authorization: `Bearer ${accessToken}` } });
+    expect([invalid.statusCode, invalid.json()]).toEqual([400, { error: 'INVALID_REQUEST', field: 'resolved' }]);
+  });
+
   it('lists alerts', async () => {
     const { accessToken } = await signIn();
     ctx.email.respondWith({ kind: 'ACCOUNT_ERROR', detail: 'LE_102' });

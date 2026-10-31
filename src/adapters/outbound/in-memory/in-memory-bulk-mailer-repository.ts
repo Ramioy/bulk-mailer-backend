@@ -230,6 +230,7 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
       const found = this.state.alerts.filter(
         (a) =>
           (!filter.pending || !a.acknowledgedAt) &&
+          (filter.resolved === undefined || (a.resolvedAt !== undefined) === filter.resolved) &&
           (!filter.type || a.type === filter.type) &&
           (filter.subject === undefined || a.subject === filter.subject) &&
           (filter.reference === undefined || a.reference === filter.reference) &&
@@ -243,6 +244,21 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
       if (index < 0) return false;
       this.state.alerts[index] = { ...(this.state.alerts[index] as Alert), acknowledgedAt: at, acknowledgedBy: by };
       return true;
+    },
+    resolve: async (match, at, resolution) => {
+      let resolved = 0;
+      this.state.alerts = this.state.alerts.map((a) => {
+        const matches =
+          a.type === match.type &&
+          (match.subject === undefined || a.subject === match.subject) &&
+          (match.reference === undefined || a.reference === match.reference) &&
+          (match.raisedNotAfter === undefined || a.raisedAt <= match.raisedNotAfter) &&
+          a.resolvedAt === undefined;
+        if (!matches) return a;
+        resolved += 1;
+        return { ...a, resolvedAt: at, resolution };
+      });
+      return resolved;
     },
   };
 

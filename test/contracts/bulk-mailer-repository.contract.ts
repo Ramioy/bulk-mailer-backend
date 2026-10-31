@@ -275,6 +275,31 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect(await repo.alerts.get('b1')).toMatchObject({ reference: 'att-1' });
       });
 
+      it('D52: resolves the matching alerts not resolved yet, by type with subject, reference and age; filters by resolution', async () => {
+        const at = (sec: number) => new Date(T0.getTime() + sec * 1000);
+        await repo.alerts.insert({ alertId: 'c1', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: at(1), reference: 'att-1' });
+        await repo.alerts.insert({ alertId: 'c2', type: 'HARD_BOUNCE', subject: 'r1', detail: 'x', raisedAt: at(5), reference: 'att-2' });
+        await repo.alerts.insert({ alertId: 'c3', type: 'COMPLAINT', subject: 'r1', detail: 'x', raisedAt: at(1) });
+        await repo.alerts.insert({ alertId: 'c4', type: 'HARD_BOUNCE', subject: 'r2', detail: 'x', raisedAt: at(1) });
+        await repo.alerts.insert({ alertId: 'c5', type: 'BATCH_STOPPED', subject: 'e1', detail: 'x', raisedAt: at(1), reference: '2026-10/CASH' });
+        expect(await repo.alerts.acknowledge('c1', 'operador', at(2))).toBe(true);
+
+        expect(await repo.alerts.resolve({ type: 'HARD_BOUNCE', subject: 'r1', raisedNotAfter: at(4) }, at(10), 'sent again')).toBe(1);
+        expect(await repo.alerts.get('c1')).toMatchObject({ resolvedAt: at(10), resolution: 'sent again', acknowledgedAt: at(2) });
+        expect((await repo.alerts.get('c2'))?.resolvedAt).toBeUndefined();
+        expect(await repo.alerts.resolve({ type: 'HARD_BOUNCE', subject: 'r1' }, at(11), 'again')).toBe(1);
+        // Already resolved: kept as it was.
+        expect(await repo.alerts.get('c1')).toMatchObject({ resolvedAt: at(10), resolution: 'sent again' });
+        expect(await repo.alerts.resolve({ type: 'BATCH_STOPPED', reference: '2026-10/CASH' }, at(12), 'completed')).toBe(1);
+        expect(await repo.alerts.resolve({ type: 'BATCH_STOPPED', reference: '2026-10/CASH' }, at(13), 'completed')).toBe(0);
+
+        expect((await repo.alerts.list({ resolved: true })).map((a) => a.alertId)).toEqual(['c1', 'c2', 'c5']);
+        expect((await repo.alerts.list({ resolved: false })).map((a) => a.alertId)).toEqual(['c3', 'c4']);
+        expect((await repo.alerts.list({ pending: true, resolved: true })).map((a) => a.alertId)).toEqual(['c2', 'c5']);
+        expect((await repo.alerts.get('c3'))?.resolvedAt).toBeUndefined();
+        expect((await repo.alerts.get('c4'))?.resolvedAt).toBeUndefined();
+      });
+
       it('keeps alerts and audit entries in order', async () => {
         await repo.alerts.insert({ alertId: 'al1', type: 'BATCH_STOPPED', subject: 'e1', detail: 'd', raisedAt: T0 });
         expect(await repo.alerts.list()).toHaveLength(1);

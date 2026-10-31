@@ -52,6 +52,8 @@ export class OutboxRelay {
         try {
           await this.bus.publish(event);
           await tx.outbox.markDispatched(event.eventId, this.clock.now());
+          // D52: a dead event the operator revived (D39) was delivered at last.
+          await tx.alerts.resolve({ type: 'OUTBOX_EVENT_DEAD', subject: event.eventId }, this.clock.now(), 'event delivered after being retried');
           dispatched += 1;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

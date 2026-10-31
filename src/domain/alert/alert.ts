@@ -43,12 +43,46 @@ export interface Alert {
   /** D46: the operator saw it and dealt with it; it stays in the history. */
   readonly acknowledgedAt?: Date;
   readonly acknowledgedBy?: string;
+  /**
+   * D52: the system saw its cause resolved (e.g. the bounced receipt was sent again). Acknowledging it is still the
+   * operator's: a resolved alert stays pending until acknowledged.
+   */
+  readonly resolvedAt?: Date;
+  /** D52: what resolved it, in a few words. */
+  readonly resolution?: string;
 }
+
+/**
+ * D52: the alerts the system resolves when their cause is resolved. The others (COPY_BOUNCED, WEBHOOKS_NOT_RECEIVED,
+ * WEBHOOK_UNPARSED, LATE_SEND_EVIDENCE, DUPLICATE_SEND_DETECTED, PROVIDER_UNKNOWN_ERROR, MALICIOUS_FILE) need a
+ * human: nothing the system observes later proves their cause is gone.
+ */
+export const AUTO_RESOLVED_ALERT_TYPES: readonly AlertType[] = [
+  'UNCERTAIN_UNRESOLVED',
+  'BATCH_STOPPED',
+  'HARD_BOUNCE',
+  'COMPLAINT',
+  'PROCESS_FAILED',
+  'DUPLICATE_CONFLICT',
+  'OUTBOX_EVENT_DEAD',
+  'FILE_PURGE_FAILED',
+];
+
+/**
+ * D52: which alerts a resolution applies to: one type, by its subject, its reference or both; with `raisedNotAfter`, only
+ * those raised up to that instant (e.g. when the send that resolves them started).
+ */
+export type AlertMatch = { readonly type: AlertType; readonly raisedNotAfter?: Date } & (
+  | { readonly subject: string; readonly reference?: string }
+  | { readonly reference: string; readonly subject?: string }
+);
 
 /** D46: which alerts to list. Without filters, every alert, oldest first. */
 export interface AlertFilter {
   /** Only the alerts nobody acknowledged yet. */
   readonly pending?: boolean;
+  /** D52: true, only those whose cause the system saw resolved; false, only those not resolved; absent, both. */
+  readonly resolved?: boolean;
   readonly type?: AlertType;
   readonly subject?: string;
   /** D50 */

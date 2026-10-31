@@ -1,6 +1,7 @@
 import type { Sha256 } from '../../domain/receipt/sha256';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
+import { resolveAlerts } from '../alerts/resolve-alerts';
 import { retireFile } from '../files/retire-file';
 import { publishNextManifest, refuseCorrection, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
 
@@ -30,6 +31,8 @@ export class RemoveReceipt {
         // D50: deleted by a job queued here (D41), never after the commit where a failure would answer 500.
         await retireFile(tx, { ...current, fileAvailable: true }, now);
         await tx.receipts.appendHistory({ sha256, at: now, event: 'REMOVED', detail: `by ${operator}` });
+        // D52: the content is out of the batch: the conflict it raised is over.
+        await resolveAlerts(tx, [{ type: 'DUPLICATE_CONFLICT', subject: sha256 }], now, `receipt removed by ${operator}`);
         const published = await publishNextManifest(tx, receipt.period, receipt.block, now);
         await tx.audit.append({
           auditId: this.deps.newId(),

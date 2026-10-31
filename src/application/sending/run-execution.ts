@@ -12,6 +12,7 @@ import { ProviderIncidentTracker, SourceIncidentTracker } from '../../domain/sen
 import { resolveSendOutcome, type SendOutcome } from '../../domain/sending/send-outcome';
 import { BatchStopReason, SendErrorType, type ReceiptErrorType } from '../../domain/shared/error-types';
 import { raiseAlert, unknownRejectionAlert } from '../alerts/raise-alert';
+import { batchReference, resolveBatchStopped, resolveReceiptAlerts } from '../alerts/resolve-alerts';
 import { applyPendingEvents } from '../delivery/apply-delivery-event';
 import { domainEvent } from '../events/domain-events';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
@@ -320,6 +321,8 @@ export class RunExecution {
         updatedAt: now,
       });
       if (state === 'SENT') await retireFile(tx, current, now);
+      // D52: an UNCERTAIN left by an abort (D32) is settled now; a FAILED receipt that bounced before went out now.
+      await resolveReceiptAlerts(tx, now, { sha256: saved.sha256, from: current.state, to: state, attempt });
       const historyDetail = detail ?? outcome.kind;
       await tx.receipts.appendHistory({
         sha256: saved.sha256,
@@ -401,13 +404,18 @@ export class RunExecution {
           alertId: newId(),
           type: 'BATCH_STOPPED',
           subject: execution.executionId,
+          reference: batchReference(execution.period, execution.block),
           detail: `${execution.period.toString()}/${execution.block} stopped: ${stopReason}`,
           raisedAt: now,
         });
       }
       // Files are discarded once the batch is processed (D4), only those of the receipts it processed (D42). FAILED
       // receipts need them uploaded again (A2). D41: deleted by a job queued here; no crash window after the commit.
-      if (result === 'COMPLETED') await retireProcessedFiles(tx, execution.period, execution.block, now);
+      if (result === 'COMPLETED') {
+        await retireProcessedFiles(tx, execution.period, execution.block, now);
+        // D52: the earlier stops of this batch are behind it now.
+        await resolveBatchStopped(tx, execution.period, execution.block, now, `execution ${execution.executionId} completed`);
+      }
       return true;
     });
     if (!finished) return;

@@ -83,6 +83,7 @@ function toAlert(r: Row): Alert {
     raisedAt: r.raised_at as Date,
     ...(r.reference ? { reference: r.reference as string } : {}),
     ...(r.acknowledged_at ? { acknowledgedAt: r.acknowledged_at as Date, acknowledgedBy: r.acknowledged_by as string } : {}),
+    ...(r.resolved_at ? { resolvedAt: r.resolved_at as Date, resolution: r.resolution as string } : {}),
   };
 }
 
@@ -477,8 +478,9 @@ function stores(db: Queryable): BulkMailerStores {
         `SELECT * FROM alerts
          WHERE ($1::boolean IS NOT TRUE OR acknowledged_at IS NULL) AND ($2::text IS NULL OR type = $2) AND ($3::text IS NULL OR subject = $3)
            AND ($5::text IS NULL OR reference = $5) AND ($6::timestamptz IS NULL OR raised_at >= $6)
+           AND ($7::boolean IS NULL OR (resolved_at IS NOT NULL) = $7)
          ORDER BY seq ${filter.newestFirst ? 'DESC' : 'ASC'} LIMIT $4`,
-        [filter.pending ?? null, filter.type ?? null, filter.subject ?? null, filter.limit ?? null, filter.reference ?? null, filter.since ?? null],
+        [filter.pending ?? null, filter.type ?? null, filter.subject ?? null, filter.limit ?? null, filter.reference ?? null, filter.since ?? null, filter.resolved ?? null],
       );
       return found.map(toAlert);
     },
@@ -489,6 +491,17 @@ function stores(db: Queryable): BulkMailerStores {
         [alertId, by, at],
       );
       return updated.length > 0;
+    },
+    async resolve(match, at, resolution) {
+      const updated = await rows(
+        db,
+        `UPDATE alerts SET resolved_at = $4, resolution = $5
+         WHERE type = $1 AND ($2::text IS NULL OR subject = $2) AND ($3::text IS NULL OR reference = $3) AND resolved_at IS NULL
+           AND ($6::timestamptz IS NULL OR raised_at <= $6)
+         RETURNING alert_id`,
+        [match.type, match.subject ?? null, match.reference ?? null, at, resolution, match.raisedNotAfter ?? null],
+      );
+      return updated.length;
     },
   };
 

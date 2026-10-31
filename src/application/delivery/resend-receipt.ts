@@ -18,6 +18,7 @@ import { publishNextManifest } from '../receipts/receipt-dependencies';
 import { renderEmail } from '../sending/email-template';
 import type { DeliveryDependencies } from './delivery-dependencies';
 import { unknownRejectionAlert } from '../alerts/raise-alert';
+import { resolveReceiptAlerts } from '../alerts/resolve-alerts';
 
 export type ResendError =
   | 'EXECUTION_IN_PROGRESS'
@@ -166,6 +167,8 @@ export class ResendReceipt {
       await tx.receipts.save(changed);
       // Files are kept only until the receipt is processed (D4): deleted by a job after the commit (D41).
       if (state === 'SENT') await retireFile(tx, current, now);
+      // D52: the bounce, complaint or process failure that led to this resend is resolved once it went out.
+      await resolveReceiptAlerts(tx, now, { sha256, from: current.state, to: state, attempt });
       await tx.receipts.appendHistory({ sha256, at: now, event: state, detail: detail ?? outcome.kind });
       // A resend that did not go out enters the next normal manifest (D7c).
       if (state === 'FAILED' || state === 'PENDING') await publishNextManifest(tx, current.period, current.block, now);

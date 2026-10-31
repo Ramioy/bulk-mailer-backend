@@ -1,4 +1,4 @@
-import type { Alert, AlertFilter } from '../domain/alert/alert';
+import type { Alert, AlertFilter, AlertMatch } from '../domain/alert/alert';
 import type { AuditEntry } from '../domain/audit/audit';
 import type { Batch, Execution } from '../domain/batch/batch';
 import type { Manifest } from '../domain/batch/manifest';
@@ -137,6 +137,8 @@ export interface AlertStore {
   list(filter?: AlertFilter): Promise<Alert[]>;
   /** False when the alert does not exist or was already acknowledged. */
   acknowledge(alertId: string, by: string, at: Date): Promise<boolean>;
+  /** D52: marks resolved every matching alert not resolved yet (acknowledged or not); returns how many. */
+  resolve(match: AlertMatch, at: Date, resolution: string): Promise<number>;
 }
 
 export interface AuditLog {

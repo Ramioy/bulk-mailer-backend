@@ -7,6 +7,7 @@ import type { Sha256 } from '../../domain/receipt/sha256';
 import type { FileErrorType } from '../../domain/shared/error-types';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
+import { resolveAlerts } from '../alerts/resolve-alerts';
 import { retireFile } from '../files/retire-file';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { lookupRecipient, publishNextManifest, refuseCorrection, withSuppression, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
@@ -79,6 +80,7 @@ export class ResolveDuplicateConflict {
         await tx.receipts.save(resolved);
         // D50: the copy left in the old batch is deleted by a job queued here (D41), not after the commit.
         if (moved) await retireFile(tx, { period: receipt.period, block: receipt.block, sha256, fileAvailable: true }, now);
+        await resolveAlerts(tx, [{ type: 'DUPLICATE_CONFLICT', subject: sha256 }], now, `conflict resolved by ${operator}: ${fileName}`);
         await tx.receipts.appendHistory({ sha256, at: now, event: 'DUPLICATE_CONFLICT_RESOLVED', detail: `${fileName}${moved ? ` (moved from ${receipt.period.toString()}/${receipt.block})` : ''}` });
         // Both batch rows are read inside this transaction by publishNextManifest.
         if (moved) await publishNextManifest(tx, receipt.period, receipt.block, now);

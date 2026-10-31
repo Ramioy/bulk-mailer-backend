@@ -14,12 +14,18 @@ export const MAX_ALERT_LIMIT = 1000;
 
 export interface ListAlertsQuery {
   readonly pending?: boolean;
+  /** D52: true, only resolved; false, only unresolved; absent, both. */
+  readonly resolved?: boolean;
   readonly type?: AlertType;
   readonly subject?: string;
   readonly limit?: number;
 }
 
-/** D46: the alerts the operator works with, newest first; `pending` leaves out the acknowledged ones. */
+/**
+ * D46: the alerts the operator works with, newest first; `pending` leaves out the acknowledged ones. D52: `resolved`
+ * separates those whose cause the system saw resolved; the web client shows `pending & !resolved` ("to deal with") by
+ * default and `pending & resolved` ("resolved, to review") as a second tab. Without filters, the whole history.
+ */
 export class ListAlerts {
   constructor(private readonly deps: Pick<AlertQueryDependencies, 'repository'>) {}
 

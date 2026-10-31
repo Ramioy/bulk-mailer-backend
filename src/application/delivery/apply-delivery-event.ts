@@ -5,6 +5,7 @@ import { assertTransition, awaitsLateEvidence } from '../../domain/receipt/recei
 import type { Attempt } from '../../domain/sending/attempt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { raiseAlert } from '../alerts/raise-alert';
+import { resolveReceiptAlerts } from '../alerts/resolve-alerts';
 import { retireFile } from '../files/retire-file';
 import { settleBatchIfDone } from '../sending/batch-settlement';
 import { domainEvent } from '../events/domain-events';
@@ -41,6 +42,7 @@ export async function confirmSent(
   const sent = await tx.receipts.save(sentWithoutFile(receipt, now));
   await retireFile(tx, receipt, now);
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `confirmed by ${evidence} (attempt ${attempt.attemptId})` });
+  await resolveReceiptAlerts(tx, now, { sha256: receipt.sha256, from: receipt.state, to: 'SENT', attempt });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence }));
   await settleBatchIfDone(tx, newId, now, receipt.period, receipt.block);
   return sent;
@@ -66,6 +68,7 @@ export async function confirmLateSent(
   const sent = await tx.receipts.save(sentWithoutFile(receipt, now));
   await retireFile(tx, receipt, now);
   await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'SENT', detail: `SENT confirmed late by ${evidence} (attempt ${attempt.attemptId})` });
+  await resolveReceiptAlerts(tx, now, { sha256: receipt.sha256, from: receipt.state, to: 'SENT', attempt });
   await tx.outbox.add(domainEvent(newId, 'RECEIPT_RESOLVED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, state: 'SENT', by: evidence, late: true }));
   await raiseAlert(tx, newId, {
     alertId: newId(),
@@ -198,6 +201,7 @@ async function applyDelivery(tx: BulkMailerStores, newId: () => string, now: Dat
       alertId: newId(),
       type: outcome.state,
       subject: receipt.sha256,
+      reference: attempt.attemptId,
       detail: `${receipt.fileName}: ${attempt.to}${event.reason ? ` (${event.reason})` : ''}${attempt.redirectedTo ? `; sent to the test mailbox ${attempt.redirectedTo}, address not suppressed` : ''}`,
       raisedAt: now,
     });
@@ -208,6 +212,7 @@ async function applyDelivery(tx: BulkMailerStores, newId: () => string, now: Dat
       alertId: newId(),
       type: 'PROCESS_FAILED',
       subject: receipt.sha256,
+      reference: attempt.attemptId,
       detail: `${receipt.fileName}: ${attempt.to} accepted but not processed by the provider${event.reason ? ` (${event.reason})` : ''}; it can be resent`,
       raisedAt: now,
     });

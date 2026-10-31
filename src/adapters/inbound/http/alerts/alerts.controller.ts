@@ -11,15 +11,27 @@ import { httpError } from '../http-params';
 export class AlertsController {
   constructor(@Inject(ADMIN_USE_CASES) private readonly useCases: AdminUseCases) {}
 
-  /** Newest first. `?pending=true&type=HARD_BOUNCE&subject=…&limit=200` (at most 1000). */
+  /**
+   * Newest first, all of them by default. `?pending=true&resolved=false&type=HARD_BOUNCE&subject=…&limit=200` (at most
+   * 1000). D52: `pending=true&resolved=false` are the alerts to deal with; `pending=true&resolved=true` those the system
+   * saw resolved and the operator still has to acknowledge.
+   */
   @Get()
-  list(@Query('pending') pending?: string, @Query('type') type?: string, @Query('subject') subject?: string, @Query('limit') limit?: string) {
+  list(
+    @Query('pending') pending?: string,
+    @Query('type') type?: string,
+    @Query('subject') subject?: string,
+    @Query('limit') limit?: string,
+    @Query('resolved') resolved?: string,
+  ) {
     if (pending !== undefined && pending !== 'true' && pending !== 'false') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'pending' });
+    if (resolved !== undefined && resolved !== 'true' && resolved !== 'false') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'resolved' });
     if (type !== undefined && !(Object.values(AlertType) as string[]).includes(type)) throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'type' });
     const parsedLimit = limit === undefined ? undefined : Number(limit);
     if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1)) throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'limit' });
     return this.useCases.alerts.execute({
       pending: pending === 'true',
+      ...(resolved !== undefined ? { resolved: resolved === 'true' } : {}),
       ...(type ? { type: type as AlertType } : {}),
       ...(subject !== undefined ? { subject } : {}),
       ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}),

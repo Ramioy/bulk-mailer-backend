@@ -1,6 +1,9 @@
 import { raiseAlert } from '../alerts/raise-alert';
 import type { FileDependencies } from './file-dependencies';
 
+/** The subject of FILE_PURGE_FAILED alerts: the volume's receipt files as a whole. */
+const FILE_PURGE_SUBJECT = 'receipt-files';
+
 export interface OrphanSweepResult {
   /** Files deleted because no receipt needs them. */
   readonly deleted: number;
@@ -62,12 +65,14 @@ export class PurgeOrphanFiles {
         failures.push(`staging/${staged.stagingId}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // D52: a sweep without failures deleted every file nobody needs, those that could not be deleted before included.
+    if (failures.length === 0) await repository.alerts.resolve({ type: 'FILE_PURGE_FAILED', subject: FILE_PURGE_SUBJECT }, clock.now(), 'a later sweep deleted every file left');
     if (failures.length > 0) {
       await repository.transaction((tx) =>
         raiseAlert(tx, newId, {
           alertId: newId(),
           type: 'FILE_PURGE_FAILED',
-          subject: 'receipt-files',
+          subject: FILE_PURGE_SUBJECT,
           detail: `${failures.length} file(s) that no receipt needs could not be deleted: ${failures.slice(0, 5).join('; ')}`,
           raisedAt: clock.now(),
         }),

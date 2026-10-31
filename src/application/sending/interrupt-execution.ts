@@ -6,6 +6,7 @@ import type { BatchStopReason } from '../../domain/shared/error-types';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import type { ProgressCounters } from '../../ports/progress-notifier';
 import { raiseAlert } from '../alerts/raise-alert';
+import { batchReference } from '../alerts/resolve-alerts';
 import { domainEvent } from '../events/domain-events';
 
 /**
@@ -57,6 +58,7 @@ export async function stopExecution(
     alertId: newId(),
     type: 'BATCH_STOPPED',
     subject: execution.executionId,
+    reference: batchReference(execution.period, execution.block),
     detail: `${execution.period.toString()}/${execution.block} stopped: ${stopReason}`,
     raisedAt: now,
   });
