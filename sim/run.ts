@@ -648,7 +648,7 @@ async function abortAndSettle(): Promise<void> {
   const stopped = await batchRow('CASH');
   checks.check('el lote quedó STOPPED', stopped?.state === 'STOPPED', `${stopped?.state} / ${stopped?.stop_reason ?? '—'}`);
   const current = await api.call('GET', '/executions/current');
-  checks.check('ninguna ejecución en curso (el cerrojo global se liberó): GET /executions/current → 404 NO_EXECUTION', current.status === 404 && current.body?.error === 'NO_EXECUTION', `HTTP ${current.status} ${JSON.stringify(current.body)}`);
+  checks.check('ninguna ejecución en curso (el cerrojo global se liberó): GET /executions/current muestra la última, ya terminada (D10)', current.status === 200 && current.body?.executionId === executionId && current.body?.finishedAt, `HTTP ${current.status} result ${current.body?.result}, finishedAt ${current.body?.finishedAt}`);
 
   // The provider did accept it (lost response): the reconciliation (1 min) or the late webhook makes it SENT, and the
   // batch, with nothing left to send or to resolve, settles to COMPLETED and retires its files.

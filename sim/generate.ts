@@ -63,7 +63,7 @@ const DELIVERY: readonly Scenario[] = [
   { name: 'softdelivered', expected: delivered('§7.3: soft bounce then delivered') },
   { name: 'hardbounce', expected: { ...delivered('§10.3: hard bounce → local suppression + alert', 'HARD_BOUNCE'), suppressed: true } },
   { name: 'complaint', expected: { ...delivered('P5: complaint → suppressed', 'COMPLAINT'), suppressed: true } },
-  { name: 'processfailed', expected: { ...delivered('§9.4: process failed after acceptance; no SENT → FAILED transition', 'UNCONFIRMED'), historyEvent: 'PROVIDER_PROCESS_FAILED' } },
+  { name: 'processfailed', expected: delivered('D29: accepted but not processed by ZeptoMail → delivery PROCESS_FAILED (final, resendable), alert PROCESS_FAILED', 'PROCESS_FAILED') },
   { name: 'nowebhook', expected: delivered('D21: webhook lost, delivery found in the logs') },
   { name: 'nolog', expected: { ...delivered('Simulation: never visible in the logs → 120 s wait runs out', 'UNCONFIRMED'), historyEvent: 'DELIVERY_WAIT_TIMEOUT' } },
 ];
