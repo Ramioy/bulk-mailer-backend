@@ -80,6 +80,10 @@ export interface AppConfig {
   readonly fileOrphanSweepIntervalMinutes: number;
   /** The sweep leaves alone files younger than this (D41); default 60 minutes. */
   readonly fileOrphanMinAgeMinutes: number;
+  /** D48: at most this many bytes of files per upload request; default 200 MB. */
+  readonly uploadMaxTotalBytes: number;
+  /** D48: at most this many files per upload request; default 300. */
+  readonly uploadMaxFiles: number;
   /** D47: lease of the instance that runs the background work; renewed every third of it. Default 30 s. */
   readonly instanceLeaseTtlSeconds: number;
   readonly jobRunnerEnabled: boolean;
@@ -191,6 +195,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const jobRunnerPollMs = positiveInteger(env.JOB_RUNNER_POLL_MS ?? '1000', 'JOB_RUNNER_POLL_MS', problems);
   const fileOrphanSweepIntervalMinutes = positiveInteger(env.FILE_ORPHAN_SWEEP_INTERVAL_MINUTES ?? '360', 'FILE_ORPHAN_SWEEP_INTERVAL_MINUTES', problems);
   const fileOrphanMinAgeMinutes = positiveInteger(env.FILE_ORPHAN_MIN_AGE_MINUTES ?? '60', 'FILE_ORPHAN_MIN_AGE_MINUTES', problems);
+  const uploadMaxTotalBytes = positiveInteger(env.UPLOAD_MAX_TOTAL_BYTES ?? String(200 * 1024 * 1024), 'UPLOAD_MAX_TOTAL_BYTES', problems);
+  const uploadMaxFiles = positiveInteger(env.UPLOAD_MAX_FILES ?? '300', 'UPLOAD_MAX_FILES', problems);
   const instanceLeaseTtlSeconds = positiveInteger(env.INSTANCE_LEASE_TTL_SECONDS ?? '30', 'INSTANCE_LEASE_TTL_SECONDS', problems);
   if (instanceLeaseTtlSeconds < 3) problems.push('INSTANCE_LEASE_TTL_SECONDS must be at least 3');
   const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
@@ -248,6 +254,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(emailTemplateFile === '' ? {} : { emailTemplateFile }),
     fileOrphanSweepIntervalMinutes,
     fileOrphanMinAgeMinutes,
+    uploadMaxTotalBytes,
+    uploadMaxFiles,
     instanceLeaseTtlSeconds,
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,

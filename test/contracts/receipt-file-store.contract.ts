@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { ReceiptFileStore } from '../../src/ports/receipt-file-store';
@@ -36,6 +38,37 @@ export function receiptFileStoreContract(name: string, create: () => Promise<Rec
       expect(listed.every((f) => f.modifiedAt instanceof Date && f.modifiedAt.getTime() >= before)).toBe(true);
       await store.delete(key);
       expect((await store.list()).map((f) => f.sha256)).toEqual([hashOf('b')]);
+    });
+
+    it('D48: stages a stream while hashing it, then commits it into place or discards it', async () => {
+      async function* chunks(...parts: string[]) {
+        for (const part of parts) yield new Uint8Array(Buffer.from(part));
+      }
+      const staged = await store.stage(chunks('%PDF-', '1.7 ', 'hello'));
+      const expected = new Uint8Array(Buffer.from('%PDF-1.7 hello'));
+      expect(staged.size).toBe(expected.length);
+      expect(staged.sha256).toBe(createHash('sha256').update(expected).digest('hex'));
+      expect(await store.readStaged(staged)).toEqual(expected);
+      expect((await store.listStaged()).map((s) => s.stagingId)).toEqual([staged.stagingId]);
+      expect(await store.list()).toEqual([]);
+
+      await store.commitStaged({ ...key, sha256: staged.sha256 }, staged);
+      expect(await store.read({ ...key, sha256: staged.sha256 })).toEqual(expected);
+      expect(await store.listStaged()).toEqual([]);
+      await store.discardStaged(staged);
+
+      const other = await store.stage(chunks('x'));
+      await store.discardStaged(other);
+      expect(await store.listStaged()).toEqual([]);
+    });
+
+    it('D48: a stream that fails while staged leaves nothing behind', async () => {
+      async function* failing() {
+        yield new Uint8Array([1, 2, 3]);
+        throw new Error('client went away');
+      }
+      await expect(store.stage(failing())).rejects.toThrow('client went away');
+      expect(await store.listStaged()).toEqual([]);
     });
 
     it('purges only the files of the given batch', async () => {

@@ -26,7 +26,8 @@ export async function createApp(config: AppConfig, adapters?: Adapters): Promise
   // One byte above the limit is enough to know a file is too large.
   await app.register(multipart, {
     throwFileSizeLimit: false,
-    limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: 300, fields: 10 },
+    // D48: per file; the total per request is counted by the receipts controller while it streams.
+    limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: config.uploadMaxFiles, fields: 10 },
   });
   // ZeptoMail posts the event as a single form-encoded parameter; the signature is checked over the raw body.
   // D49: the web client runs on another origin; tokens travel in the Authorization header, never in cookies.

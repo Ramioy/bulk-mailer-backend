@@ -144,6 +144,19 @@ describe('D41: orphan file sweep', () => {
     expect(await stored(fx)).toEqual([pending?.sha256]);
   });
 
+  it('D48: an upload staged and never decided (crash) is dropped once older than the minimum age', async () => {
+    const fx = deliveryFixture();
+    async function* bytes() {
+      yield pdfBytes('half way');
+    }
+    await fx.upload.stage(bytes());
+    expect(await fx.files.listStaged()).toHaveLength(1);
+    expect(await fx.fileJobs.purgeOrphans.execute()).toEqual({ deleted: 0, tooRecent: 1, failed: 0 });
+    fx.clock.advance(61 * MINUTE);
+    expect(await fx.fileJobs.purgeOrphans.execute()).toEqual({ deleted: 1, tooRecent: 0, failed: 0 });
+    expect(await fx.files.listStaged()).toEqual([]);
+  });
+
   it('is queued once while one is pending; failed deletions raise one alert', async () => {
     const fx = deliveryFixture();
     expect(await fx.fileJobs.purgeOrphans.request()).toBe(true);

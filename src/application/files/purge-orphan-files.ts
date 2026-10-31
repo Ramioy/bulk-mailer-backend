@@ -13,7 +13,8 @@ export interface OrphanSweepResult {
  * D41: periodic sweep of the volume. Deletes every file whose receipt does not exist, does not need it
  * (`fileAvailable` false) or lives elsewhere now: what a crash between a commit and its deletion job, or a failed
  * deletion, left behind. Files younger than `orphanMinAgeMinutes` are left alone: an upload writes the file just before
- * its row. Each deletion re-checks the receipt inside the serial executor. Alerts only if deletions fail.
+ * its row. Each deletion re-checks the receipt inside the serial executor. Uploads left in the staging area (D48) older
+ * than the same age are dropped too. Alerts only if deletions fail.
  */
 export class PurgeOrphanFiles {
   constructor(private readonly deps: FileDependencies) {}
@@ -46,6 +47,19 @@ export class PurgeOrphanFiles {
         if (removed) deleted += 1;
       } catch (error) {
         failures.push(`${file.period.toString()}/${file.block}/${file.sha256}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    // D48: uploads staged and never committed (a crash between staging and the decision).
+    for (const staged of await fileStore.listStaged()) {
+      if (staged.modifiedAt.getTime() > oldest) {
+        tooRecent += 1;
+        continue;
+      }
+      try {
+        await fileStore.discardStaged(staged);
+        deleted += 1;
+      } catch (error) {
+        failures.push(`staging/${staged.stagingId}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     if (failures.length > 0) {

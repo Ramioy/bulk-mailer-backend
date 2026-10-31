@@ -45,12 +45,20 @@ describe('loadConfig', () => {
       incidentMaxWaitSeconds: 600,
       fileOrphanSweepIntervalMinutes: 360,
       fileOrphanMinAgeMinutes: 60,
+      uploadMaxTotalBytes: 209715200,
+      uploadMaxFiles: 300,
       instanceLeaseTtlSeconds: 30,
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,
       executionAbortAfterMinutes: 10,
       shutdownTimeoutSeconds: 25,
     });
+  });
+
+  it('D48: the upload budget is made of positive integers', () => {
+    expect(loadConfig({ ...REQUIRED, UPLOAD_MAX_TOTAL_BYTES: '1000', UPLOAD_MAX_FILES: '3' })).toMatchObject({ uploadMaxTotalBytes: 1000, uploadMaxFiles: 3 });
+    expect(() => loadConfig({ ...REQUIRED, UPLOAD_MAX_TOTAL_BYTES: '0' })).toThrow('UPLOAD_MAX_TOTAL_BYTES must be a positive integer');
+    expect(() => loadConfig({ ...REQUIRED, UPLOAD_MAX_FILES: '-3' })).toThrow('UPLOAD_MAX_FILES must be a positive integer');
   });
 
   it('D47: the instance lease TTL is an integer of at least 3 seconds', () => {

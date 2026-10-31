@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { MAX_ATTACHMENT_BYTES } from '../src/adapters/outbound/pdf/basic-pdf-inspector';
+import { OCT_2026 } from './support/builders';
 import { fileName, pdfBytes } from './support/receipt-fixtures';
 import { startTestApp, TEST_PASSWORD, type TestContext } from './support/test-app';
 
@@ -120,5 +121,82 @@ describe('receipts over HTTP', () => {
     expect([old.statusCode, old.json().error]).toEqual([422, 'PERIOD_NOT_OPERABLE']);
     const json = await ctx.app.inject({ method: 'POST', url: '/batches/2026-10/CASH/receipts', headers: auth(), payload: {} });
     expect([json.statusCode, json.json().error]).toEqual([400, 'EXPECTED_MULTIPART']);
+  });
+});
+
+describe('uploads streamed to the staging area (D48)', () => {
+  let ctx: TestContext;
+  afterEach(async () => {
+    await ctx.app.close();
+  });
+
+  async function start(env: Record<string, string> = {}) {
+    ctx = await startTestApp(env);
+    const token = (await ctx.app.inject({ method: 'POST', url: '/auth/sign-in', payload: { username: 'operador', password: TEST_PASSWORD } })).json().accessToken;
+    return (files: Array<{ name: string; content: Uint8Array }>) =>
+      ctx.app.inject({
+        method: 'POST',
+        url: '/batches/2026-10/CASH/receipts',
+        headers: { authorization: `Bearer ${token}`, 'content-type': `multipart/form-data; boundary=${BOUNDARY}` },
+        payload: multipart(files),
+      });
+  }
+
+  it('stages each part while receiving it, reads one file at a time for the inspector and moves the kept ones into place', async () => {
+    const upload = await start();
+    const store = ctx.adapters.fileStore;
+    const staged = vi.spyOn(store, 'stage');
+    const saved = vi.spyOn(store, 'save');
+    let reading = 0;
+    let maxReading = 0;
+    const readStaged = store.readStaged.bind(store);
+    vi.spyOn(store, 'readStaged').mockImplementation(async (file) => {
+      reading += 1;
+      maxReading = Math.max(maxReading, reading);
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        return await readStaged(file);
+      } finally {
+        reading -= 1;
+      }
+    });
+    const response = await upload([
+      { name: fileName('Uno', 'MULTA', '104522'), content: pdfBytes('uno') },
+      { name: fileName('Dos', 'MULTA', '104522'), content: pdfBytes('dos') },
+      { name: 'sin formato.pdf', content: pdfBytes('tres') },
+    ]);
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results.map((r: { state: string }) => r.state)).toEqual(['PENDING', 'PENDING', 'INVALID']);
+    expect(staged).toHaveBeenCalledTimes(3);
+    // No file's bytes are written from memory: the two kept ones were renamed into place, the invalid one dropped.
+    expect(saved).not.toHaveBeenCalled();
+    expect(maxReading).toBe(1);
+    expect(await store.listStaged()).toEqual([]);
+    expect(await store.list()).toHaveLength(2);
+  });
+
+  it('answers 413 UPLOAD_TOO_LARGE over the total budget, registers nothing and leaves nothing staged', async () => {
+    const upload = await start({ UPLOAD_MAX_TOTAL_BYTES: '150' });
+    const response = await upload([
+      { name: fileName('Uno', 'MULTA', '104522'), content: pdfBytes('uno') },
+      { name: fileName('Dos', 'MULTA', '104522'), content: pdfBytes('dos') },
+      { name: fileName('Tres', 'MULTA', '104522'), content: pdfBytes('tres') },
+    ]);
+    expect([response.statusCode, response.json()]).toEqual([413, { error: 'UPLOAD_TOO_LARGE', maxTotalBytes: 150, maxFiles: 300 }]);
+    expect(response.headers.connection).toBe('close');
+    expect(await ctx.repository.receipts.listByBatch(OCT_2026, 'CASH')).toEqual([]);
+    expect(await ctx.adapters.fileStore.listStaged()).toEqual([]);
+  });
+
+  it('answers 413 over UPLOAD_MAX_FILES', async () => {
+    const upload = await start({ UPLOAD_MAX_FILES: '2' });
+    const response = await upload([
+      { name: fileName('Uno', 'MULTA', '104522'), content: pdfBytes('uno') },
+      { name: fileName('Dos', 'MULTA', '104522'), content: pdfBytes('dos') },
+      { name: fileName('Tres', 'MULTA', '104522'), content: pdfBytes('tres') },
+    ]);
+    expect([response.statusCode, response.json().error]).toEqual([413, 'UPLOAD_TOO_LARGE']);
+    expect(await ctx.repository.receipts.listByBatch(OCT_2026, 'CASH')).toEqual([]);
+    expect(await ctx.adapters.fileStore.listStaged()).toEqual([]);
   });
 });

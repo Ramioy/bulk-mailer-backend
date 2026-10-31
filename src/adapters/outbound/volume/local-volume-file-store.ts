@@ -1,15 +1,18 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { type Block, isBlock } from '../../../domain/block/block';
 import { Period } from '../../../domain/period/period';
 import { toSha256 } from '../../../domain/receipt/sha256';
-import type { ReceiptFileStore, StoredFile, StoredFileKey } from '../../../ports/receipt-file-store';
+import type { ReceiptFileStore, StagedFile, StoredFile, StoredFileKey } from '../../../ports/receipt-file-store';
 
 const isMissing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
 
-/** `<root>/<YYYY-MM>/<BLOCK>/<sha256>.pdf`. Writes are atomic (temporary file + rename). */
+/**
+ * `<root>/<YYYY-MM>/<BLOCK>/<sha256>.pdf`. Writes are atomic (temporary file + rename). Uploads are staged in
+ * `<root>/.staging/<uuid>` while received (D48): inside the volume, so committing is an atomic rename.
+ */
 export class LocalVolumeFileStore implements ReceiptFileStore {
   constructor(private readonly root: string) {}
 
@@ -71,6 +74,63 @@ export class LocalVolumeFileStore implements ReceiptFileStore {
       }
     }
     return found;
+  }
+
+  async stage(content: AsyncIterable<Uint8Array>): Promise<StagedFile> {
+    await mkdir(this.stagingDir(), { recursive: true });
+    const stagingId = randomUUID();
+    const path = this.stagingPath(stagingId);
+    const hash = createHash('sha256');
+    let size = 0;
+    const handle = await open(path, 'wx', 0o600);
+    try {
+      for await (const chunk of content) {
+        hash.update(chunk);
+        size += chunk.length;
+        await handle.write(chunk);
+      }
+    } catch (error) {
+      await handle.close();
+      await rm(path, { force: true });
+      throw error;
+    }
+    await handle.close();
+    return { stagingId, sha256: toSha256(hash.digest('hex')), size };
+  }
+
+  async readStaged(staged: StagedFile): Promise<Uint8Array> {
+    return new Uint8Array(await readFile(this.stagingPath(staged.stagingId)));
+  }
+
+  async commitStaged(key: StoredFileKey, staged: StagedFile): Promise<void> {
+    await mkdir(this.batchDir(key.period, key.block), { recursive: true });
+    await rename(this.stagingPath(staged.stagingId), this.path(key));
+  }
+
+  async discardStaged(staged: Pick<StagedFile, 'stagingId'>): Promise<void> {
+    await rm(this.stagingPath(staged.stagingId), { force: true });
+  }
+
+  async listStaged(): Promise<Array<{ stagingId: string; modifiedAt: Date }>> {
+    const found: Array<{ stagingId: string; modifiedAt: Date }> = [];
+    for (const name of await entriesOf(this.stagingDir())) {
+      if (!/^[0-9a-f-]{36}$/.test(name)) continue;
+      try {
+        found.push({ stagingId: name, modifiedAt: (await stat(this.stagingPath(name))).mtime });
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+    }
+    return found;
+  }
+
+  private stagingDir(): string {
+    return join(this.root, '.staging');
+  }
+
+  private stagingPath(stagingId: string): string {
+    if (!/^[0-9a-f-]{36}$/.test(stagingId)) throw new Error(`Invalid staging id ${stagingId}`);
+    return join(this.stagingDir(), stagingId);
   }
 
   private batchDir(period: Period, block: Block): string {
