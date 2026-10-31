@@ -49,6 +49,7 @@ describe('loadConfig', () => {
       uploadMaxFiles: 300,
       workRetentionDays: 30,
       maxAttachmentBytes: 15728640,
+      authRateLimitPerMinute: 20,
       instanceLeaseTtlSeconds: 30,
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,

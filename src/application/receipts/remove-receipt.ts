@@ -2,7 +2,7 @@ import type { Sha256 } from '../../domain/receipt/sha256';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
 import { retireFile } from '../files/retire-file';
-import { publishNextManifest, refuseBatchCommand, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
+import { publishNextManifest, refuseCorrection, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
 
 export type RemoveReceiptError = BatchCommandError | 'RECEIPT_NOT_FOUND' | 'RECEIPT_NOT_REMOVABLE';
 
@@ -17,7 +17,7 @@ export class RemoveReceipt {
       const { repository, clock } = this.deps;
       const receipt = await repository.receipts.get(sha256);
       if (!receipt) return err('RECEIPT_NOT_FOUND');
-      const refusal = await refuseBatchCommand(this.deps, receipt.period);
+      const refusal = await refuseCorrection(repository);
       if (refusal) return err(refusal);
       if (!REMOVABLE.has(receipt.state)) return err('RECEIPT_NOT_REMOVABLE');
 

@@ -9,7 +9,7 @@ import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
 import { retireFile } from '../files/retire-file';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
-import { lookupRecipient, publishNextManifest, refuseBatchCommand, withSuppression, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
+import { lookupRecipient, publishNextManifest, refuseCorrection, withSuppression, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
 
 export type ResolveConflictError =
   | { readonly code: BatchCommandError | 'RECEIPT_NOT_FOUND' | 'RECEIPT_NOT_IN_CONFLICT' | 'NOTE_REQUIRED' | 'NAME_NOT_IN_CONFLICT' }
@@ -127,10 +127,8 @@ export class ResolveDuplicateConflict {
     const candidates = [{ fileName: receipt.fileName, period: receipt.period, block: receipt.block }, ...(receipt.conflictingNames ?? [])];
     const chosen = candidates.find((c) => c.fileName === fileName);
     if (!chosen) return err({ code: 'NAME_NOT_IN_CONFLICT' });
-    for (const p of new Set([receipt.period, chosen.period])) {
-      const refusal = await refuseBatchCommand(this.deps, p, stores);
-      if (refusal) return err({ code: refusal });
-    }
+    const refusal = await refuseCorrection(stores);
+    if (refusal) return err({ code: refusal });
     const parsed = parseReceiptFileName(fileName, new ConceptCatalog(await stores.concepts.list()), this.deps.fileNameOptions);
     if (!parsed.ok) return err({ code: 'CHOSEN_NAME_INVALID', reason: parsed.error });
     return ok({ receipt, chosen: { period: chosen.period, block: chosen.block }, parsed: parsed.value, contract: parsed.value.contract });

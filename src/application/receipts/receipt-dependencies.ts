@@ -42,6 +42,14 @@ export async function refuseBatchCommand(
   return undefined;
 }
 
+/**
+ * D50 (B3): removing a receipt or resolving a duplicate conflict corrects data and sends nothing, so it is allowed in
+ * any period (a conflict from three months ago must be solvable); only a running execution refuses it.
+ */
+export async function refuseCorrection(stores: Pick<BulkMailerStores, 'executions'>): Promise<'EXECUTION_IN_PROGRESS' | undefined> {
+  return (await stores.executions.running()) ? 'EXECUTION_IN_PROGRESS' : undefined;
+}
+
 export interface RecipientResolution {
   readonly recipient?: Recipient;
   readonly errorType?: RecipientErrorType;

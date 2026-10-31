@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-provider';
+import { registerOperationLog } from '../../src/adapters/outbound/logging/operation-log';
 import { RedirectingEmailProvider } from '../../src/adapters/outbound/zeptomail/redirecting-email-provider';
+import { RemoveReceipt } from '../../src/application/receipts/remove-receipt';
+import { ResolveDuplicateConflict } from '../../src/application/receipts/resolve-duplicate-conflict';
 import type { SendOutcome } from '../../src/domain/sending/send-outcome';
 import { OCT_2026 } from '../support/builders';
 import { deliveryFixture, type DeliveryFixture } from '../support/delivery-fixtures';
@@ -59,5 +62,49 @@ describe('D50: data consistency', () => {
     expect(await fx.repository.suppressions.list()).toEqual([]);
     const [alert] = await fx.repository.alerts.list({ type: 'HARD_BOUNCE' });
     expect(alert?.detail).toContain('test mailbox pruebas@anutibara.com, address not suppressed');
+  });
+});
+
+describe('D50: operability', () => {
+  it('B3: removing a receipt or resolving a conflict works in a period no longer operable; uploading there does not', async () => {
+    const fx = deliveryFixture();
+    await fx.upload.execute('operador', OCT_2026, 'CASH', [
+      { name: fileName('Uno', 'MULTA', '104522'), content: pdfBytes('uno') },
+      { name: fileName('Dos', 'MULTA', '104522'), content: pdfBytes('dos') },
+      { name: fileName('Otro Nombre', 'MULTA', '104522'), content: pdfBytes('dos') },
+    ]);
+    // Three months later.
+    fx.clock.set('2027-01-15T15:00:00Z');
+    expect(await fx.upload.execute('operador', OCT_2026, 'CASH', [{ name: fileName('Tres', 'MULTA', '104522'), content: pdfBytes('tres') }])).toEqual({
+      ok: false,
+      error: 'PERIOD_NOT_OPERABLE',
+    });
+    const [dos, uno] = await fx.repository.receipts.listByBatch(OCT_2026, 'CASH');
+    expect(await new RemoveReceipt(fx.deps).execute('operador', uno?.sha256 as never)).toMatchObject({ ok: true });
+    expect(await new ResolveDuplicateConflict(fx.deps).execute('operador', dos?.sha256 as never, fileName('Dos', 'MULTA', '104522'), 'the right one')).toMatchObject({
+      ok: true,
+      value: { state: 'PENDING' },
+    });
+  });
+
+  it('B7: one structured line per operation, with identifiers and counts, never addresses or file names', async () => {
+    const fx = deliveryFixture();
+    const lines: string[] = [];
+    registerOperationLog(fx.bus, { log: (line) => void lines.push(line) });
+    fx.email.respondWith({ kind: 'ACCEPTED', providerRequestId: 'r' }, UNCERTAIN);
+    await fx.uploadValid(2);
+    await fx.startAndRun();
+    await fx.relay.drain();
+    const ops = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ops.map((o) => o.op)).toEqual(
+      expect.arrayContaining(['RECEIPTS_UPLOADED', 'EXECUTION_STARTED', 'RECEIPT_SENT', 'RECEIPT_UNCERTAIN', 'EXECUTION_FINISHED']),
+    );
+    expect(ops.find((o) => o.op === 'RECEIPTS_UPLOADED')).toMatchObject({ period: '2026-10', block: 'CASH', registered: 2 });
+    const sent = ops.find((o) => o.op === 'RECEIPT_SENT');
+    expect(sent).toMatchObject({ outcome: 'ACCEPTED', state: 'SENT' });
+    expect(typeof sent?.sha256).toBe('string');
+    expect(typeof sent?.attemptId).toBe('string');
+    expect(ops.find((o) => o.op === 'EXECUTION_FINISHED')).toMatchObject({ result: 'COMPLETED', processed: 2, total: 2 });
+    expect(lines.some((l) => l.includes('@') || l.includes('.pdf'))).toBe(false);
   });
 });

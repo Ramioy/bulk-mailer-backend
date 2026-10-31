@@ -79,6 +79,7 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     webhookSecrets: WEBHOOK_SECRETS,
     jobQueue: new InMemoryJobQueue(() => clock.now(), () => repository.jobTable()),
     instanceLease: new InMemoryInstanceLease(() => clock.now()),
+    readiness: { check: async () => ({ database: true, volume: true }) },
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],
@@ -90,6 +91,8 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     DATA_DIR: '/tmp/bulk-mailer-test',
     DATABASE_URL: 'postgres://unused',
     JOB_RUNNER_ENABLED: 'false',
+    // Tests sign in many times from one address; the limit itself is tested with its own value (D50, B5).
+    AUTH_RATE_LIMIT_PER_MINUTE: '10000',
     ...env,
   });
   const app = await createApp(config, adapters);

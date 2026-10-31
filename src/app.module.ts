@@ -19,6 +19,7 @@ import { JobLanes, JobRunner } from './adapters/inbound/jobs/job-runner';
 import { ReceiptsController } from './adapters/inbound/http/receipts/receipts.controller';
 import { alertFromEvent } from './application/alerts/raise-alert';
 import { AuthUseCases } from './application/auth/auth-use-cases';
+import { registerOperationLog } from './adapters/outbound/logging/operation-log';
 import { OutboxRelay } from './application/events/outbox-relay';
 import { SerialExecutor } from './application/shared/serial-executor';
 import { type Adapters, loadEmailTemplate } from './composition/adapters';
@@ -28,7 +29,7 @@ import { executionUseCases } from './composition/execution-use-cases';
 import { fileUseCases } from './composition/file-use-cases';
 import { fileKeyOf } from './application/files/delete-receipt-file';
 import { receiptUseCases } from './composition/receipt-use-cases';
-import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, INSTANCE_ID, JOB_RUNNER, CLOCK, WEBHOOK_SECRETS, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
+import { ADAPTERS, ADMIN_USE_CASES, AUTH_USE_CASES, AUTHENTICATOR, DELIVERY_USE_CASES, EXECUTION_USE_CASES, FILE_USE_CASES, INSTANCE_ID, JOB_RUNNER, CLOCK, WEBHOOK_SECRETS, READINESS, OUTBOX_RELAY, RECEIPT_USE_CASES, SSE_HUB } from './composition/tokens';
 import { APP_CONFIG, type AppConfig } from './config/app-config';
 
 /**
@@ -93,6 +94,7 @@ export class AppModule {
       retentionDays: config.workRetentionDays,
     });
     const fileLogger = new Logger('FileLane');
+    const operationLog = new Logger('Operation');
     // Four lanes (D21, D38, D41): one batch at a time in the whole system; webhooks one at a time, never behind a lookup;
     // lookups in the provider logs (reconciliation, sweep, per-minute check) one at a time. Every receipt change of
     // every lane still goes through the same serial executor.
@@ -111,7 +113,8 @@ export class AppModule {
         adapters.jobQueue,
         {
           PROCESS_DELIVERY_EVENT: async (job) => {
-            await delivery.processWebhook.execute(String(job.payload.webhookRequestId));
+            const results = await delivery.processWebhook.execute(String(job.payload.webhookRequestId));
+            operationLog.log(JSON.stringify({ op: 'WEBHOOK_PROCESSED', webhookRequestId: job.payload.webhookRequestId, events: results.length, results }));
           },
         },
         adapters.clock,
@@ -123,13 +126,15 @@ export class AppModule {
         adapters.jobQueue,
         {
           RECONCILE_ATTEMPT: async (job) => {
-            await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
+            const result = await delivery.reconcile.execute(String(job.payload.attemptId), job.payload.final === true);
+            operationLog.log(JSON.stringify({ op: 'RECONCILE_ATTEMPT', attemptId: job.payload.attemptId, final: job.payload.final === true, result }));
           },
           SWEEP_UNCONFIRMED: async () => {
-            await delivery.sweep.execute();
+            operationLog.log(JSON.stringify({ op: 'SWEEP_UNCONFIRMED', ...(await delivery.sweep.execute()) }));
           },
           CHECK_RECENT_SENDS: async () => {
-            await delivery.recentSends.execute();
+            const result = await delivery.recentSends.execute();
+            if (result.checked > 0) operationLog.log(JSON.stringify({ op: 'CHECK_RECENT_SENDS', ...result }));
           },
         },
         adapters.clock,
@@ -168,6 +173,8 @@ export class AppModule {
       await Promise.all(adapters.alertNotifiers.map((notifier) => notifier.notify(alert)));
     });
     adapters.eventBus.subscribe('RECEIPT_UNCERTAIN', (event) => delivery.followUps.onReceiptUncertain(event));
+    // D50 (B7): one structured log line per operation event.
+    registerOperationLog(adapters.eventBus, new Logger('Operation'));
     adapters.eventBus.subscribe('WEBHOOK_RECEIVED', (event) => delivery.followUps.onWebhookReceived(event));
     const relay = new OutboxRelay(adapters.repository, adapters.eventBus, adapters.clock, { newId: adapters.newId, logger: new Logger('OutboxRelay') });
     return {
@@ -218,6 +225,7 @@ export class AppModule {
         { provide: SSE_HUB, useValue: adapters.progressHub },
         { provide: CLOCK, useValue: adapters.clock },
         { provide: WEBHOOK_SECRETS, useValue: adapters.webhookSecrets },
+        { provide: READINESS, useValue: adapters.readiness },
         { provide: JOB_RUNNER, useValue: runner },
         { provide: FILE_USE_CASES, useValue: files },
         { provide: OUTBOX_RELAY, useValue: relay },

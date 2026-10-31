@@ -88,6 +88,8 @@ export interface AppConfig {
   readonly workRetentionDays: number;
   /** D50: largest attachment accepted (the inspector and the multipart limit); default 15 MB, as before. */
   readonly maxAttachmentBytes: number;
+  /** D50 (B5): requests per minute and client IP to the public auth routes; default 20. */
+  readonly authRateLimitPerMinute: number;
   /** D47: lease of the instance that runs the background work; renewed every third of it. Default 30 s. */
   readonly instanceLeaseTtlSeconds: number;
   readonly jobRunnerEnabled: boolean;
@@ -203,6 +205,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const uploadMaxFiles = positiveInteger(env.UPLOAD_MAX_FILES ?? '300', 'UPLOAD_MAX_FILES', problems);
   const workRetentionDays = positiveInteger(env.WORK_RETENTION_DAYS ?? '30', 'WORK_RETENTION_DAYS', problems);
   const maxAttachmentBytes = positiveInteger(env.MAX_ATTACHMENT_BYTES ?? String(15 * 1024 * 1024), 'MAX_ATTACHMENT_BYTES', problems);
+  const authRateLimitPerMinute = positiveInteger(env.AUTH_RATE_LIMIT_PER_MINUTE ?? '20', 'AUTH_RATE_LIMIT_PER_MINUTE', problems);
   const instanceLeaseTtlSeconds = positiveInteger(env.INSTANCE_LEASE_TTL_SECONDS ?? '30', 'INSTANCE_LEASE_TTL_SECONDS', problems);
   if (instanceLeaseTtlSeconds < 3) problems.push('INSTANCE_LEASE_TTL_SECONDS must be at least 3');
   const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
@@ -264,6 +267,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     uploadMaxFiles,
     workRetentionDays,
     maxAttachmentBytes,
+    authRateLimitPerMinute,
     instanceLeaseTtlSeconds,
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,

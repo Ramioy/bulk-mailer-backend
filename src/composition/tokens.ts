@@ -14,3 +14,4 @@ export const INSTANCE_ID = Symbol('InstanceId');
 /** D50 (B4): ports and adapter configuration the inbound adapters may receive, instead of the whole adapter set. */
 export const CLOCK = Symbol('Clock');
 export const WEBHOOK_SECRETS = Symbol('WebhookSecrets');
+export const READINESS = Symbol('ReadinessProbe');

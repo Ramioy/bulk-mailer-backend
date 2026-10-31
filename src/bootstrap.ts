@@ -7,6 +7,7 @@ import multipart from '@fastify/multipart';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 
+import { registerAuthRateLimit } from './adapters/inbound/http/auth/auth-rate-limit';
 import { AppModule } from './app.module';
 import { type Adapters, buildAdapters } from './composition/adapters';
 import type { AppConfig } from './config/app-config';
@@ -41,6 +42,8 @@ export async function createApp(config: AppConfig, adapters?: Adapters): Promise
     });
   }
   app.useBodyParser('application/x-www-form-urlencoded', { bodyLimit: 1024 * 1024 }, (_request, body, done) => done(null, body.toString('utf8')));
+  // D50 (B5): the public auth routes are rate limited per client IP.
+  registerAuthRateLimit(app.getHttpAdapter().getInstance(), config.authRateLimitPerMinute);
   app.enableShutdownHooks();
   app.getHttpAdapter().getInstance().addHook('onClose', async () => resolved.close());
   return app;
