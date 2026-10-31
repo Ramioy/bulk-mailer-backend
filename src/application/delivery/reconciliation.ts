@@ -326,7 +326,13 @@ export class SweepUnconfirmed {
         const late = confirmedLate > 0 ? ` (${confirmedLate} of them first marked not sent and confirmed late, D34)` : '';
         await raise(execution.executionId, `the provider logs show a delivery state for ${provenLoss} receipt(s) of ${where}${late} but no webhook arrived`);
       } else if (expectingWebhook > 0 && withWebhook === 0) {
-        await raise(execution.executionId, `${expectingWebhook} receipt(s) sent by ${where} and no webhook in ${reconciliation.sweepAfterHours} h`);
+        // D45: "nothing arrived" and "webhooks arrived but could not be correlated" call for different checks.
+        const unparsed = (await repository.alerts.list({ type: 'WEBHOOK_UNPARSED' })).filter((a) => a.raisedAt >= execution.startedAt).length;
+        const silence =
+          unparsed > 0
+            ? `no webhook could be correlated in ${reconciliation.sweepAfterHours} h, although ${unparsed} webhook(s) arrived that could not be read (WEBHOOK_UNPARSED): check the payload format`
+            : `no webhook arrived in ${reconciliation.sweepAfterHours} h`;
+        await raise(execution.executionId, `${expectingWebhook} receipt(s) sent by ${where} and ${silence}`);
       }
     }
     return { lookedUp, updated, alerts };

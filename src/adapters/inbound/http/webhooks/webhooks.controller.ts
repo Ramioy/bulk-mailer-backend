@@ -38,7 +38,14 @@ export class WebhooksController {
     const parsed = parseZeptoMailWebhook(verified.json, receivedAt, this.config.redirectAllEmailTo);
     // Without a webhook_request_id, the content identifies the delivery (a resend of the same body is a duplicate).
     const webhookRequestId = parsed.webhookRequestId ?? `sha256:${createHash('sha256').update(verified.json).digest('hex')}`;
-    await this.useCases.recordWebhook.execute({ webhookRequestId, provider: 'ZEPTOMAIL', receivedAt, body: verified.json, events: parsed.events });
+    await this.useCases.recordWebhook.execute({
+      webhookRequestId,
+      provider: 'ZEPTOMAIL',
+      receivedAt,
+      body: verified.json,
+      events: parsed.events,
+      ...(parsed.notes ? { parseNotes: parsed.notes } : {}),
+    });
     return {};
   }
 

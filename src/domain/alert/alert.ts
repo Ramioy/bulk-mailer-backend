@@ -25,6 +25,8 @@ export const AlertType = {
   FILE_PURGE_FAILED: 'FILE_PURGE_FAILED',
   /** D43: an UNCERTAIN send is still unresolved after its last scheduled lookup; the operator can verify or resolve it. */
   UNCERTAIN_UNRESOLVED: 'UNCERTAIN_UNRESOLVED',
+  /** D45: an authenticated webhook from which no event of ours could be read: probably the payload format (§12.7). */
+  WEBHOOK_UNPARSED: 'WEBHOOK_UNPARSED',
 } as const;
 export type AlertType = (typeof AlertType)[keyof typeof AlertType];
 

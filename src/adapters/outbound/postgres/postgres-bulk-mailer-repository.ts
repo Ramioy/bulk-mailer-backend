@@ -9,7 +9,7 @@ import type { Block } from '../../../domain/block/block';
 import type { Concept } from '../../../domain/concept/concept';
 import { Period } from '../../../domain/period/period';
 import type { DeliveryEvent, DeliveryState, IncomingDeliveryEvent } from '../../../domain/receipt/delivery-state';
-import type { DeliveryWebhook } from '../../../domain/receipt/delivery-webhook';
+import type { DeliveryWebhook, WebhookParseNotes } from '../../../domain/receipt/delivery-webhook';
 import type { ConflictingName, Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
 import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
@@ -160,6 +160,7 @@ function toWebhook(r: Row): DeliveryWebhook {
     receivedAt: r.received_at as Date,
     body: r.body as string,
     events: (r.events as StoredIncomingEvent[]).map((e) => ({ ...e, occurredAt: new Date(e.occurredAt) })),
+    ...(r.parse_notes ? { parseNotes: r.parse_notes as WebhookParseNotes } : {}),
     processedAt: opt(r.processed_at),
   };
 }
@@ -430,9 +431,9 @@ function stores(db: Queryable): BulkMailerStores {
     async record(w) {
       const inserted = await rows(
         db,
-        `INSERT INTO webhook_events (webhook_request_id, provider, received_at, body, events) VALUES ($1,$2,$3,$4,$5)
+        `INSERT INTO webhook_events (webhook_request_id, provider, received_at, body, events, parse_notes) VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (webhook_request_id) DO NOTHING RETURNING webhook_request_id`,
-        [w.webhookRequestId, w.provider, w.receivedAt, w.body, JSON.stringify(w.events)],
+        [w.webhookRequestId, w.provider, w.receivedAt, w.body, JSON.stringify(w.events), w.parseNotes ? JSON.stringify(w.parseNotes) : null],
       );
       return inserted.length === 1;
     },
