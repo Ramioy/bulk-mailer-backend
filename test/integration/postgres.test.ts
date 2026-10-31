@@ -9,7 +9,7 @@ import { OutboxRelay } from '../../src/application/events/outbox-relay';
 import { PostgresBulkMailerRepository } from '../../src/adapters/outbound/postgres/postgres-bulk-mailer-repository';
 import { PostgresJobQueue } from '../../src/adapters/outbound/postgres/postgres-job-queue';
 import { bulkMailerRepositoryContract } from '../contracts/bulk-mailer-repository.contract';
-import { jobQueueContract } from '../contracts/job-queue.contract';
+import { jobQueueContract, transactionalJobsContract } from '../contracts/job-queue.contract';
 import type { Receipt } from '../../src/domain/receipt/receipt';
 import { ConcurrentModificationError } from '../../src/ports/bulk-mailer-repository';
 import { aReceipt, anExecution, hashOf, T0 } from '../support/builders';
@@ -35,6 +35,11 @@ describe.skipIf(!TEST_DATABASE_URL)('PostgreSQL 18', () => {
   jobQueueContract('postgres', async () => {
     await resetData(dataSource);
     return new PostgresJobQueue(dataSource);
+  });
+
+  transactionalJobsContract('postgres', async () => {
+    await resetData(dataSource);
+    return { repository: new PostgresBulkMailerRepository(dataSource), queue: new PostgresJobQueue(dataSource) };
   });
 
   describe('storage-level guarantees', () => {

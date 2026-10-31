@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { BulkMailerRepository } from '../../src/ports/bulk-mailer-repository';
 import type { JobQueue } from '../../src/ports/job-queue';
 import { T0 } from '../support/builders';
 
@@ -66,6 +67,30 @@ export function jobQueueContract(name: string, create: () => Promise<JobQueue>):
       await queue.claimNext(T0);
       expect(await queue.releaseAbandoned()).toBe(1);
       expect(await queue.claimNext(T0)).toMatchObject({ jobId: id, payload: { batch: 'x' }, attempts: 2 });
+    });
+  });
+}
+
+/** D40: a job queued in a repository transaction lives in the queue's table: it exists if and only if it commits. */
+export function transactionalJobsContract(name: string, create: () => Promise<{ repository: BulkMailerRepository; queue: JobQueue }>): void {
+  describe(`Transactional jobs contract: ${name}`, () => {
+    it('a job queued in a transaction that commits is claimed by the queue', async () => {
+      const { repository, queue } = await create();
+      const jobId = await repository.transaction((tx) => tx.jobs.enqueue({ type: 'EXECUTE_BATCH', payload: { executionId: 'e1' }, runAt: T0 }));
+      expect(await queue.hasPending('EXECUTE_BATCH')).toBe(true);
+      expect(await queue.claimNext(later(1))).toMatchObject({ jobId, type: 'EXECUTE_BATCH', payload: { executionId: 'e1' }, attempts: 1 });
+    });
+
+    it('a job queued in a transaction that fails does not exist', async () => {
+      const { repository, queue } = await create();
+      await expect(
+        repository.transaction(async (tx) => {
+          await tx.jobs.enqueue({ type: 'EXECUTE_BATCH', payload: {}, runAt: T0 });
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+      expect(await queue.hasPending('EXECUTE_BATCH')).toBe(false);
+      expect(await queue.claimNext(later(1))).toBeUndefined();
     });
   });
 }

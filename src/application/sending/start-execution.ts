@@ -77,11 +77,11 @@ export class StartExecution {
       await tx.outbox.add(
         domainEvent(newId, 'EXECUTION_STARTED', now, { executionId, period: period.toString(), block, manifestVersion: batch.manifestVersion, startedBy: operator }),
       );
+      // D40: queued in the same transaction: an execution RUNNING without its job cannot exist.
+      await tx.jobs.enqueue({ type: 'EXECUTE_BATCH', payload: { executionId }, runAt: now });
       return true;
     });
     if (!started) return err({ code: 'EXECUTION_IN_PROGRESS' });
-
-    await this.deps.jobQueue.enqueue({ type: 'EXECUTE_BATCH', payload: { executionId }, runAt: now });
     return ok({ executionId });
   }
 }

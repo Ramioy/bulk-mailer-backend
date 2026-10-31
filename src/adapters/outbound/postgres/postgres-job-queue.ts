@@ -13,6 +13,19 @@ const toJob = (r: Row): Job => ({
   attempts: r.attempts as number,
 });
 
+/** Inserts a READY job with the given connection: autocommit for the queue, a transaction's for `tx.jobs` (D40). */
+export async function insertJob(db: Queryable, job: NewJob, now: Date = new Date()): Promise<string> {
+  const jobId = randomUUID();
+  await db.query(`INSERT INTO jobs (job_id, type, payload, run_at, status, updated_at) VALUES ($1, $2, $3, $4, 'READY', $5)`, [
+    jobId,
+    job.type,
+    JSON.stringify(job.payload),
+    job.runAt ?? now,
+    now,
+  ]);
+  return jobId;
+}
+
 /** Jobs table claimed with `FOR UPDATE SKIP LOCKED`, so concurrent runners never take the same job. */
 export class PostgresJobQueue implements JobQueue {
   private readonly db: Queryable;
@@ -25,12 +38,7 @@ export class PostgresJobQueue implements JobQueue {
   }
 
   async enqueue(job: NewJob): Promise<string> {
-    const jobId = randomUUID();
-    await this.db.query(
-      `INSERT INTO jobs (job_id, type, payload, run_at, status, updated_at) VALUES ($1, $2, $3, $4, 'READY', $5)`,
-      [jobId, job.type, JSON.stringify(job.payload), job.runAt ?? this.now(), this.now()],
-    );
-    return jobId;
+    return insertJob(this.db, job, this.now());
   }
 
   async claimNext(now: Date, types?: readonly JobType[]): Promise<Job | undefined> {

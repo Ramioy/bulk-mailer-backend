@@ -39,7 +39,6 @@ export class AppModule {
       fileStore: adapters.fileStore,
       contractSources: adapters.contractSources,
       emailProvider: adapters.emailProvider,
-      jobQueue: adapters.jobQueue,
       progress: adapters.progressHub,
       clock: adapters.clock,
       newId: adapters.newId,

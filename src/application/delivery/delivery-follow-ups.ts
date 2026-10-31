@@ -4,6 +4,13 @@ import type { DeliveryDependencies } from './delivery-dependencies';
 /**
  * Consumers of domain events that schedule background work. Delivery is at-least-once: a job queued twice is
  * harmless because the work it does is idempotent.
+ *
+ * D40: they queue through the `JobQueue`, not inside the relay's transaction: the event bus does not carry the
+ * transaction (and must not: its consumers may live elsewhere, e.g. Kafka). No job is lost: if queueing fails, the
+ * consumer fails, the relay delivers the event again (and, after the maximum attempts, the event is dead and alerted,
+ * D39). What can happen is a job queued twice (a failure halfway, or a relay that fails after the consumer ran): a
+ * reconciliation of a receipt no longer UNCERTAIN ends at once, one still UNCERTAIN costs one more lookup, and a
+ * webhook already processed is skipped.
  */
 export class DeliveryFollowUps {
   constructor(private readonly deps: Pick<DeliveryDependencies, 'repository' | 'jobQueue' | 'reconciliation'>) {}

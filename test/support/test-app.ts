@@ -76,7 +76,7 @@ export async function startTestApp(env: Record<string, string> = {}, options: { 
     sendLookup: lookup,
     suppressionManager,
     webhookSecrets: WEBHOOK_SECRETS,
-    jobQueue: new InMemoryJobQueue(() => clock.now()),
+    jobQueue: new InMemoryJobQueue(() => clock.now(), () => repository.jobTable()),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],

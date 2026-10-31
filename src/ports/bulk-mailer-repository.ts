@@ -3,6 +3,7 @@ import type { AuditEntry } from '../domain/audit/audit';
 import type { Batch, Execution } from '../domain/batch/batch';
 import type { Manifest } from '../domain/batch/manifest';
 import type { DomainEvent } from './event-bus';
+import type { NewJob } from './job-queue';
 import type { ProgressEvent, StoredProgressEvent } from './progress-notifier';
 import type { Block } from '../domain/block/block';
 import type { Concept } from '../domain/concept/concept';
@@ -168,6 +169,14 @@ export interface OutboxStore {
   revive(eventId: string): Promise<boolean>;
 }
 
+/**
+ * D40: queueing a job as part of a transaction, in the same table the `JobQueue` claims from. The job exists if and
+ * only if the transaction commits: it is never lost after the commit and never visible before it.
+ */
+export interface JobStore {
+  enqueue(job: NewJob): Promise<string>;
+}
+
 export interface SettingsStore {
   archiveCopyEnabled(): Promise<boolean>;
   setArchiveCopyEnabled(enabled: boolean): Promise<void>;
@@ -187,6 +196,7 @@ export interface BulkMailerStores {
   readonly concepts: ConceptStore;
   readonly settings: SettingsStore;
   readonly outbox: OutboxStore;
+  readonly jobs: JobStore;
 }
 
 /** Persistence of everything Bulk Mailer records. Records are permanent. */

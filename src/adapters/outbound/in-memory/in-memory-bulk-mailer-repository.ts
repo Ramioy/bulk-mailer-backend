@@ -21,6 +21,7 @@ import {
 } from '../../../ports/bulk-mailer-repository';
 import type { StoredProgressEvent } from '../../../ports/progress-notifier';
 import type { DomainEvent } from '../../../ports/event-bus';
+import { InMemoryJobTable } from './in-memory-job-queue';
 
 const batchKey = (period: Period, block: Block) => `${period.toString()}|${block}`;
 
@@ -40,6 +41,7 @@ interface State {
   concepts: Map<string, Concept>;
   archiveCopyEnabled: boolean;
   outbox: Array<{ event: DomainEvent; attempts: number; dispatchedAt?: Date; lastError?: string; deadAt?: Date }>;
+  jobs: InMemoryJobTable;
 }
 
 function snapshot(state: State): State {
@@ -59,6 +61,7 @@ function snapshot(state: State): State {
     audit: [...state.audit],
     concepts: new Map(state.concepts),
     outbox: state.outbox.map((e) => ({ ...e })),
+    jobs: state.jobs.clone(),
   };
 }
 
@@ -87,6 +90,16 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     concepts: new Map(INITIAL_CONCEPTS.map((c) => [c.key, c])),
     archiveCopyEnabled: false,
     outbox: [],
+    jobs: new InMemoryJobTable(),
+  };
+
+  /** The jobs table, shared with an InMemoryJobQueue (D40); a function because a failed transaction replaces it. */
+  jobTable(): InMemoryJobTable {
+    return this.state.jobs;
+  }
+
+  readonly jobs: BulkMailerStores['jobs'] = {
+    enqueue: async (job) => this.state.jobs.insert(job, new Date()),
   };
 
   readonly receipts: BulkMailerStores['receipts'] = {

@@ -32,6 +32,7 @@ import {
   type ExecutionEventStore,
   type OutboxStore,
   type ExecutionStore,
+  type JobStore,
   type ReceiptStore,
   type SettingsStore,
   type SuppressionStore,
@@ -39,6 +40,7 @@ import {
 } from '../../../ports/bulk-mailer-repository';
 import type { DomainEvent } from '../../../ports/event-bus';
 import type { ProgressEvent, StoredProgressEvent } from '../../../ports/progress-notifier';
+import { insertJob } from './postgres-job-queue';
 import { autocommit, firstRow, inTransaction, isUniqueViolation, opt, rows, type Queryable, type Row } from './queryable';
 
 const period = (row: Row): Period => {
@@ -552,7 +554,12 @@ function stores(db: Queryable): BulkMailerStores {
     },
   };
 
-  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, webhooks, alerts, audit, concepts, settings };
+  // D40: the same table the PostgresJobQueue claims from, written with the transaction's connection.
+  const jobs: JobStore = {
+    enqueue: (job) => insertJob(db, job),
+  };
+
+  return { outbox, receipts, batches, executions, executionEvents, attempts, suppressions, deliveryEvents, webhooks, alerts, audit, concepts, settings, jobs };
 }
 
 export class PostgresBulkMailerRepository implements BulkMailerRepository {
@@ -569,6 +576,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
   readonly concepts: ConceptStore;
   readonly settings: SettingsStore;
   readonly outbox: OutboxStore;
+  readonly jobs: JobStore;
 
   constructor(private readonly dataSource: DataSource) {
     const s = stores(autocommit(dataSource));
@@ -585,6 +593,7 @@ export class PostgresBulkMailerRepository implements BulkMailerRepository {
     this.concepts = s.concepts;
     this.settings = s.settings;
     this.outbox = s.outbox;
+    this.jobs = s.jobs;
   }
 
   async transaction<T>(work: (stores: BulkMailerStores) => Promise<T>): Promise<T> {

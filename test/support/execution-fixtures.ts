@@ -40,7 +40,8 @@ export interface ExecutionFixture extends ReceiptFixture {
 export function executionFixture(overrides: Partial<ExecutionDependencies> = {}): ExecutionFixture {
   const base = receiptFixture();
   const email = new FakeEmailProvider();
-  const jobs = new InMemoryJobQueue(() => base.clock.now());
+  // Same jobs table as the repository (D40): jobs queued inside a transaction are claimed here.
+  const jobs = new InMemoryJobQueue(() => base.clock.now(), () => base.repository.jobTable());
   const progress = new RecordingProgressNotifier();
   const alerts = new RecordingAlertNotifier();
   const execDeps: ExecutionDependencies = {
@@ -48,7 +49,6 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
     fileStore: base.files,
     contractSources: base.deps.contractSources,
     emailProvider: email,
-    jobQueue: jobs,
     progress,
     clock: base.clock,
     newId: base.deps.newId,
