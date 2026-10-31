@@ -10,6 +10,10 @@ export class RedirectingEmailProvider implements EmailProvider {
     private readonly testMailbox: string,
   ) {}
 
+  get redirectsTo(): string {
+    return this.testMailbox;
+  }
+
   send(email: OutgoingEmail) {
     return this.inner.send({
       ...email,

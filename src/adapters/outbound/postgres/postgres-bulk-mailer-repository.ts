@@ -134,6 +134,7 @@ function toAttempt(r: Row): Attempt {
     detail: opt(r.detail),
     providerRequestId: opt(r.provider_request_id),
     emailReference: opt(r.email_reference),
+    redirectedTo: opt(r.redirected_to),
   };
 }
 
@@ -176,9 +177,10 @@ const toSuppression = (r: Row): Suppression => ({
 const attemptParams = (a: Attempt) => [
   a.attemptId, a.sha256, a.executionId ?? null, a.kind, a.to, a.copyAddress ?? null, a.startedAt,
   a.finishedAt ?? null, a.outcome ?? null, a.detail ?? null, a.providerRequestId ?? null, a.emailReference ?? null,
+  a.redirectedTo ?? null,
 ];
 const ATTEMPT_COLUMNS = `attempt_id, sha256, execution_id, kind, to_address, copy_address, started_at,
-  finished_at, outcome, detail, provider_request_id, email_reference`;
+  finished_at, outcome, detail, provider_request_id, email_reference, redirected_to`;
 
 const executionParams = (e: Execution) => [
   e.executionId, e.period.toString(), e.block, e.manifestVersion, e.startedBy, e.startedAt,
@@ -372,7 +374,7 @@ function stores(db: Queryable): BulkMailerStores {
   const attempts: AttemptStore = {
     async insert(a) {
       try {
-        await db.query(`INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, attemptParams(a));
+        await db.query(`INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, attemptParams(a));
       } catch (error) {
         if (isUniqueViolation(error)) throw new DuplicateAttemptError(a.attemptId);
         throw error;
@@ -380,7 +382,7 @@ function stores(db: Queryable): BulkMailerStores {
     },
     async save(a) {
       await db.query(
-        `INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        `INSERT INTO attempts (${ATTEMPT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (attempt_id) DO UPDATE SET finished_at = EXCLUDED.finished_at, outcome = EXCLUDED.outcome,
            detail = EXCLUDED.detail, provider_request_id = EXCLUDED.provider_request_id, email_reference = EXCLUDED.email_reference`,
         attemptParams(a),

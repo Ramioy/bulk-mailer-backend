@@ -126,6 +126,7 @@ export class ResendReceipt {
       kind: 'RESEND',
       to: recipient.email,
       ...(copyEnabled ? { copyAddress: this.deps.archiveCopyAddress } : {}),
+      ...(this.deps.emailProvider.redirectsTo ? { redirectedTo: this.deps.emailProvider.redirectsTo } : {}),
       startedAt: clock.now(),
     };
     assertTransition(current.state, 'SENDING');
@@ -150,7 +151,8 @@ export class ResendReceipt {
         ...current,
         state,
         errorType: resolution.errorType,
-        errorDetail: detail,
+        // B1 (D50): back to PENDING it shows no foreign error detail; the cause stays on the attempt and in history.
+        errorDetail: state === 'PENDING' ? undefined : detail,
         ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const, fileAvailable: false } : {}),
         updatedAt: now,
       };

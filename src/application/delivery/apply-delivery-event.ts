@@ -141,7 +141,14 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
   let receipt = await tx.receipts.get(attempt.sha256);
   if (!receipt) return 'RECORDED';
   const attempts = await tx.attempts.listByReceipt(receipt.sha256);
+  const evidence = event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs';
   if (attempts.at(-1)?.attemptId !== attempt.attemptId) {
+    // D50: an older send believed not sent went out, and the latest one was not found at the provider either: the
+    // receipt was sent (by the older attempt). Without this it stayed ready and would be sent a third time.
+    if (awaitsLateEvidence(receipt.state, receipt.errorType) && provesSending(event) && attempt.outcome !== 'ACCEPTED') {
+      receipt = await confirmLateSent(tx, newId, now, receipt, attempt, evidence, event.state);
+      return applyDelivery(tx, newId, now, receipt, attempt, event);
+    }
     await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'DELIVERY_EVENT_IGNORED', detail: `${event.state} of an older attempt ${attempt.attemptId}` });
     await detectDuplicateSend(tx, newId, now, receipt, attempts, attempt, event);
     return 'RECORDED';
@@ -155,7 +162,6 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
     });
   }
 
-  const evidence = event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs';
   if (receipt.state === 'SENDING') return 'PENDING_SEND';
   if (receipt.state === 'UNCERTAIN') {
     receipt = await confirmSent(tx, newId, now, receipt, attempt, evidence);
@@ -165,7 +171,11 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
     await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'DELIVERY_EVENT_IGNORED', detail: `${event.state} while ${receipt.state}` });
     return 'RECORDED';
   }
+  return applyDelivery(tx, newId, now, receipt, attempt, event);
+}
 
+/** The delivery state the event reports, on a SENT receipt (the delivery state only advances). */
+async function applyDelivery(tx: BulkMailerStores, newId: () => string, now: Date, receipt: Receipt, attempt: Attempt, event: DeliveryEvent): Promise<ApplyResult> {
   const outcome = applyDeliveryEvent(receipt.deliveryState ?? 'UNCONFIRMED', event.state);
   if (outcome.kind === 'ANOMALY') {
     await tx.receipts.appendHistory({ sha256: receipt.sha256, at: now, event: 'DELIVERY_ANOMALY', detail: `${event.state} after ${outcome.state}` });
@@ -179,7 +189,8 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
     domainEvent(newId, 'DELIVERY_UPDATED', now, { sha256: receipt.sha256, attemptId: attempt.attemptId, deliveryState: outcome.state, source: event.source }),
   );
   if (outcome.state === 'HARD_BOUNCE' || outcome.state === 'COMPLAINT') {
-    if (!(await tx.suppressions.get(attempt.to))) {
+    // B6 (D50): outside production the bounce is the test mailbox's, not the real address's: alert, do not suppress.
+    if (!attempt.redirectedTo && !(await tx.suppressions.get(attempt.to))) {
       await tx.suppressions.save({ email: attempt.to, reason: outcome.state, since: now, attemptId: attempt.attemptId });
       await tx.outbox.add(domainEvent(newId, 'ADDRESS_SUPPRESSED', now, { email: attempt.to, reason: outcome.state, attemptId: attempt.attemptId }));
     }
@@ -187,7 +198,7 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
       alertId: newId(),
       type: outcome.state,
       subject: receipt.sha256,
-      detail: `${receipt.fileName}: ${attempt.to}${event.reason ? ` (${event.reason})` : ''}`,
+      detail: `${receipt.fileName}: ${attempt.to}${event.reason ? ` (${event.reason})` : ''}${attempt.redirectedTo ? `; sent to the test mailbox ${attempt.redirectedTo}, address not suppressed` : ''}`,
       raisedAt: now,
     });
   }
@@ -220,6 +231,9 @@ async function detectDuplicateSend(
   event: DeliveryEvent,
 ): Promise<void> {
   if (!provesSending(event) || older.outcome === 'ACCEPTED') return;
+  // D50: the receipt was confirmed SENT by this very attempt (late evidence while the latest one was not found): its
+  // further events are no duplicate.
+  if ((await tx.alerts.list({ type: 'LATE_SEND_EVIDENCE', subject: receipt.sha256, reference: older.attemptId, limit: 1 })).length > 0) return;
   if (receipt.state !== 'SENDING' && receipt.state !== 'SENT' && receipt.state !== 'UNCERTAIN') return;
   const index = attempts.findIndex((a) => a.attemptId === older.attemptId);
   if (index < 0 || attempts[index + 1]?.kind !== 'BATCH') return;

@@ -5,6 +5,8 @@ import { InMemoryReceiptFileStore } from '../../src/adapters/outbound/in-memory/
 import { BasicPdfInspector } from '../../src/adapters/outbound/pdf/basic-pdf-inspector';
 import type { ReceiptDependencies } from '../../src/application/receipts/receipt-dependencies';
 import { SerialExecutor } from '../../src/application/shared/serial-executor';
+import { InMemoryJobQueue } from '../../src/adapters/outbound/in-memory/in-memory-job-queue';
+import { DeleteReceiptFile, fileKeyOf } from '../../src/application/files/delete-receipt-file';
 
 /** A minimal valid PDF whose content (and hash) depends on `seed`. */
 export function pdfBytes(seed: string): Uint8Array {
@@ -20,6 +22,8 @@ export interface ReceiptFixture {
   readonly tayrona: FakeContractSource;
   readonly sap: FakeContractSource;
   readonly clock: FixedClock;
+  /** Runs the queued file deletions (D41, D50), as the file lane would. Returns how many ran. */
+  runFileJobs(): Promise<number>;
 }
 
 let ids = 0;
@@ -46,5 +50,16 @@ export function receiptFixture(): ReceiptFixture {
     timeZone: 'America/Bogota',
     fileNameOptions: {},
   };
-  return { deps, repository, files, tayrona, sap, clock };
+  const jobs = new InMemoryJobQueue(() => clock.now(), () => repository.jobTable());
+  const deleteFile = new DeleteReceiptFile({ repository, fileStore: files, serial: deps.serial });
+  const runFileJobs = async () => {
+    let ran = 0;
+    for (let job = await jobs.claimNext(clock.now(), ['DELETE_RECEIPT_FILE']); job; job = await jobs.claimNext(clock.now(), ['DELETE_RECEIPT_FILE'])) {
+      await deleteFile.execute(fileKeyOf(job.payload));
+      await jobs.complete(job.jobId);
+      ran += 1;
+    }
+    return ran;
+  };
+  return { deps, repository, files, tayrona, sap, clock, runFileJobs };
 }

@@ -7,6 +7,7 @@ import type { Sha256 } from '../../domain/receipt/sha256';
 import type { FileErrorType } from '../../domain/shared/error-types';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
+import { retireFile } from '../files/retire-file';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { lookupRecipient, publishNextManifest, refuseBatchCommand, withSuppression, type BatchCommandError, type ReceiptDependencies } from './receipt-dependencies';
 
@@ -48,7 +49,7 @@ export class ResolveDuplicateConflict {
 
     // Phase (b).
     return this.deps.serial.run(async () => {
-      const outcome = await repository.transaction(async (tx): Promise<Result<{ resolved: Receipt; from: Receipt }, ResolveConflictError>> => {
+      const outcome = await repository.transaction(async (tx): Promise<Result<{ resolved: Receipt }, ResolveConflictError>> => {
         const checked = await this.check(tx, sha256, fileName);
         if (!checked.ok) return checked;
         const { receipt, chosen, parsed } = checked.value;
@@ -76,6 +77,8 @@ export class ResolveDuplicateConflict {
         }
         const names = [receipt.fileName, ...(receipt.conflictingNames ?? []).map((n) => n.fileName)].join(' | ');
         await tx.receipts.save(resolved);
+        // D50: the copy left in the old batch is deleted by a job queued here (D41), not after the commit.
+        if (moved) await retireFile(tx, { period: receipt.period, block: receipt.block, sha256, fileAvailable: true }, now);
         await tx.receipts.appendHistory({ sha256, at: now, event: 'DUPLICATE_CONFLICT_RESOLVED', detail: `${fileName}${moved ? ` (moved from ${receipt.period.toString()}/${receipt.block})` : ''}` });
         // Both batch rows are read inside this transaction by publishNextManifest.
         if (moved) await publishNextManifest(tx, receipt.period, receipt.block, now);
@@ -100,11 +103,10 @@ export class ResolveDuplicateConflict {
             by: operator,
           }),
         );
-        return ok({ resolved, from: receipt });
+        return ok({ resolved });
       });
       if (!outcome.ok) return outcome;
-      const { resolved, from } = outcome.value;
-      if (!(resolved.period.equals(from.period) && resolved.block === from.block)) await fileStore.delete({ period: from.period, block: from.block, sha256 });
+      const { resolved } = outcome.value;
       return ok({
         sha256,
         fileName,

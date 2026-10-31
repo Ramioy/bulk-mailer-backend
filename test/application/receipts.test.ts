@@ -205,6 +205,8 @@ describe('receipt use cases', () => {
     it('removes an unsent receipt, deletes its file and publishes a new manifest', async () => {
       const sha256 = (await uploadOk([altos, palmas])).results[0]?.sha256 as never;
       expect(await remove.execute(OP, sha256)).toEqual({ ok: true, value: { manifestVersion: 2 } });
+      // D50: deleted by the job queued with the removal (D41).
+      expect(await fx.runFileJobs()).toBe(1);
       expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256 })).toBeUndefined();
       const view = await summary.execute(OP, OCT_2026, 'CASH');
       expect(view.readyToSend).toHaveLength(1);
@@ -331,7 +333,10 @@ describe('same content under different names (D31)', () => {
     expect(await entries('CASH')).toEqual([]);
     expect((await entries('ANGLO')).map((e) => e.fileName)).toEqual([forAnglo.name]);
     expect(await fx.files.read({ period: OCT_2026, block: 'ANGLO', sha256: sha })).toBeDefined();
+    // D50: the copy in the old batch is deleted by the job queued with the resolution (D41).
+    expect(await fx.runFileJobs()).toBe(1);
     expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: sha })).toBeUndefined();
+    expect(await fx.files.read({ period: OCT_2026, block: 'ANGLO', sha256: sha })).toBeDefined();
     expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'DUPLICATE_CONFLICT_RESOLVED', subject: sha, newValue: `${forAnglo.name} (2026-10/ANGLO)`, note: 'El negocio confirmó que es de Anglo Torre' });
     expect(await resolve.execute(OP, sha, forAnglo.name, 'otra vez')).toEqual({ ok: false, error: { code: 'RECEIPT_NOT_IN_CONFLICT' } });
   });

@@ -157,6 +157,7 @@ export class RunExecution {
       kind: 'BATCH',
       to: entry.email,
       copyAddress: execution.copyAddress,
+      ...(this.deps.emailProvider.redirectsTo ? { redirectedTo: this.deps.emailProvider.redirectsTo } : {}),
       startedAt: clock.now(),
     };
     inFlight.attempt = attempt;
@@ -312,7 +313,8 @@ export class RunExecution {
         ...current,
         state,
         errorType,
-        errorDetail: detail,
+        // B1 (D50): back to PENDING (account error) it is ready again; the cause stays on the attempt and in history.
+        errorDetail: state === 'PENDING' ? undefined : detail,
         // D41: a SENT receipt no longer needs its file.
         ...(state === 'SENT' ? { deliveryState: 'UNCONFIRMED' as const, fileAvailable: false } : {}),
         updatedAt: now,
