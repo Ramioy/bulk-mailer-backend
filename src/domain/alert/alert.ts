@@ -12,6 +12,13 @@ export const AlertType = {
   DUPLICATE_CONFLICT: 'DUPLICATE_CONFLICT',
   /** The archive copy mailbox bounced; it does not affect the receipt. */
   COPY_BOUNCED: 'COPY_BOUNCED',
+  /** D34: a send failed as not found at the provider did go out after all; the receipt is now SENT. */
+  LATE_SEND_EVIDENCE: 'LATE_SEND_EVIDENCE',
+  /**
+   * D34: an older send believed not sent did go out, and a later attempt was sent too: the client probably received
+   * the email twice.
+   */
+  DUPLICATE_SEND_DETECTED: 'DUPLICATE_SEND_DETECTED',
 } as const;
 export type AlertType = (typeof AlertType)[keyof typeof AlertType];
 

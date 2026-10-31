@@ -6,7 +6,8 @@ import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import type { ProviderSendStatus } from '../../ports/send-lookup';
 import { raiseAlert } from '../alerts/raise-alert';
 import { domainEvent } from '../events/domain-events';
-import { applyIncomingEvent, applyPendingEvents, confirmSent, latestAttempt } from './apply-delivery-event';
+import { awaitsLateEvidence } from '../../domain/receipt/receipt-state';
+import { applyIncomingEvent, applyPendingEvents, confirmLateSent, confirmSent, latestAttempt } from './apply-delivery-event';
 import type { DeliveryDependencies } from './delivery-dependencies';
 
 type CheckDependencies = Pick<DeliveryDependencies, 'repository' | 'sendLookup' | 'clock' | 'newId' | 'serial'>;
@@ -21,6 +22,19 @@ const DELIVERY_BY_STATUS: Partial<Record<ProviderSendStatus, Exclude<DeliverySta
 /** Receipts whose delivery can still change: worth looking up. */
 export function isPendingDelivery(receipt: Receipt): boolean {
   return receipt.state === 'UNCERTAIN' || (receipt.state === 'SENT' && (receipt.deliveryState === 'UNCONFIRMED' || receipt.deliveryState === 'SOFT_BOUNCE'));
+}
+
+/**
+ * Receipts worth looking up for `options`: pending delivery always; with `lateEvidence` (manual verification only, D34)
+ * also a send failed as not found, in case it did go out after all.
+ */
+export function isCheckable(receipt: Receipt, options: CheckOptions = {}): boolean {
+  return isPendingDelivery(receipt) || (options.lateEvidence === true && awaitsLateEvidence(receipt.state, receipt.errorType));
+}
+
+export interface CheckOptions {
+  /** D34: also look up a FAILED / NOT_FOUND_AT_PROVIDER receipt. Not for the automatic checks (no new schedule). */
+  readonly lateEvidence?: boolean;
 }
 
 export type CheckResult =
@@ -46,11 +60,11 @@ export interface CheckOutcome {
  * failed when `final` (the last scheduled lookup). The lookup runs outside the serial executor; the change inside it,
  * on the receipt as it is then.
  */
-export async function checkAttempt(deps: CheckDependencies, attemptId: string, final: boolean): Promise<CheckOutcome> {
+export async function checkAttempt(deps: CheckDependencies, attemptId: string, final: boolean, options: CheckOptions = {}): Promise<CheckOutcome> {
   const { repository, sendLookup, clock, newId, serial } = deps;
   const attempt = await repository.attempts.get(attemptId);
   const receipt = attempt && (await repository.receipts.get(attempt.sha256));
-  if (!attempt || !receipt || !isPendingDelivery(receipt)) return { result: 'NOT_APPLICABLE' };
+  if (!attempt || !receipt || !isCheckable(receipt, options)) return { result: 'NOT_APPLICABLE' };
   if ((await latestAttempt(repository, receipt))?.attemptId !== attemptId) return { result: 'NOT_APPLICABLE' };
 
   const found = await sendLookup.findByAttempt(attemptId, attempt.to);
@@ -60,7 +74,7 @@ export async function checkAttempt(deps: CheckDependencies, attemptId: string, f
       // Events recorded while the send was being recorded (D21) come first.
       await applyPendingEvents(tx, newId, now, attemptId);
       const current = await tx.receipts.get(attempt.sha256);
-      if (!current || !isPendingDelivery(current)) return { result: 'UPDATED' };
+      if (!current || !isCheckable(current, options)) return { result: 'UPDATED' };
 
       if (found.kind === 'UNAVAILABLE') {
         if (current.state === 'UNCERTAIN') await tx.receipts.appendHistory({ sha256: current.sha256, at: now, event: 'RECONCILIATION_UNAVAILABLE', detail: found.detail });
@@ -91,6 +105,10 @@ export async function checkAttempt(deps: CheckDependencies, attemptId: string, f
       }
       if (current.state === 'UNCERTAIN') {
         await confirmSent(tx, newId, now, current, withIds, 'provider logs');
+        return { result: 'UPDATED', providerStatus: status };
+      }
+      if (awaitsLateEvidence(current.state, current.errorType)) {
+        await confirmLateSent(tx, newId, now, current, withIds, 'provider logs', status);
         return { result: 'UPDATED', providerStatus: status };
       }
       return { result: 'NO_CHANGE', providerStatus: status };

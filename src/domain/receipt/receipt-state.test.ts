@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DomainError } from '../shared/domain-error';
-import { assertTransition, canResend, canTransition, ReceiptState, type ReceiptState as State } from './receipt-state';
+import { assertTransition, awaitsLateEvidence, canResend, canTransition, ReceiptState, type ReceiptState as State } from './receipt-state';
 
 const ALL = Object.values(ReceiptState);
 
@@ -15,6 +15,8 @@ const ALLOWED: ReadonlyArray<readonly [State, State]> = [
   ['PENDING', 'REMOVED'],
   ['FAILED', 'SENDING'],
   ['FAILED', 'REMOVED'],
+  // only with late provider evidence (D34, awaitsLateEvidence)
+  ['FAILED', 'SENT'],
   ['SENDING', 'SENT'],
   ['SENDING', 'FAILED'],
   ['SENDING', 'PENDING'],
@@ -50,5 +52,16 @@ describe('receipt send state', () => {
     expect(canResend('SENT', 'ACCEPTED')).toBe(false);
     expect(canResend('SENT', 'SOFT_BOUNCE')).toBe(false);
     expect(canResend('FAILED', 'HARD_BOUNCE')).toBe(false);
+  });
+});
+
+describe('late evidence (D34)', () => {
+  it('only a send failed as not found at the provider may become SENT', () => {
+    expect(awaitsLateEvidence('FAILED', 'NOT_FOUND_AT_PROVIDER')).toBe(true);
+    for (const errorType of ['PROVIDER_REJECTED', 'RECIPIENT_CHANGED', 'FILE_MODIFIED', 'SOURCE_UNAVAILABLE', 'INTERNAL_ERROR', undefined] as const) {
+      expect(awaitsLateEvidence('FAILED', errorType), `FAILED / ${String(errorType)}`).toBe(false);
+    }
+    expect(awaitsLateEvidence('UNCERTAIN', 'NOT_FOUND_AT_PROVIDER')).toBe(false);
+    expect(awaitsLateEvidence('PENDING', undefined)).toBe(false);
   });
 });

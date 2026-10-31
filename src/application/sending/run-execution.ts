@@ -147,8 +147,6 @@ export class RunExecution {
     signal?: AbortSignal,
   ): Promise<Step> {
     const { repository, fileStore, contractSources, emailProvider, clock, newId } = this.deps;
-    const receipt = (await repository.receipts.get(entry.sha256)) as Receipt;
-
     // The attempt is recorded before anything else, so every provider call is traceable (§9.1).
     const attempt: Attempt = {
       attemptId: newId(),
@@ -159,18 +157,24 @@ export class RunExecution {
       copyAddress: execution.copyAddress,
       startedAt: clock.now(),
     };
-    assertTransition(receipt.state, 'SENDING');
-    const sending: Receipt = { ...receipt, state: 'SENDING', attempts: receipt.attempts + 1, updatedAt: clock.now() };
     inFlight.attempt = attempt;
-    const started = await this.write(async (tx) => {
+    const started = await this.write(async (tx): Promise<Receipt | 'ABANDONED' | Receipt['state']> => {
       // Ended meanwhile by the operator's abort (D32): this run must not take another receipt.
-      if ((await tx.executions.get(execution.executionId))?.finishedAt) return false;
+      if ((await tx.executions.get(execution.executionId))?.finishedAt) return 'ABANDONED';
+      // Read here, not when the execution started: late evidence may have made it SENT meanwhile (D34). SENT → SENDING
+      // is a legal transition (manual Resend), so without this check it would be sent again.
+      const receipt = (await tx.receipts.get(entry.sha256)) as Receipt;
+      if (receipt.state !== 'PENDING' && receipt.state !== 'FAILED') return receipt.state;
+      assertTransition(receipt.state, 'SENDING');
+      const sending: Receipt = { ...receipt, state: 'SENDING', attempts: receipt.attempts + 1, updatedAt: clock.now() };
       await tx.attempts.insert(attempt);
       await tx.receipts.save(sending);
       await tx.receipts.appendHistory({ sha256: entry.sha256, at: clock.now(), event: 'SENDING', detail: `attempt ${attempt.attemptId}` });
-      return true;
+      return sending;
     });
-    if (!started) return { abandoned: true };
+    if (started === 'ABANDONED') return { abandoned: true };
+    if (typeof started === 'string') return this.skipNotReady(execution, entry, started, counters);
+    const sending = started;
 
     // Same hash as reviewed.
     const content = await fileStore.read({ period: execution.period, block: execution.block, sha256: entry.sha256 });
@@ -234,6 +238,15 @@ export class RunExecution {
       });
       await clock.sleep(decision.seconds * 1000, signal);
     }
+    return {};
+  }
+
+  /** D34: the receipt stopped being ready after the execution started (e.g. late evidence made it SENT): not sent. */
+  private async skipNotReady(execution: Execution, entry: ManifestEntry, state: Receipt['state'], counters: Counters): Promise<Step> {
+    const now = this.deps.clock.now();
+    await this.write((tx) => tx.receipts.appendHistory({ sha256: entry.sha256, at: now, event: 'SKIPPED', detail: `${state} when its turn came in execution ${execution.executionId}` }));
+    counters.record(state);
+    await this.progress.emit(execution.executionId, { type: 'RECEIPT_PROCESSED', sha256: entry.sha256, fileName: entry.fileName, state, counters: counters.snapshot() });
     return {};
   }
 
