@@ -574,6 +574,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     autoEvents: { delayMs: Number(process.env.MOCK_EVENT_DELAY_MS ?? '2000') },
   });
   const port = Number(process.env.PORT ?? '4002');
-  await app.listen({ port, host: '127.0.0.1' });
-  process.stdout.write(`ZeptoMail mock on http://127.0.0.1:${port}/v1.1\n`);
+  const host = process.env.HOST ?? '127.0.0.1';
+  await app.listen({ port, host });
+  process.stdout.write(`ZeptoMail mock on http://${host}:${port}/v1.1\n`);
 }
