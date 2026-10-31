@@ -30,8 +30,13 @@ describe('decideUpload (assumption A1)', () => {
     expect(decideUpload(existing(state), OCT, 'CASH')).toBe('DUPLICATE');
   });
 
-  it('discards the same content in another block or period, whatever its state', () => {
-    expect(decideUpload(existing('REMOVED'), OCT, 'ANGLO')).toBe('DUPLICATE');
-    expect(decideUpload(existing('INVALID'), Period.of(2026, 9), 'CASH')).toBe('DUPLICATE');
+  it('moves a receipt removed from another block or period (D8)', () => {
+    expect(decideUpload(existing('REMOVED'), OCT, 'ANGLO')).toBe('MOVE');
+    expect(decideUpload(existing('REMOVED'), Period.of(2026, 9), 'CASH')).toBe('MOVE');
+  });
+
+  it.each(['PENDING', 'INVALID', 'FAILED', 'SENT', 'UNCERTAIN'] as const)('discards %s content of another batch', (state) => {
+    expect(decideUpload(existing(state), OCT, 'ANGLO')).toBe('DUPLICATE');
+    expect(decideUpload(existing(state, { fileAvailable: false }), Period.of(2026, 9), 'CASH')).toBe('DUPLICATE');
   });
 });

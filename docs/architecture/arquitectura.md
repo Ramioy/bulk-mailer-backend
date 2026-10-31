@@ -216,6 +216,7 @@ stateDiagram-v2
     UNCONFIRMED --> SOFT_BOUNCE
     UNCONFIRMED --> ACCEPTED
     UNCONFIRMED --> HARD_BOUNCE
+    UNCONFIRMED --> COMPLAINT: complaint without a prior acceptance event
     SOFT_BOUNCE --> ACCEPTED: provider retried successfully
     SOFT_BOUNCE --> HARD_BOUNCE: provider retries exhausted
     ACCEPTED --> COMPLAINT: recipient marked it as spam
@@ -279,7 +280,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 
 | # | Supuesto |
 |---|---|
-| A1 | **Regla de repetidos.** Un hash que ya existe en cualquier lote o periodo se descarta como `DUPLICATE`, **excepto** si el registro existente es del mismo lote y está `INVALID`, `REMOVED` o `FAILED` sin archivo: en ese caso la carga reevalúa ese mismo registro (sirve para renombrar y para volver a subir tras la purga). Nunca se crea un segundo registro |
+| A1 | **Regla de repetidos.** Un hash que ya existe en cualquier lote o periodo se descarta como `DUPLICATE`, **excepto** si el registro existente es del mismo lote y está `INVALID`, `REMOVED` o `FAILED` sin archivo: en ese caso la carga reevalúa ese mismo registro (sirve para renombrar y para volver a subir tras la purga). Si el registro existente está `REMOVED` en **otro** lote o periodo, ese registro **se mueve** al lote nuevo y se reevalúa (D8). Nunca se crea un segundo registro |
 | A2 | **Purga y reintentos.** Con los archivos borrados al completar el lote, reintentar un `FAILED` o hacer *Resend* tras un `HARD_BOUNCE` obliga a volver a subir el mismo PDF (regla A1). Hasta entonces el soporte muestra `FILE_NOT_AVAILABLE` y no entra al manifiesto |
 | A3 | **Retirar soporte.** El operador puede retirar un soporte no enviado desde la interfaz (`DELETE`); sin esto no hay forma de corregir un nombre equivocado |
 | A4 | **Destinatarios.** Se resuelven al cargar y se vuelven a consultar al enviar. Si cambió el correo, el soporte queda `FAILED / RECIPIENT_CHANGED`; para reintentarlo hace falta refrescar el destinatario (acción *Refresh recipients* del lote, que genera nueva versión de manifiesto) |

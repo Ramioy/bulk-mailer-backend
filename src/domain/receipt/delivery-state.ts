@@ -8,7 +8,8 @@ export const DeliveryState = {
 export type DeliveryState = (typeof DeliveryState)[keyof typeof DeliveryState];
 
 const NEXT: Readonly<Record<DeliveryState, readonly DeliveryState[]>> = {
-  UNCONFIRMED: ['SOFT_BOUNCE', 'ACCEPTED', 'HARD_BOUNCE'],
+  // a complaint implies the message arrived, even if the acceptance event was not received (P5)
+  UNCONFIRMED: ['SOFT_BOUNCE', 'ACCEPTED', 'HARD_BOUNCE', 'COMPLAINT'],
   SOFT_BOUNCE: ['ACCEPTED', 'HARD_BOUNCE'],
   ACCEPTED: ['COMPLAINT'],
   HARD_BOUNCE: [],

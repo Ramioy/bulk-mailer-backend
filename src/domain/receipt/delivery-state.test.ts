@@ -10,6 +10,7 @@ describe('applyDeliveryEvent', () => {
     ['SOFT_BOUNCE', 'ACCEPTED'],
     ['SOFT_BOUNCE', 'HARD_BOUNCE'],
     ['ACCEPTED', 'COMPLAINT'],
+    ['UNCONFIRMED', 'COMPLAINT'],
   ] as const)('advances %s → %s', (current, incoming) => {
     expect(applyDeliveryEvent(current, incoming)).toEqual({ kind: 'ADVANCED', state: incoming });
   });
@@ -27,7 +28,7 @@ describe('applyDeliveryEvent', () => {
     expect(applyDeliveryEvent('HARD_BOUNCE', 'ACCEPTED')).toEqual({ kind: 'ANOMALY', state: 'HARD_BOUNCE' });
   });
 
-  it('treats a complaint before any acceptance as an anomaly (not in the diagram)', () => {
-    expect(applyDeliveryEvent('UNCONFIRMED', 'COMPLAINT')).toEqual({ kind: 'ANOMALY', state: 'UNCONFIRMED' });
+  it('ignores a late acceptance after a complaint', () => {
+    expect(applyDeliveryEvent('COMPLAINT', 'ACCEPTED')).toEqual({ kind: 'IGNORED', state: 'COMPLAINT' });
   });
 });
