@@ -7,6 +7,7 @@ import type { EmailProvider } from '../../ports/email-provider';
 import type { JobQueue } from '../../ports/job-queue';
 import type { ProgressNotifier } from '../../ports/progress-notifier';
 import type { ReceiptFileStore } from '../../ports/receipt-file-store';
+import type { SendLookup } from '../../ports/send-lookup';
 import type { SerialExecutor } from '../shared/serial-executor';
 
 export interface ExecutionDependencies {
@@ -26,4 +27,16 @@ export interface ExecutionDependencies {
   readonly emailTemplate: EmailTemplate;
   /** Archive copy (bcc) address; required only while the archive copy is enabled. */
   readonly archiveCopyAddress?: string;
+  /** Simulation branch: wait for the delivery result of each accepted send before the next one. Off when absent. */
+  readonly deliveryWait?: DeliveryWaitPolicy;
+}
+
+export interface DeliveryWaitPolicy {
+  /** After this many seconds without a result the send stays UNCONFIRMED and the batch goes on (D21 follows it). */
+  readonly maxSeconds: number;
+  /** The provider logs are looked up every this many seconds while waiting. */
+  readonly lookupEverySeconds: number;
+  /** How often the receipt is read while waiting. */
+  readonly pollMs: number;
+  readonly sendLookup: SendLookup;
 }

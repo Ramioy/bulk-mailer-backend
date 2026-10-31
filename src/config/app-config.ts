@@ -58,6 +58,10 @@ export interface AppConfig {
   readonly redirectAllEmailTo?: string;
   /** Pause between two sends; default 1000 ms. */
   readonly sendPauseMs: number;
+  /** Simulation branch: wait for the delivery result of each accepted send before the next one (SEND_WAIT_FOR_DELIVERY). */
+  readonly sendWaitForDelivery: boolean;
+  readonly deliveryWaitMaxSeconds: number;
+  readonly deliveryWaitLookupSeconds: number;
   /** Growing wait after uncertain responses: base (30 s) and ceiling for Retry-After (600 s). */
   readonly incidentBaseWaitSeconds: number;
   readonly incidentMaxWaitSeconds: number;
@@ -148,6 +152,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const deliveryCheckIntervalSeconds = positiveInteger(env.DELIVERY_CHECK_INTERVAL_SECONDS ?? '60', 'DELIVERY_CHECK_INTERVAL_SECONDS', problems);
   const deliveryCheckTailMinutes = nonNegativeInteger(env.DELIVERY_CHECK_TAIL_MINUTES ?? '30', 'DELIVERY_CHECK_TAIL_MINUTES', problems);
   const sendPauseMs = nonNegativeInteger(env.SEND_PAUSE_MS ?? '1000', 'SEND_PAUSE_MS', problems);
+  const waitForDelivery = env.SEND_WAIT_FOR_DELIVERY ?? 'false';
+  if (waitForDelivery !== 'true' && waitForDelivery !== 'false') problems.push('SEND_WAIT_FOR_DELIVERY must be true or false');
+  const deliveryWaitMaxSeconds = positiveInteger(env.DELIVERY_WAIT_MAX_SECONDS ?? '120', 'DELIVERY_WAIT_MAX_SECONDS', problems);
+  const deliveryWaitLookupSeconds = positiveInteger(env.DELIVERY_WAIT_LOOKUP_SECONDS ?? '30', 'DELIVERY_WAIT_LOOKUP_SECONDS', problems);
   const incidentBaseWaitSeconds = positiveInteger(env.INCIDENT_BASE_WAIT_SECONDS ?? '30', 'INCIDENT_BASE_WAIT_SECONDS', problems);
   const incidentMaxWaitSeconds = positiveInteger(env.INCIDENT_MAX_WAIT_SECONDS ?? '600', 'INCIDENT_MAX_WAIT_SECONDS', problems);
   const archiveCopyAddress = env.ARCHIVE_COPY_ADDRESS ?? '';
@@ -199,6 +207,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     deliveryCheckIntervalSeconds,
     deliveryCheckTailMinutes,
     sendPauseMs,
+    sendWaitForDelivery: waitForDelivery === 'true',
+    deliveryWaitMaxSeconds,
+    deliveryWaitLookupSeconds,
     incidentBaseWaitSeconds,
     incidentMaxWaitSeconds,
     ...(archiveCopyAddress === '' ? {} : { archiveCopyAddress }),

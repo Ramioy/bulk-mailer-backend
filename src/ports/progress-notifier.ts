@@ -29,6 +29,15 @@ export type ProgressEvent =
       readonly consecutiveIncidents: number;
       readonly nextSendAt: string;
     }
+  /** Simulation branch: the batch waits for the delivery result of an accepted send before the next one. */
+  | { readonly type: 'WAITING_DELIVERY'; readonly sha256: Sha256; readonly fileName: string; readonly maxSeconds: number }
+  | {
+      readonly type: 'DELIVERY_RESOLVED';
+      readonly sha256: Sha256;
+      /** First delivery result, `PROCESS_FAILED` from the logs, or `TIMEOUT` when the maximum wait ran out. */
+      readonly result: string;
+      readonly seconds: number;
+    }
   | {
       readonly type: 'FINISHED';
       readonly batchState: Extract<BatchState, 'COMPLETED' | 'STOPPED'>;

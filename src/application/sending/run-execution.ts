@@ -13,6 +13,7 @@ import { resolveSendOutcome, type SendOutcome } from '../../domain/sending/send-
 import { BatchStopReason, SendErrorType, type ReceiptErrorType } from '../../domain/shared/error-types';
 import { raiseAlert } from '../alerts/raise-alert';
 import { applyPendingEvents } from '../delivery/apply-delivery-event';
+import { checkAttempt } from '../delivery/reconciliation';
 import { domainEvent } from '../events/domain-events';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import type { DomainEventType } from '../../ports/event-bus';
@@ -125,6 +126,7 @@ export class RunExecution {
     const resolution = resolveSendOutcome(outcome);
     await this.recordOutcome(execution, sending, attempt, outcome, counters, resolution.receiptState, resolution.errorType);
     if (resolution.stopBatch) return { stop: resolution.stopBatch };
+    if (resolution.receiptState === 'SENT' && this.deps.deliveryWait) await this.waitForDelivery(execution, entry, attempt, this.deps.deliveryWait);
 
     const decision = providerIncidents.register(outcome);
     if (decision.action === 'STOP') return { stop: decision.reason };
@@ -141,6 +143,39 @@ export class RunExecution {
       await clock.sleep(decision.seconds * 1000);
     }
     return {};
+  }
+
+  /**
+   * Simulation branch: the next send starts once this one has its first delivery result (delivered, soft or hard
+   * bounce, complaint, or process failed in the logs), or after `maxSeconds`. The wait runs outside the serial
+   * executor, so the delivery lane applies the webhook meanwhile (D21).
+   */
+  private async waitForDelivery(execution: Execution, entry: ManifestEntry, attempt: Attempt, policy: NonNullable<ExecutionDependencies['deliveryWait']>): Promise<void> {
+    const { repository, clock, newId, serial } = this.deps;
+    const started = clock.now().getTime();
+    const elapsed = () => (clock.now().getTime() - started) / 1000;
+    await this.progress.emit(execution.executionId, { type: 'WAITING_DELIVERY', sha256: entry.sha256, fileName: entry.fileName, maxSeconds: policy.maxSeconds });
+    const resolved = async (result: string) => {
+      await this.progress.emit(execution.executionId, { type: 'DELIVERY_RESOLVED', sha256: entry.sha256, result, seconds: Math.round(elapsed()) });
+    };
+    let nextLookup = policy.lookupEverySeconds;
+    for (;;) {
+      const receipt = await repository.receipts.get(entry.sha256);
+      if (receipt?.deliveryState && receipt.deliveryState !== 'UNCONFIRMED') return resolved(receipt.deliveryState);
+      if (elapsed() >= nextLookup) {
+        nextLookup += policy.lookupEverySeconds;
+        const check = await checkAttempt({ repository, sendLookup: policy.sendLookup, clock, newId, serial }, attempt.attemptId, false);
+        if (check.providerStatus === 'PROCESS_FAILED') return resolved('PROCESS_FAILED');
+        if (check.result === 'UPDATED') continue;
+      }
+      if (elapsed() >= policy.maxSeconds) {
+        await this.write(async (tx) => {
+          await tx.receipts.appendHistory({ sha256: entry.sha256, at: clock.now(), event: 'DELIVERY_WAIT_TIMEOUT', detail: `no delivery result after ${policy.maxSeconds} s` });
+        });
+        return resolved('TIMEOUT');
+      }
+      await clock.sleep(policy.pollMs);
+    }
   }
 
   /**

@@ -48,6 +48,9 @@ export class AppModule {
       incidentPolicy: { baseWaitSeconds: config.incidentBaseWaitSeconds, maxWaitSeconds: config.incidentMaxWaitSeconds, stopAfter: 3 },
       archiveCopyAddress: config.archiveCopyAddress,
       emailTemplate,
+      ...(config.sendWaitForDelivery
+        ? { deliveryWait: { maxSeconds: config.deliveryWaitMaxSeconds, lookupEverySeconds: config.deliveryWaitLookupSeconds, pollMs: 500, sendLookup: adapters.sendLookup } }
+        : {}),
     });
     const delivery = deliveryUseCases({
       repository: adapters.repository,
