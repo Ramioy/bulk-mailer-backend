@@ -210,10 +210,12 @@ stateDiagram-v2
     SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented non-400 response, crash, unexpected exception after calling the provider, operator abort (D32)
     UNCERTAIN --> SENT: provider confirms (logs or webhook)
     UNCERTAIN --> FAILED: not found at the provider
+    FAILED --> SENT: late provider evidence, only for NOT_FOUND_AT_PROVIDER (D34)
     SENT --> SENDING: Resend (manual, after HARD_BOUNCE, COMPLAINT or PROCESS_FAILED, new email)
 ```
 
 - `SENT` and `UNCERTAIN` never go to `REMOVED`.
+- `FAILED → SENT` exists only for late evidence (webhook or logs) of the latest attempt of a receipt failed as `NOT_FOUND_AT_PROVIDER`; it raises `LATE_SEND_EVIDENCE` (D34). Any other `FAILED` is a certainty of no send and does not change.
 - A failed resend ends in `FAILED` and enters the next normal manifest (D7c).
 
 ## 6. Estado de entrega (solo `SENT`)
@@ -283,6 +285,8 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | `INTERRUMPIDO` | `INTERRUPTED` | Batch |
 | `AUDITORIA_INMUTABLE` | `AUDIT_IMMUTABLE` | Audit |
 | `WEBHOOKS_NO_RECIBIDOS` | `WEBHOOKS_NOT_RECEIVED` | Alert |
+| — (D34) | `LATE_SEND_EVIDENCE` (a send failed as not found did go out; now SENT) | Alert |
+| — (D34) | `DUPLICATE_SEND_DETECTED` (an older send believed not sent went out, and a later one too) | Alert |
 | `AGREGADO` / `EXCLUIDO` | `ADDED` / `REMOVED` | `409` difference |
 | `RENOMBRADO` | `RENAMED` (same hash re-uploaded with another name) | `409` difference |
 | `DESTINATARIO_CAMBIO` (409) | `RECIPIENT_CHANGED` (e.g. after *Refresh recipients*) | `409` difference |

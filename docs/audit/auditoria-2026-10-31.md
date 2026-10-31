@@ -40,6 +40,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
 
 ### A1 — La evidencia tardía de que un correo sí salió se ignora si el soporte ya quedó `FAILED` → reenvío duplicado
 
+**Estado:** corregido en `audita` (D34, commit `9afc980`).
+
 - **Clasificación:** núcleo (máquina de estados del soporte y `applyToReceipt`).
 - **Evidencia:** `src/application/delivery/apply-delivery-event.ts:107` — todo evento de entrega del último intento sobre un soporte que no está `SENT`, `SENDING` ni `UNCERTAIN` se anota como `DELIVERY_EVENT_IGNORED` y no hace nada más. `src/domain/receipt/receipt-state.ts` no tiene transición `FAILED → SENT`.
 - **Escenario:** un envío queda `UNCERTAIN` (timeout). A los 60 min la conciliación no lo encuentra en los logs (`EL_404`) y lo marca `FAILED / NOT_FOUND_AT_PROVIDER`. A las 2 h llega el webhook *Delivered* (o aparece en los logs) con ese `client_reference`. El soporte sigue `FAILED`, con destinatario y archivo, **listo en el manifiesto**; la siguiente ejecución lo envía otra vez.
@@ -77,6 +79,8 @@ Clasificación según la regla 2: **núcleo** (regla de negocio), **adaptador** 
   3. Prueba de arquitectura nueva: ningún método de los puertos `ContractSource`, `EmailProvider`, `SendLookup`, `FileInspector` se invoca dentro de un `serial.run` (se puede verificar en pruebas con un `SerialExecutor` instrumentado que falle si una dependencia externa simulada se llama mientras está ocupado).
 
 ### A4 — El adaptador de logs responde `NOT_FOUND` ante respuestas con forma inesperada → `FAILED` → duplicado
+
+**Estado:** corregido en `audita` (D35, commit `14c2216`).
 
 - **Clasificación:** adaptador de salida (`ZeptoMailSendLookup`), con efecto en el núcleo.
 - **Evidencia:** `src/adapters/outbound/zeptomail/zeptomail-send-lookup.ts:60-83`. Si la lista trae entradas pero ninguna coincide con `to.toLowerCase() === recipient` (porque `to` venga como `"Nombre <correo>"`, como objeto `{ email_address: { address } }` —el mismo formato que usa el envío—, o como arreglo), o si ninguna trae `email_reference` como texto, el resultado es **`NOT_FOUND`**, no `UNAVAILABLE`. El comentario dice "never resolves a send by guessing", pero **sí falla adivinando**. En la última conciliación (`reconciliation.ts:70-72`) `NOT_FOUND` + `final` = `FAILED / NOT_FOUND_AT_PROVIDER` y el soporte vuelve al manifiesto.

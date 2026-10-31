@@ -221,7 +221,7 @@ Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADD
 
 ### Por validar con la cuenta real (se suma a §12.7)
 
-JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones.
+JSON real de cada evento (en especial *Delivered* y el campo del destinatario), nombre del parámetro del formulario, valores de `status` del API de logs, coincidencia de `client_reference`, servidor OAuth del centro de datos y esquema del encabezado (`Zoho-oauthtoken`), política de reintentos de los webhooks y existencia de una API de supresiones. Agregado por D35: **forma exacta del campo `to`** en `GET /v1.1/email` y en el detalle (texto, `Nombre <dirección>`, objeto o lista) y **paginación de `GET /v1.1/email`** (tamaño de página por defecto, parámetros `limit`/`offset` y si la respuesta indica que hay más páginas, y con qué campo).
 
 ## Webhook, seguimiento por minuto y verificación manual (2026-10-31)
 
@@ -355,3 +355,41 @@ Hallazgos A2 y M9 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la rama
 - **25 s de espera al apagar.** Cabe en el periodo de gracia por defecto de Kubernetes y ECS (30 s) con margen para cerrar HTTP y la BD. **Docker da solo 10 s por defecto**: hay que configurar `stop_grace_period: 40s` (o `docker stop -t 40`) en el despliegue del paso 12. Contrapartida aceptada: el envío a ZeptoMail tiene *timeout* de 30 s (`ZEPTOMAIL_TIMEOUT_MS`); un envío que tarde más de 25 s no se espera y su soporte queda `SENDING` hasta la recuperación al reiniciar, que lo pasa a `UNCERTAIN` (nunca se reenvía a ciegas, C2). Quien prefiera esperar siempre el envío completo puede fijar `SHUTDOWN_TIMEOUT_SECONDS=35` con una gracia de 45 s.
 - **El soporte liberado por una excepción no genera evento `RECEIPT_PROCESSED`**: se cuenta en el `FINISHED`, para que nada más pueda fallar antes de cerrar la ejecución.
 - **Sin prueba nueva contra PostgreSQL:** los cambios usan operaciones de almacén ya cubiertas por las pruebas de contrato (`tx.executions.get`, `tx.attempts.get`, `tx.receipts.get`); el aborto y la detención se prueban con el repositorio en memoria, que también revierte la transacción ante un error.
+
+## Evidencia tardía y lectura de los logs: auditoría, bloque 2 (2026-10-31)
+
+Hallazgos A1 y A4 de `docs/audit/auditoria-2026-10-31.md`, corregidos en la rama `audita`. Los dos protegen la garantía principal: un contenido no se envía dos veces (§9.1).
+
+| # | Decisión |
+|---|---|
+| D34 | ✅ **(A1) La prueba tardía de que un correo sí salió no se ignora.** Un evento de entrega (webhook o logs) del **último intento** de un soporte `FAILED / NOT_FOUND_AT_PROVIDER` (la última conciliación no lo encontró, o el operador lo resolvió como no enviado) lo pasa a `SENT`, con el estado de entrega que diga el evento según la máquina normal desde `UNCONFIRMED` (un rebote duro o una queja siguen suprimiendo la dirección y alertando), historial `SENT confirmed late by <delivery webhook|provider logs> (attempt …)`, evento `RECEIPT_RESOLVED` (`state: SENT`, `by`, `late: true`) y la alerta nueva **`LATE_SEND_EVIDENCE`**. Es la única transición `FAILED → SENT` y la aplicación comprueba la condición antes de hacerla (`awaitsLateEvidence`). Si la prueba es de un **intento anterior** que se creía no enviado y otro intento posterior tiene el soporte `SENDING`, `SENT` o `UNCERTAIN`, el estado no cambia pero se genera la alerta nueva **`DUPLICATE_SEND_DETECTED`** (el cliente probablemente recibió dos correos), una sola vez por intento. La verificación manual (D22) también consulta los soportes `FAILED / NOT_FOUND_AT_PROVIDER`; la conciliación automática no (sería un calendario nuevo) |
+| D35 | ✅ **(A4) La consulta de logs solo responde "no encontrado" cuando ZeptoMail lo dice.** `NOT_FOUND` solo ante `EL_404` o una lista vacía (y cuando cada entrada del destinatario se confirma como **otro** envío). Una lista que no se puede leer (campo `to` ilegible o de otro destinatario, sin `email_reference`, detalle `404`, detalle sin `client_reference`) es `UNAVAILABLE` con el motivo, así que el soporte sigue `UNCERTAIN` y visible en lugar de fallar y reenviarse. El campo `to` se lee en todas las formas que usa ZeptoMail. Una lista que indica más páginas es `UNAVAILABLE` en lugar de adivinar |
+
+### Cómo quedó implementado
+
+- **Dominio** (`receipt-state.ts`): `FAILED` admite `SENT`, documentado como exclusivo de la evidencia tardía, y `awaitsLateEvidence(state, errorType)` (`FAILED` con `NOT_FOUND_AT_PROVIDER`) dice cuándo aplica. `alert.ts`: `LATE_SEND_EVIDENCE` y `DUPLICATE_SEND_DETECTED`.
+- **`applyToReceipt`** (`apply-delivery-event.ts`): un soporte `UNCERTAIN` se confirma como antes; uno que `awaitsLateEvidence` se confirma tarde (`confirmLateSent`) y luego se aplica el estado de entrega del evento por el camino de siempre. Un evento `PROCESS_FAILED` no prueba que el correo saliera y no cambia nada. Todo dentro de la transacción y del `SerialExecutor` del que llama.
+- **Logs** (`checkAttempt` en `reconciliation.ts`): con la opción `lateEvidence` (solo la verificación manual) también se consultan esos soportes; `QUEUED`/`PROCESSED` los confirma tarde igual que a un `UNCERTAIN`; `DELIVERED`, rebotes y `PROCESS_FAILED` pasan por `applyIncomingEvent`. Los eventos ya registrados del intento (antes ignorados) se aplican al consultar.
+- **Doble aplicación**: la segunda prueba del mismo envío (el webhook y luego los logs, o al revés) encuentra el soporte ya `SENT` y sigue el camino normal: no hay segunda alerta. Los eventos repetidos se descartan por su id como antes.
+- **Intento anterior**: se considera "creído no enviado" si su resultado no fue `ACCEPTED` y el intento **siguiente** es de un lote (`BATCH`), porque una ejecución solo toma soportes `PENDING` o `FAILED`; tras un envío que sí salió solo puede seguir un *Resend* (`RESEND`, desde `SENT`). Así no se alerta por el intento original tras un rebote y reenvío, aunque ese intento hubiera sido `UNCERTAIN` y confirmado después. La alerta se genera una vez por intento anterior (se busca entre las alertas existentes).
+- **La ejecución en curso no reenvía** un soporte que la evidencia tardía dejó `SENT` después de que la ejecución empezó: al marcarlo `SENDING` lo relee dentro de la transacción y, si ya no está `PENDING` ni `FAILED`, lo salta (historial `SKIPPED`). Sin esto lo habría enviado otra vez, porque `SENT → SENDING` es una transición válida (*Resend*).
+- **`ZeptoMailSendLookup`**: la función pura `logRecipients` (`log-recipients.ts`) lee `to` como `"dirección"`, `"Nombre <dirección>"`, `{ email_address: { address } }`, `{ address }`, `{ email }` o una lista de ellos, normalizado (D27). Las entradas de otro destinatario (la copia) se ignoran; si ninguna es del destinatario, es `UNAVAILABLE`. El detalle `logs API: N entries for the reference, none usable: <motivos>` lista los motivos. La confirmación exacta por `client_reference` con la llamada de detalle se mantiene.
+- **Pruebas**: `test/application/late-evidence.test.ts` (incluye el escenario H1 de la auditoría como prueba real) y `test/adapters/zeptomail-send-lookup.test.ts` (cada forma de `to` y cada caso, con `fetch` inyectado). El simulador no cambió.
+
+### Alertas nuevas
+
+| Alerta | Sujeto | Detalle |
+|---|---|---|
+| `LATE_SEND_EVIDENCE` | SHA-256 del soporte | Archivo, intento y destinatario, cuándo se marcó `FAILED / NOT_FOUND_AT_PROVIDER`, qué llegó y de dónde (webhook o logs). Si entretanto se volvió a enviar, el cliente lo recibió dos veces |
+| `DUPLICATE_SEND_DETECTED` | SHA-256 del soporte | El intento anterior y su dirección (que sí salió, qué llegó y de dónde) y el intento posterior, su dirección y el estado del soporte |
+
+### Supuestos (informados al usuario)
+
+- **"Prueba de envío"** es cualquier evento de entrega salvo `PROCESS_FAILED` (D29: ZeptoMail no lo procesó, el correo no llegó). Un `FAILED / NOT_FOUND_AT_PROVIDER` que los logs muestran como *process failed* sigue `FAILED` y listo para la siguiente ejecución.
+- **Otros `FAILED` no cambian**: `PROVIDER_REJECTED`, `RECIPIENT_CHANGED`, `FILE_MODIFIED`, etc. son certezas de no envío; un evento sobre ellos se sigue anotando como `DELIVERY_EVENT_IGNORED`.
+- **No se reprograma la conciliación automática** de los `FAILED / NOT_FOUND_AT_PROVIDER`: solo los webhooks que lleguen y la verificación manual pueden corregirlos. Si el paso 12 mide que la demora de los logs supera los 60 min, convendría una consulta más tardía (calendario nuevo, por aprobar).
+- **"Ninguna entrada es del destinatario"** se trata como `UNAVAILABLE` aunque podría ser solo otro envío con una referencia parecida, porque también puede ser el nuestro con un `to` que no se supo leer.
+- **Entradas confirmadas como otro envío**: si todas las entradas del destinatario resultan, por la llamada de detalle, ser de otro `client_reference` (coincidencia parcial, §12.7), la respuesta sigue siendo `NOT_FOUND`: no es una forma inesperada sino una negativa comprobada.
+- **Paginación**: `has_more`/`hasMore` verdadero, `total`/`total_count`/`count` mayor que la página, o `next_offset`/`next`/`next_page` presentes, arriba o dentro de `info`/`page_info`, se toman como "hay más páginas". La API no lo documenta.
+- **Orden de los intentos**: el "intento anterior" y el "siguiente" salen de `listByReceipt` (orden por `started_at` y luego `attempt_id`). Dos intentos del mismo soporte con el mismo milisegundo de inicio no ocurren en la operación (median minutos), pero en PostgreSQL el desempate por un UUID aleatorio no reflejaría el orden real.
+
