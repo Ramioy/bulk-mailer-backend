@@ -25,10 +25,14 @@ export interface ManifestCandidate {
   readonly email: string | undefined;
   /** False once the file was purged and not uploaded again. */
   readonly fileAvailable: boolean;
+  /** D31: same content under other names, waiting for the operator's choice. */
+  readonly inConflict?: boolean;
 }
 
 export function isReadyToSend(candidate: ManifestCandidate): boolean {
-  return (candidate.state === 'PENDING' || candidate.state === 'FAILED') && candidate.email !== undefined && candidate.fileAvailable;
+  return (
+    (candidate.state === 'PENDING' || candidate.state === 'FAILED') && candidate.email !== undefined && candidate.fileAvailable && candidate.inConflict !== true
+  );
 }
 
 /** Builds the next manifest version from the batch receipts, ordered by file name for a stable review. */

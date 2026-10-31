@@ -51,6 +51,9 @@ const STATUS: Readonly<Record<string, new (body: object) => HttpException>> = {
   CONCEPT_ALREADY_EXISTS: ConflictException,
   INVALID_CONCEPT_KEY: UnprocessableEntityException,
   INVALID_CONCEPT_SUBJECT: UnprocessableEntityException,
+  RECEIPT_NOT_IN_CONFLICT: ConflictException,
+  NAME_NOT_IN_CONFLICT: UnprocessableEntityException,
+  CHOSEN_NAME_INVALID: UnprocessableEntityException,
 };
 
 /** Typed use-case errors → HTTP status with `{ error, ...details }` body. */

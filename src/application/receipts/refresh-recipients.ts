@@ -1,6 +1,6 @@
 import type { Block } from '../../domain/block/block';
 import type { Period } from '../../domain/period/period';
-import type { Receipt } from '../../domain/receipt/receipt';
+import { inConflict, type Receipt } from '../../domain/receipt/receipt';
 import { err, ok, type Result } from '../../domain/shared/result';
 import { domainEvent } from '../events/domain-events';
 import {
@@ -31,7 +31,9 @@ export class RefreshRecipients {
         const resolution = await resolve(receipt.contract);
         // A send error of a FAILED receipt stays visible unless a recipient error replaces it.
         const keptError = isRecipientError(receipt.errorType) ? undefined : receipt.errorType;
-        updated.push({ ...receipt, recipient: resolution.recipient, errorType: resolution.errorType ?? keptError, updatedAt: now });
+        // D31: a duplicate conflict stays the visible reason until the operator resolves it.
+        const errorType = inConflict(receipt) ? 'DUPLICATE_CONFLICT' : (resolution.errorType ?? keptError);
+        updated.push({ ...receipt, recipient: resolution.recipient, errorType, updatedAt: now });
       }
 
       const manifest = await repository.transaction(async (tx) => {

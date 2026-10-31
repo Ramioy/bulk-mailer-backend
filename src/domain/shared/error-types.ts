@@ -35,7 +35,13 @@ export const SendErrorType = {
 } as const;
 export type SendErrorType = (typeof SendErrorType)[keyof typeof SendErrorType];
 
-export type ReceiptErrorType = FileErrorType | RecipientErrorType | SendErrorType;
+/** D31: the same content arrived under different names; nothing is sent until the operator chooses. */
+export const ConflictErrorType = {
+  DUPLICATE_CONFLICT: 'DUPLICATE_CONFLICT',
+} as const;
+export type ConflictErrorType = (typeof ConflictErrorType)[keyof typeof ConflictErrorType];
+
+export type ReceiptErrorType = FileErrorType | RecipientErrorType | SendErrorType | ConflictErrorType;
 
 /** Why a batch execution ended `STOPPED`. */
 export const BatchStopReason = {

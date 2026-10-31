@@ -57,6 +57,24 @@ describe('receipts over HTTP', () => {
     ]);
   });
 
+  it('D31: same content under two names blocks it; the operator resolves it with POST /receipts/{sha256}/resolve-conflict', async () => {
+    const content = pdfBytes('same');
+    const first = fileName('Edificio Altos', 'MULTA', '104522');
+    const second = fileName('Otro conjunto', 'MULTA', '104522');
+    const uploaded = (await upload('/batches/2026-09/CASH/receipts', [{ name: first, content }, { name: second, content }])).json();
+    expect(uploaded.results.map((r: { outcome: string }) => r.outcome)).toEqual(['REGISTERED', 'DUPLICATE_CONFLICT']);
+    const sha256 = uploaded.results[0].sha256 as string;
+    const url = `/receipts/${sha256}/resolve-conflict`;
+
+    expect((await ctx.app.inject({ method: 'POST', url, headers: auth(), payload: { fileName: second } })).json()).toEqual({ error: 'INVALID_REQUEST', field: 'note' });
+    const wrong = await ctx.app.inject({ method: 'POST', url, headers: auth(), payload: { fileName: 'x.pdf', note: 'n' } });
+    expect([wrong.statusCode, wrong.json()]).toEqual([422, { error: 'NAME_NOT_IN_CONFLICT' }]);
+    const ok = await ctx.app.inject({ method: 'POST', url, headers: auth(), payload: { fileName: second, note: 'Confirmado por el negocio' } });
+    expect([ok.statusCode, ok.json()]).toMatchObject([200, { fileName: second, block: 'CASH', state: 'PENDING', email: 'admin@altos.com' }]);
+    const again = await ctx.app.inject({ method: 'POST', url, headers: auth(), payload: { fileName: second, note: 'n' } });
+    expect([again.statusCode, again.json()]).toEqual([409, { error: 'RECEIPT_NOT_IN_CONFLICT' }]);
+  });
+
   it('flags a file above 15 MB without reading it whole', async () => {
     const response = await upload('/batches/2026-10/CASH/receipts', [
       { name: fileName('Grande', 'MULTA', '104522'), content: new Uint8Array(MAX_ATTACHMENT_BYTES + 10) },

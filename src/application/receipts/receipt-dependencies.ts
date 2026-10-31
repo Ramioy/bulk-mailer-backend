@@ -3,6 +3,7 @@ import { buildManifest, type Manifest } from '../../domain/batch/manifest';
 import { assertBatchTransition } from '../../domain/batch/batch-state';
 import type { FileNameOptions } from '../../domain/receipt/receipt-file-name';
 import { Period } from '../../domain/period/period';
+import { inConflict } from '../../domain/receipt/receipt';
 import { resolveRecipient, type Recipient } from '../../domain/recipient/recipient';
 import { RecipientErrorType } from '../../domain/shared/error-types';
 import type { BulkMailerRepository, BulkMailerStores } from '../../ports/bulk-mailer-repository';
@@ -89,6 +90,7 @@ export async function publishNextManifest(stores: BulkMailerStores, period: Peri
       contract: r.contract ?? '',
       email: r.recipient?.email,
       fileAvailable: r.fileAvailable,
+      inConflict: inConflict(r),
     })),
   );
   await stores.batches.save({ period, block, state: 'OPEN', manifestVersion: manifest.version, updatedAt: now });

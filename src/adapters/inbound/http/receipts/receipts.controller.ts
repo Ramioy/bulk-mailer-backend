@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Delete, Get, HttpCode, Inject, Param, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Req } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 
 import type { ReceiptUseCases } from '../../../../composition/receipt-use-cases';
@@ -36,6 +36,22 @@ export class ReceiptsController {
   async refresh(@Param('period') period: string, @Param('block') block: string, @Req() request: AuthenticatedRequest) {
     const result = await this.useCases.refresh.execute(actor(request), periodParam(period), blockParam(block));
     if (!result.ok) throw httpError(result.error);
+    return result.value;
+  }
+
+  /** D31: `{ "fileName": "<one of the names in conflict>", "note": "why" }`. Removing the receipt is the other way out. */
+  @Post('receipts/:sha256/resolve-conflict')
+  @HttpCode(200)
+  async resolveConflict(@Param('sha256') sha256: string, @Body() body: unknown, @Req() request: AuthenticatedRequest) {
+    const fileName = (body as Record<string, unknown> | undefined)?.fileName;
+    const note = (body as Record<string, unknown> | undefined)?.note;
+    if (typeof fileName !== 'string') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'fileName' });
+    if (typeof note !== 'string') throw new BadRequestException({ error: 'INVALID_REQUEST', field: 'note' });
+    const result = await this.useCases.resolveConflict.execute(actor(request), sha256Param(sha256), fileName, note);
+    if (!result.ok) {
+      const { code, ...details } = result.error;
+      throw httpError(code, details);
+    }
     return result.value;
   }
 

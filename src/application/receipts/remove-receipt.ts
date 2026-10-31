@@ -22,7 +22,8 @@ export class RemoveReceipt {
 
       const now = clock.now();
       const manifest = await repository.transaction(async (tx) => {
-        await tx.receipts.save({ ...receipt, state: 'REMOVED', fileAvailable: false, updatedAt: now });
+        // Removing also ends a duplicate conflict (D31): the content can be uploaded again under the right name.
+        await tx.receipts.save({ ...receipt, state: 'REMOVED', fileAvailable: false, conflictingNames: undefined, updatedAt: now });
         await tx.receipts.appendHistory({ sha256, at: now, event: 'REMOVED', detail: `by ${operator}` });
         const published = await publishNextManifest(tx, receipt.period, receipt.block, now);
         await tx.audit.append({

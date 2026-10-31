@@ -8,6 +8,8 @@ export const AlertType = {
   PROVIDER_UNKNOWN_ERROR: 'PROVIDER_UNKNOWN_ERROR',
   /** The provider accepted a send and then failed to process it (M2): the receipt can be resent. */
   PROCESS_FAILED: 'PROCESS_FAILED',
+  /** D31: content already sent was uploaded again under another name: check it reached the right client. */
+  DUPLICATE_CONFLICT: 'DUPLICATE_CONFLICT',
   /** The archive copy mailbox bounced; it does not affect the receipt. */
   COPY_BOUNCED: 'COPY_BOUNCED',
 } as const;

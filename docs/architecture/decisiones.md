@@ -301,3 +301,15 @@ Propuestos tras el mes simulado de la rama `simulacion` (M1, M2, M3) y aprobados
 ### Por qué una respuesta incierta tarda hasta 60 min (sin cambios)
 
 La conciliación busca un `UNCERTAIN` en los logs a los 5, 15 y 60 min (`RECONCILE_DELAYS_MINUTES`). Si lo encuentra, queda `SENT`; si no, solo se marca `FAILED / NOT_FOUND_AT_PROVIDER` en la última consulta, porque ZeptoMail no documenta cuánto tarda un correo en aparecer en sus logs (§12.7) y marcarlo antes invitaría a reenviar un correo que sí salió. Con D28 ese plazo ya no aplica a los 400. El valor se calibra con la cuenta real en el paso 12.
+
+## Mismo contenido con nombres distintos (2026-10-31)
+
+| # | Decisión |
+|---|---|
+| D31 | ✅ **Dos archivos con el mismo contenido (SHA-256) y nombres distintos se marcan ambos y no se envía ninguno hasta que el operador decida**, para que nada equivocado llegue a la bandeja de un cliente. Cambia D2 y A1: antes ganaba el primero en orden de carga y el segundo se descartaba como duplicado. Sigue habiendo **un solo registro por hash**. Reglas: (1) el mismo nombre es un duplicado normal; **cualquier otro nombre válido** es conflicto, aunque coincidan contrato y concepto. (2) El registro queda «por corregir» con `DUPLICATE_CONFLICT` y la lista de nombres (`conflicting_names`); no entra al manifiesto ni a ninguna ejecución y se publica una versión nueva del manifiesto de su lote. Actualizar destinatarios no lo desbloquea. (3) La carga responde `DUPLICATE_CONFLICT` con el nombre, contrato, concepto y lote del otro; el resultado del primero en la misma carga también lo muestra. (4) El operador elige un nombre con `POST /receipts/{sha256}/resolve-conflict` `{ "fileName", "note" }` (nota obligatoria, auditado `DUPLICATE_CONFLICT_RESOLVED`): toma ese nombre, contrato y concepto, se consulta su destinatario y queda listo; o lo retira con `DELETE /receipts/{sha256}`, lo que termina el conflicto y permite subirlo de nuevo con el nombre correcto. **(a)** Si el registro ya está `SENDING`, `SENT` o `UNCERTAIN` no se puede retener: la carga nueva responde `DUPLICATE_CONFLICT`, se anota en su historial y se genera la alerta `DUPLICATE_CONFLICT`; no se envía nada más. **(b)** Un nombre inválido no es un destino: sigue A1 (el registro toma el nombre válido, sin conflicto). **(c)** Con nombres en lotes distintos también hay conflicto: el registro queda bloqueado en su lote y, si el operador elige el nombre del otro lote, el soporte se mueve allí (como D8), con su archivo |
+
+### Supuestos (informados al usuario)
+
+- El nombre elegido se vuelve a validar al resolver: si su concepto se retiró entretanto, se rechaza con `CHOSEN_NAME_INVALID` (hay que retirar el soporte y subirlo con otro nombre).
+- Un soporte `FAILED` en conflicto conserva su estado; al resolverlo vuelve a quedar listo para la próxima ejecución. Si su archivo se había purgado, la carga en conflicto lo guarda de nuevo.
+- Migración `DuplicateConflicts1761894000000`: columna `receipts.conflicting_names` (`jsonb`).

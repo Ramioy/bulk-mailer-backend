@@ -10,7 +10,7 @@ import type { Concept } from '../../../domain/concept/concept';
 import { Period } from '../../../domain/period/period';
 import type { DeliveryEvent, DeliveryState, IncomingDeliveryEvent } from '../../../domain/receipt/delivery-state';
 import type { DeliveryWebhook } from '../../../domain/receipt/delivery-webhook';
-import type { Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
+import type { ConflictingName, Receipt, ReceiptHistoryEntry } from '../../../domain/receipt/receipt';
 import type { ReceiptState } from '../../../domain/receipt/receipt-state';
 import type { Sha256 } from '../../../domain/receipt/sha256';
 import type { Attempt } from '../../../domain/sending/attempt';
@@ -63,10 +63,30 @@ function toReceipt(r: Row): Receipt {
     fileAvailable: r.file_available as boolean,
     attempts: r.attempts as number,
     deliveryState: opt<DeliveryState>(r.delivery_state),
+    conflictingNames: conflictingNames(r.conflicting_names),
     createdAt: r.created_at as Date,
     updatedAt: r.updated_at as Date,
   };
 }
+
+interface StoredConflictingName {
+  readonly fileName: string;
+  readonly period: string;
+  readonly block: Block;
+  readonly conceptKey: string;
+  readonly contract: string;
+  readonly uploadedAt: string;
+}
+
+function conflictingNames(value: unknown): ConflictingName[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return (value as StoredConflictingName[]).map((n) => ({ ...n, period: period({ period: n.period }), uploadedAt: new Date(n.uploadedAt) }));
+}
+
+const storedConflictingNames = (names: readonly ConflictingName[] | undefined): string | null =>
+  names && names.length > 0
+    ? JSON.stringify(names.map((n): StoredConflictingName => ({ ...n, period: n.period.toString(), uploadedAt: n.uploadedAt.toISOString() })))
+    : null;
 
 function toExecution(r: Row): Execution {
   return {
@@ -158,19 +178,20 @@ function stores(db: Queryable): BulkMailerStores {
     async save(r) {
       await db.query(
         `INSERT INTO receipts (sha256, period, block, state, file_name, concept_key, contract, size_bytes, error_type,
-           error_detail, recipient_email, recipient_complex_name, file_available, attempts, delivery_state, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+           error_detail, recipient_email, recipient_complex_name, file_available, attempts, delivery_state, created_at, updated_at,
+           conflicting_names)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (sha256) DO UPDATE SET
            period = EXCLUDED.period, block = EXCLUDED.block, state = EXCLUDED.state, file_name = EXCLUDED.file_name,
            concept_key = EXCLUDED.concept_key, contract = EXCLUDED.contract, size_bytes = EXCLUDED.size_bytes,
            error_type = EXCLUDED.error_type, error_detail = EXCLUDED.error_detail, recipient_email = EXCLUDED.recipient_email,
            recipient_complex_name = EXCLUDED.recipient_complex_name, file_available = EXCLUDED.file_available,
            attempts = EXCLUDED.attempts, delivery_state = EXCLUDED.delivery_state, created_at = EXCLUDED.created_at,
-           updated_at = EXCLUDED.updated_at`,
+           updated_at = EXCLUDED.updated_at, conflicting_names = EXCLUDED.conflicting_names`,
         [
           r.sha256, r.period.toString(), r.block, r.state, r.fileName, r.conceptKey ?? null, r.contract ?? null, r.sizeBytes,
           r.errorType ?? null, r.errorDetail ?? null, r.recipient?.email ?? null, r.recipient?.complexName ?? null,
-          r.fileAvailable, r.attempts, r.deliveryState ?? null, r.createdAt, r.updatedAt,
+          r.fileAvailable, r.attempts, r.deliveryState ?? null, r.createdAt, r.updatedAt, storedConflictingNames(r.conflictingNames),
         ],
       );
     },

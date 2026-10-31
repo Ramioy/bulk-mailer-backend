@@ -22,6 +22,15 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect(await repo.receipts.get(hashOf('f'))).toBeUndefined();
       });
 
+      it('keeps the names in conflict and clears them (D31)', async () => {
+        const conflictingNames = [{ fileName: 'Otro CNCPT MULTA CNTRT 7001.pdf', period: OCT_2026, block: 'ANGLO' as const, conceptKey: 'MULTA', contract: '7001', uploadedAt: T0 }];
+        const receipt = aReceipt({ errorType: 'DUPLICATE_CONFLICT', conflictingNames });
+        await repo.receipts.save(receipt);
+        expect(await repo.receipts.get(receipt.sha256)).toEqual(receipt);
+        await repo.receipts.save({ ...receipt, errorType: undefined, conflictingNames: undefined });
+        expect((await repo.receipts.get(receipt.sha256))?.conflictingNames).toBeUndefined();
+      });
+
       it('keeps the PROCESS_FAILED delivery state (M2)', async () => {
         const receipt = aReceipt({ state: 'SENT', deliveryState: 'PROCESS_FAILED' });
         await repo.receipts.save(receipt);

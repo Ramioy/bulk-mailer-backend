@@ -23,6 +23,8 @@ export interface ReceiptView {
   readonly fileAvailable: boolean;
   readonly attempts: number;
   readonly deliveryState?: DeliveryState;
+  /** D31: the other names the same content arrived under; the operator must choose one or remove the receipt. */
+  readonly conflictingNames?: ReadonlyArray<{ readonly fileName: string; readonly period: string; readonly block: Block; readonly conceptKey: string; readonly contract: string }>;
 }
 
 export interface BatchSummary {
@@ -58,6 +60,9 @@ const view = (r: Receipt): ReceiptView => ({
   fileAvailable: r.fileAvailable,
   attempts: r.attempts,
   deliveryState: r.deliveryState,
+  ...(r.conflictingNames?.length
+    ? { conflictingNames: r.conflictingNames.map((n) => ({ fileName: n.fileName, period: n.period.toString(), block: n.block, conceptKey: n.conceptKey, contract: n.contract })) }
+    : {}),
 });
 
 /** What the operator reviews before sending. Fetching it is audited as "reviewed", with its manifest version. */

@@ -250,6 +250,7 @@ Only one execution at a time in the whole system. While it runs, upload, remove,
 | `CONCEPTO_NO_CATALOGADO` | `UNKNOWN_CONCEPT` | File |
 | `NOMBRE_DEMASIADO_LARGO` | `NAME_TOO_LONG` | File |
 | `ADJUNTO_DEMASIADO_GRANDE` | `ATTACHMENT_TOO_LARGE` | File |
+| — (D31) | `DUPLICATE_CONFLICT` | Same content under different names; blocked until the operator chooses |
 | `ARCHIVO_NO_ES_PDF` | `NOT_A_PDF` | File |
 | `PDF_CIFRADO` | `PDF_ENCRYPTED` | File |
 | `PDF_CONTENIDO_ACTIVO` | `PDF_ACTIVE_CONTENT` | File |

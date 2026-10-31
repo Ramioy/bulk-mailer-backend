@@ -5,6 +5,8 @@ export const AuditAction = {
   SIGN_OUT: 'SIGN_OUT',
   RECEIPTS_UPLOADED: 'RECEIPTS_UPLOADED',
   RECEIPT_REMOVED: 'RECEIPT_REMOVED',
+  /** D31: the operator chose the right name for content uploaded under several names. */
+  DUPLICATE_CONFLICT_RESOLVED: 'DUPLICATE_CONFLICT_RESOLVED',
   RECIPIENTS_REFRESHED: 'RECIPIENTS_REFRESHED',
   /** The operator fetched the batch summary; recorded with its manifest version. */
   BATCH_REVIEWED: 'BATCH_REVIEWED',
