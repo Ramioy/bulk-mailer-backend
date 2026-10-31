@@ -11,6 +11,8 @@ export const JobType = {
   PURGE_BATCH_FILES: 'PURGE_BATCH_FILES',
   /** D41: periodic; deletes files no receipt needs (left behind by a crash or a failed deletion). */
   PURGE_ORPHAN_FILES: 'PURGE_ORPHAN_FILES',
+  /** D50: daily; deletes finished jobs and dispatched outbox events older than WORK_RETENTION_DAYS. */
+  PURGE_FINISHED_WORK: 'PURGE_FINISHED_WORK',
 } as const;
 export type JobType = (typeof JobType)[keyof typeof JobType];
 
@@ -39,6 +41,8 @@ export interface JobQueue {
   fail(jobId: string, error: string): Promise<void>;
   /** A job of this type is waiting or running (READY or CLAIMED): periodic work is not queued twice (D38). */
   hasPending(type: JobType): Promise<boolean>;
+  /** D50: deletes DONE and FAILED jobs last updated before `before`; returns how many. Pending jobs are never touched. */
+  purgeFinished(before: Date): Promise<number>;
   /** Called at startup: releases jobs claimed by a process that died. */
   releaseAbandoned(): Promise<number>;
 }

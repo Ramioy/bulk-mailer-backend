@@ -146,12 +146,12 @@ export class ReconcileAttempt {
     const { repository, clock, newId, serial } = this.deps;
     await serial.run(() =>
       repository.transaction(async (tx) => {
-        const raised = await tx.alerts.list({ type: 'UNCERTAIN_UNRESOLVED', subject: receipt.sha256 });
-        if (raised.some((a) => a.detail.includes(attempt.attemptId))) return;
+        if ((await tx.alerts.list({ type: 'UNCERTAIN_UNRESOLVED', subject: receipt.sha256, reference: attempt.attemptId, limit: 1 })).length > 0) return;
         await raiseAlert(tx, newId, {
           alertId: newId(),
           type: 'UNCERTAIN_UNRESOLVED',
           subject: receipt.sha256,
+          reference: attempt.attemptId,
           detail:
             `${receipt.fileName}: attempt ${attempt.attemptId} is still UNCERTAIN after its last scheduled lookup; ${reason}. ` +
             'The hourly sweep keeps looking it up for 72 h without failing it; meanwhile check it with ' +
@@ -266,13 +266,16 @@ export class SweepUnconfirmed {
     const webhookArrived = async (attemptId: string) => (await repository.deliveryEvents.listByAttempt(attemptId)).some((e) => e.source === 'WEBHOOK');
 
     const candidates: Array<{ receipt: Receipt; attempt: Attempt; since: Date }> = [];
-    for (const receipt of await repository.receipts.listByState('SENT')) {
-      if (!isPendingDelivery(receipt)) continue;
+    // D50: only receipts updated within the window can have their latest send in it (a send updates its receipt).
+    const pending = await repository.receipts.listPendingDeliveriesSince(from);
+    for (const receipt of pending) {
+      if (receipt.state !== 'SENT' || !isPendingDelivery(receipt)) continue;
       const attempt = await latestAttempt(repository, receipt);
       if (!attempt?.finishedAt || attempt.finishedAt < from || attempt.finishedAt > to) continue;
       candidates.push({ receipt, attempt, since: attempt.finishedAt });
     }
-    for (const receipt of await repository.receipts.listByState('UNCERTAIN')) {
+    for (const receipt of pending) {
+      if (receipt.state !== 'UNCERTAIN') continue;
       const attempt = await latestAttempt(repository, receipt);
       // A send left UNCERTAIN by a crash has no finish time: its start counts.
       const since = attempt?.finishedAt ?? attempt?.startedAt;
@@ -327,7 +330,7 @@ export class SweepUnconfirmed {
         await raise(execution.executionId, `the provider logs show a delivery state for ${provenLoss} receipt(s) of ${where}${late} but no webhook arrived`);
       } else if (expectingWebhook > 0 && withWebhook === 0) {
         // D45: "nothing arrived" and "webhooks arrived but could not be correlated" call for different checks.
-        const unparsed = (await repository.alerts.list({ type: 'WEBHOOK_UNPARSED' })).filter((a) => a.raisedAt >= execution.startedAt).length;
+        const unparsed = (await repository.alerts.list({ type: 'WEBHOOK_UNPARSED', since: execution.startedAt })).length;
         const silence =
           unparsed > 0
             ? `no webhook could be correlated in ${reconciliation.sweepAfterHours} h, although ${unparsed} webhook(s) arrived that could not be read (WEBHOOK_UNPARSED): check the payload format`

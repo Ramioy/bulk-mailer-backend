@@ -7,7 +7,6 @@ import multipart from '@fastify/multipart';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 
-import { MAX_ATTACHMENT_BYTES } from './adapters/outbound/pdf/basic-pdf-inspector';
 import { AppModule } from './app.module';
 import { type Adapters, buildAdapters } from './composition/adapters';
 import type { AppConfig } from './config/app-config';
@@ -27,7 +26,7 @@ export async function createApp(config: AppConfig, adapters?: Adapters): Promise
   await app.register(multipart, {
     throwFileSizeLimit: false,
     // D48: per file; the total per request is counted by the receipts controller while it streams.
-    limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: config.uploadMaxFiles, fields: 10 },
+    limits: { fileSize: config.maxAttachmentBytes + 1, files: config.uploadMaxFiles, fields: 10 },
   });
   // ZeptoMail posts the event as a single form-encoded parameter; the signature is checked over the raw body.
   // D49: the web client runs on another origin; tokens travel in the Authorization header, never in cookies.

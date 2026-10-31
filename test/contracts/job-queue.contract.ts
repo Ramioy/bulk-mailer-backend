@@ -62,6 +62,19 @@ export function jobQueueContract(name: string, create: () => Promise<JobQueue>):
       expect(await queue.hasPending('CHECK_RECENT_SENDS')).toBe(false);
     });
 
+    it('D50: purges only finished jobs older than the given instant', async () => {
+      const done = await queue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {}, runAt: T0 });
+      const failed = await queue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {}, runAt: T0 });
+      await queue.claimNext(T0);
+      await queue.claimNext(T0);
+      await queue.complete(done);
+      await queue.fail(failed, 'boom');
+      await queue.enqueue({ type: 'RECONCILE_ATTEMPT', payload: {}, runAt: T0 });
+      expect(await queue.purgeFinished(new Date(Date.now() - 3_600_000))).toBe(0);
+      expect(await queue.purgeFinished(new Date(Date.now() + 3_600_000))).toBe(2);
+      expect(await queue.hasPending('RECONCILE_ATTEMPT')).toBe(true);
+    });
+
     it('releases jobs claimed by a process that died', async () => {
       const id = await queue.enqueue({ type: 'EXECUTE_BATCH', payload: { batch: 'x' }, runAt: T0 });
       await queue.claimNext(T0);

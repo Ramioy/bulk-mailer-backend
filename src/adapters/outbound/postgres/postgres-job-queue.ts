@@ -68,6 +68,10 @@ export class PostgresJobQueue implements JobQueue {
     return found.length > 0;
   }
 
+  async purgeFinished(before: Date): Promise<number> {
+    return (await rows(this.db, `DELETE FROM jobs WHERE status IN ('DONE', 'FAILED') AND updated_at < $1 RETURNING job_id`, [before])).length;
+  }
+
   async releaseAbandoned(): Promise<number> {
     const released = await rows(
       this.db,

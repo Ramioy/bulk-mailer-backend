@@ -47,6 +47,8 @@ describe('loadConfig', () => {
       fileOrphanMinAgeMinutes: 60,
       uploadMaxTotalBytes: 209715200,
       uploadMaxFiles: 300,
+      workRetentionDays: 30,
+      maxAttachmentBytes: 15728640,
       instanceLeaseTtlSeconds: 30,
       jobRunnerEnabled: true,
       jobRunnerPollMs: 1000,
@@ -59,6 +61,12 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...REQUIRED, UPLOAD_MAX_TOTAL_BYTES: '1000', UPLOAD_MAX_FILES: '3' })).toMatchObject({ uploadMaxTotalBytes: 1000, uploadMaxFiles: 3 });
     expect(() => loadConfig({ ...REQUIRED, UPLOAD_MAX_TOTAL_BYTES: '0' })).toThrow('UPLOAD_MAX_TOTAL_BYTES must be a positive integer');
     expect(() => loadConfig({ ...REQUIRED, UPLOAD_MAX_FILES: '-3' })).toThrow('UPLOAD_MAX_FILES must be a positive integer');
+  });
+
+  it('D50: work retention and the attachment limit are positive integers', () => {
+    expect(loadConfig({ ...REQUIRED, WORK_RETENTION_DAYS: '7', MAX_ATTACHMENT_BYTES: '1000' })).toMatchObject({ workRetentionDays: 7, maxAttachmentBytes: 1000 });
+    expect(() => loadConfig({ ...REQUIRED, WORK_RETENTION_DAYS: '0' })).toThrow('WORK_RETENTION_DAYS must be a positive integer');
+    expect(() => loadConfig({ ...REQUIRED, MAX_ATTACHMENT_BYTES: 'x' })).toThrow('MAX_ATTACHMENT_BYTES must be a positive integer');
   });
 
   it('D47: the instance lease TTL is an integer of at least 3 seconds', () => {

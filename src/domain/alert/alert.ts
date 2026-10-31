@@ -38,6 +38,8 @@ export interface Alert {
   readonly subject: string;
   readonly detail: string;
   readonly raisedAt: Date;
+  /** D50: what else identifies it (e.g. the attempt id), so it is deduplicated without reading its text. */
+  readonly reference?: string;
   /** D46: the operator saw it and dealt with it; it stays in the history. */
   readonly acknowledgedAt?: Date;
   readonly acknowledgedBy?: string;
@@ -49,6 +51,10 @@ export interface AlertFilter {
   readonly pending?: boolean;
   readonly type?: AlertType;
   readonly subject?: string;
+  /** D50 */
+  readonly reference?: string;
+  /** D50: raised at or after this instant. */
+  readonly since?: Date;
   /** Newest first (and `limit` keeps the newest). */
   readonly newestFirst?: boolean;
   readonly limit?: number;

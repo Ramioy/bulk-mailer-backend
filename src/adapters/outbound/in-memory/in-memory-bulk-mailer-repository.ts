@@ -114,6 +114,11 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
         .filter((r) => r.period.equals(period) && r.block === block)
         .sort((a, b) => a.fileName.localeCompare(b.fileName, 'es')),
     listByState: async (state: ReceiptState) => [...this.state.receipts.values()].filter((r) => r.state === state),
+    listPendingDeliveriesSince: async (since) =>
+      [...this.state.receipts.values()].filter(
+        (r) =>
+          r.updatedAt >= since && (r.state === 'UNCERTAIN' || (r.state === 'SENT' && (r.deliveryState === 'UNCONFIRMED' || r.deliveryState === 'SOFT_BOUNCE'))),
+      ),
     appendHistory: async (entry) => {
       this.state.history.push(entry);
     },
@@ -224,7 +229,11 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
     list: async (filter = {}) => {
       const found = this.state.alerts.filter(
         (a) =>
-          (!filter.pending || !a.acknowledgedAt) && (!filter.type || a.type === filter.type) && (filter.subject === undefined || a.subject === filter.subject),
+          (!filter.pending || !a.acknowledgedAt) &&
+          (!filter.type || a.type === filter.type) &&
+          (filter.subject === undefined || a.subject === filter.subject) &&
+          (filter.reference === undefined || a.reference === filter.reference) &&
+          (filter.since === undefined || a.raisedAt >= filter.since),
       );
       const ordered = filter.newestFirst ? found.reverse() : found;
       return filter.limit === undefined ? ordered : ordered.slice(0, filter.limit);
@@ -285,6 +294,12 @@ export class InMemoryBulkMailerRepository implements BulkMailerRepository {
         .sort((a, b) => (b.deadAt as Date).getTime() - (a.deadAt as Date).getTime())
         .slice(0, limit)
         .map((e) => ({ event: e.event, attempts: e.attempts, lastError: e.lastError, deadAt: e.deadAt as Date })),
+    purgeDispatched: async (before) => {
+      const kept = this.state.outbox.filter((e) => !(e.dispatchedAt && e.dispatchedAt < before));
+      const purged = this.state.outbox.length - kept.length;
+      this.state.outbox = kept;
+      return purged;
+    },
     revive: async (eventId) => {
       const entry = this.state.outbox.find((e) => e.event.eventId === eventId && e.deadAt && !e.dispatchedAt);
       if (!entry) return false;

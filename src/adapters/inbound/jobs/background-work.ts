@@ -41,6 +41,8 @@ export class BackgroundWork implements OnApplicationBootstrap, BeforeApplication
       new PollingLoop('Recent sends check', () => delivery.followUps.requestRecentCheck(() => delivery.recentSends.active()), config.deliveryCheckIntervalSeconds * 1000, this.logger),
       // D41: files no receipt needs, left by a crash or a failed deletion.
       new PollingLoop('Orphan file sweep', () => files.purgeOrphans.request(), config.fileOrphanSweepIntervalMinutes * 60_000, this.logger),
+      // D50: daily housekeeping of finished jobs and dispatched outbox events.
+      new PollingLoop('Finished work purge', () => files.purgeFinishedWork.request(), 24 * 3_600_000, this.logger),
     ];
     this.coordinator = new InstanceCoordinator(
       adapters.instanceLease,

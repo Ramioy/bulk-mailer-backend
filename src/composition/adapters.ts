@@ -181,7 +181,7 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     clock,
     newId: randomUUID,
     fileStore: new LocalVolumeFileStore(config.dataDir),
-    fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates }),
+    fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates, maxAttachmentBytes: config.maxAttachmentBytes }),
     contractSources: sources,
     emailProvider: await emailProvider(config, secrets),
     ...(await deliveryTracking(config, secrets)),

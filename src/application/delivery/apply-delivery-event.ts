@@ -71,6 +71,7 @@ export async function confirmLateSent(
     alertId: newId(),
     type: 'LATE_SEND_EVIDENCE',
     subject: receipt.sha256,
+    reference: attempt.attemptId,
     detail:
       `${receipt.fileName}: attempt ${attempt.attemptId} to ${attempt.to}, marked FAILED / NOT_FOUND_AT_PROVIDER at ${failedAt.toISOString()}, ` +
       `did go out: ${what} from the ${evidence}. It is SENT now; if it was sent again meanwhile, the client received it twice.`,
@@ -223,12 +224,13 @@ async function detectDuplicateSend(
   const index = attempts.findIndex((a) => a.attemptId === older.attemptId);
   if (index < 0 || attempts[index + 1]?.kind !== 'BATCH') return;
   const latest = attempts.at(-1) as Attempt;
-  const raised = (await tx.alerts.list({ type: 'DUPLICATE_SEND_DETECTED', subject: receipt.sha256 })).some((a) => a.detail.includes(older.attemptId));
+  const raised = (await tx.alerts.list({ type: 'DUPLICATE_SEND_DETECTED', subject: receipt.sha256, reference: older.attemptId, limit: 1 })).length > 0;
   if (raised) return;
   await raiseAlert(tx, newId, {
     alertId: newId(),
     type: 'DUPLICATE_SEND_DETECTED',
     subject: receipt.sha256,
+    reference: older.attemptId,
     detail:
       `${receipt.fileName}: attempt ${older.attemptId} to ${older.to}, believed not sent, did go out (${event.state} from the ` +
       `${event.source === 'WEBHOOK' ? 'delivery webhook' : 'provider logs'}); attempt ${latest.attemptId} to ${latest.to} is ${receipt.state}: ` +

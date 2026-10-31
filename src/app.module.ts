@@ -90,6 +90,7 @@ export class AppModule {
       newId: adapters.newId,
       serial,
       orphanMinAgeMinutes: config.fileOrphanMinAgeMinutes,
+      retentionDays: config.workRetentionDays,
     });
     const fileLogger = new Logger('FileLane');
     // Four lanes (D21, D38, D41): one batch at a time in the whole system; webhooks one at a time, never behind a lookup;
@@ -149,6 +150,10 @@ export class AppModule {
           PURGE_ORPHAN_FILES: async () => {
             const result = await files.purgeOrphans.execute();
             if (result.deleted > 0 || result.failed > 0) fileLogger.log(`Orphan files: ${result.deleted} deleted, ${result.failed} failed, ${result.tooRecent} too recent`);
+          },
+          PURGE_FINISHED_WORK: async () => {
+            const result = await files.purgeFinishedWork.execute();
+            fileLogger.log(`Finished work purged: ${result.jobs} job(s), ${result.events} outbox event(s)`);
           },
         },
         adapters.clock,

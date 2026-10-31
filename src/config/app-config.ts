@@ -84,6 +84,10 @@ export interface AppConfig {
   readonly uploadMaxTotalBytes: number;
   /** D48: at most this many files per upload request; default 300. */
   readonly uploadMaxFiles: number;
+  /** D50: finished jobs and dispatched outbox events are deleted after this many days; default 30. */
+  readonly workRetentionDays: number;
+  /** D50: largest attachment accepted (the inspector and the multipart limit); default 15 MB, as before. */
+  readonly maxAttachmentBytes: number;
   /** D47: lease of the instance that runs the background work; renewed every third of it. Default 30 s. */
   readonly instanceLeaseTtlSeconds: number;
   readonly jobRunnerEnabled: boolean;
@@ -197,6 +201,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const fileOrphanMinAgeMinutes = positiveInteger(env.FILE_ORPHAN_MIN_AGE_MINUTES ?? '60', 'FILE_ORPHAN_MIN_AGE_MINUTES', problems);
   const uploadMaxTotalBytes = positiveInteger(env.UPLOAD_MAX_TOTAL_BYTES ?? String(200 * 1024 * 1024), 'UPLOAD_MAX_TOTAL_BYTES', problems);
   const uploadMaxFiles = positiveInteger(env.UPLOAD_MAX_FILES ?? '300', 'UPLOAD_MAX_FILES', problems);
+  const workRetentionDays = positiveInteger(env.WORK_RETENTION_DAYS ?? '30', 'WORK_RETENTION_DAYS', problems);
+  const maxAttachmentBytes = positiveInteger(env.MAX_ATTACHMENT_BYTES ?? String(15 * 1024 * 1024), 'MAX_ATTACHMENT_BYTES', problems);
   const instanceLeaseTtlSeconds = positiveInteger(env.INSTANCE_LEASE_TTL_SECONDS ?? '30', 'INSTANCE_LEASE_TTL_SECONDS', problems);
   if (instanceLeaseTtlSeconds < 3) problems.push('INSTANCE_LEASE_TTL_SECONDS must be at least 3');
   const executionAbortAfterMinutes = positiveInteger(env.EXECUTION_ABORT_AFTER_MINUTES ?? '10', 'EXECUTION_ABORT_AFTER_MINUTES', problems);
@@ -256,6 +262,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     fileOrphanMinAgeMinutes,
     uploadMaxTotalBytes,
     uploadMaxFiles,
+    workRetentionDays,
+    maxAttachmentBytes,
     instanceLeaseTtlSeconds,
     jobRunnerEnabled: runner === 'true',
     jobRunnerPollMs,

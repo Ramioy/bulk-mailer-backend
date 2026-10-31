@@ -81,6 +81,7 @@ function toAlert(r: Row): Alert {
     subject: r.subject as string,
     detail: r.detail as string,
     raisedAt: r.raised_at as Date,
+    ...(r.reference ? { reference: r.reference as string } : {}),
     ...(r.acknowledged_at ? { acknowledgedAt: r.acknowledged_at as Date, acknowledgedBy: r.acknowledged_by as string } : {}),
   };
 }
@@ -227,6 +228,15 @@ function stores(db: Queryable): BulkMailerStores {
     },
     async listByState(state) {
       return (await rows(db, 'SELECT * FROM receipts WHERE state = $1', [state])).map(toReceipt);
+    },
+    async listPendingDeliveriesSince(since) {
+      const found = await rows(
+        db,
+        `SELECT * FROM receipts WHERE updated_at >= $1
+           AND (state = 'UNCERTAIN' OR (state = 'SENT' AND delivery_state IN ('UNCONFIRMED', 'SOFT_BOUNCE')))`,
+        [since],
+      );
+      return found.map(toReceipt);
     },
     async appendHistory(entry) {
       await db.query('INSERT INTO receipt_history (sha256, at, event, detail) VALUES ($1, $2, $3, $4)', [
@@ -381,10 +391,10 @@ function stores(db: Queryable): BulkMailerStores {
       return r && toAttempt(r);
     },
     async listByReceipt(sha256) {
-      return (await rows(db, 'SELECT * FROM attempts WHERE sha256 = $1 ORDER BY started_at, attempt_id', [sha256])).map(toAttempt);
+      return (await rows(db, 'SELECT * FROM attempts WHERE sha256 = $1 ORDER BY started_at, seq', [sha256])).map(toAttempt);
     },
     async listByExecution(executionId) {
-      return (await rows(db, 'SELECT * FROM attempts WHERE execution_id = $1 ORDER BY started_at, attempt_id', [executionId])).map(toAttempt);
+      return (await rows(db, 'SELECT * FROM attempts WHERE execution_id = $1 ORDER BY started_at, seq', [executionId])).map(toAttempt);
     },
   };
 
@@ -451,8 +461,8 @@ function stores(db: Queryable): BulkMailerStores {
 
   const alerts: AlertStore = {
     async insert(a) {
-      await db.query('INSERT INTO alerts (alert_id, type, subject, detail, raised_at) VALUES ($1,$2,$3,$4,$5)', [
-        a.alertId, a.type, a.subject, a.detail, a.raisedAt,
+      await db.query('INSERT INTO alerts (alert_id, type, subject, detail, raised_at, reference) VALUES ($1,$2,$3,$4,$5,$6)', [
+        a.alertId, a.type, a.subject, a.detail, a.raisedAt, a.reference ?? null,
       ]);
     },
     async get(alertId) {
@@ -464,8 +474,9 @@ function stores(db: Queryable): BulkMailerStores {
         db,
         `SELECT * FROM alerts
          WHERE ($1::boolean IS NOT TRUE OR acknowledged_at IS NULL) AND ($2::text IS NULL OR type = $2) AND ($3::text IS NULL OR subject = $3)
+           AND ($5::text IS NULL OR reference = $5) AND ($6::timestamptz IS NULL OR raised_at >= $6)
          ORDER BY seq ${filter.newestFirst ? 'DESC' : 'ASC'} LIMIT $4`,
-        [filter.pending ?? null, filter.type ?? null, filter.subject ?? null, filter.limit ?? null],
+        [filter.pending ?? null, filter.type ?? null, filter.subject ?? null, filter.limit ?? null, filter.reference ?? null, filter.since ?? null],
       );
       return found.map(toAlert);
     },
@@ -568,6 +579,9 @@ function stores(db: Queryable): BulkMailerStores {
         lastError: opt<string>(r.last_error),
         deadAt: r.dead_at as Date,
       }));
+    },
+    async purgeDispatched(before) {
+      return (await rows(db, 'DELETE FROM outbox_events WHERE dispatched_at IS NOT NULL AND dispatched_at < $1 RETURNING event_id', [before])).length;
     },
     async revive(eventId) {
       const revived = await rows(

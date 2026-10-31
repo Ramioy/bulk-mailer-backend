@@ -80,6 +80,7 @@ export function executionFixture(overrides: Partial<ExecutionDependencies> = {})
     newId: base.deps.newId,
     serial: base.deps.serial,
     orphanMinAgeMinutes: 60,
+    retentionDays: 30,
   });
   const runFileJobs = async () => {
     let ran = 0;

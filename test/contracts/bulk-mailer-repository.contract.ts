@@ -168,6 +168,29 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
       });
     });
 
+    describe('D50: attempts with the same start time', () => {
+      it('keep their insertion order', async () => {
+        await repo.receipts.save(aReceipt());
+        await repo.executions.tryStart(anExecution({ executionId: 'exec-1' }));
+        for (const id of ['z-first', 'a-second', 'm-third']) await repo.attempts.insert(anAttempt({ attemptId: id, startedAt: T0 }));
+        expect((await repo.attempts.listByReceipt(hashOf('a'))).map((a) => a.attemptId)).toEqual(['z-first', 'a-second', 'm-third']);
+        expect((await repo.attempts.listByExecution('exec-1')).map((a) => a.attemptId)).toEqual(['z-first', 'a-second', 'm-third']);
+      });
+    });
+
+    describe('D50: pending deliveries updated within a window', () => {
+      it('lists SENT with UNCONFIRMED or SOFT_BOUNCE delivery and UNCERTAIN, updated since the given instant', async () => {
+        const at = (h: number) => new Date(T0.getTime() + h * 3_600_000);
+        await repo.receipts.save(aReceipt({ sha256: hashOf('a'), state: 'SENT', deliveryState: 'UNCONFIRMED', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('b'), state: 'SENT', deliveryState: 'SOFT_BOUNCE', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('c'), state: 'SENT', deliveryState: 'ACCEPTED', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('d'), state: 'UNCERTAIN', updatedAt: at(10) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('e'), state: 'SENT', deliveryState: 'UNCONFIRMED', updatedAt: at(1) }));
+        await repo.receipts.save(aReceipt({ sha256: hashOf('f'), state: 'PENDING', updatedAt: at(10) }));
+        expect((await repo.receipts.listPendingDeliveriesSince(at(5))).map((r) => r.sha256).sort()).toEqual([hashOf('a'), hashOf('b'), hashOf('d')].sort());
+      });
+    });
+
     describe('suppressions', () => {
       it('saves, reads and removes an address', async () => {
         await repo.suppressions.save({ email: 'x@y.co', reason: 'HARD_BOUNCE', since: T0 });
@@ -243,6 +266,15 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect((await repo.alerts.list({ pending: true, type: 'HARD_BOUNCE', newestFirst: true })).map((a) => a.alertId)).toEqual(['a3']);
       });
 
+      it('D50: filters alerts by reference and by when they were raised', async () => {
+        const at = (sec: number) => new Date(T0.getTime() + sec * 1000);
+        await repo.alerts.insert({ alertId: 'b1', type: 'UNCERTAIN_UNRESOLVED', subject: 'r1', detail: 'x', raisedAt: at(1), reference: 'att-1' });
+        await repo.alerts.insert({ alertId: 'b2', type: 'UNCERTAIN_UNRESOLVED', subject: 'r1', detail: 'x', raisedAt: at(5), reference: 'att-2' });
+        expect((await repo.alerts.list({ type: 'UNCERTAIN_UNRESOLVED', subject: 'r1', reference: 'att-2' })).map((a) => a.alertId)).toEqual(['b2']);
+        expect((await repo.alerts.list({ since: at(2) })).map((a) => a.alertId)).toEqual(['b2']);
+        expect(await repo.alerts.get('b1')).toMatchObject({ reference: 'att-1' });
+      });
+
       it('keeps alerts and audit entries in order', async () => {
         await repo.alerts.insert({ alertId: 'al1', type: 'BATCH_STOPPED', subject: 'e1', detail: 'd', raisedAt: T0 });
         expect(await repo.alerts.list()).toHaveLength(1);
@@ -307,6 +339,17 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
           { event: event('dead-0'), attempts: 0 },
           { event: event('live'), attempts: 0 },
         ]);
+      });
+
+      it('D50: purges dispatched events older than the given instant; pending and dead ones stay', async () => {
+        for (const id of ['old', 'recent', 'pending', 'dead']) await repo.outbox.add(event(id));
+        await repo.outbox.markDispatched('old', T0);
+        await repo.outbox.markDispatched('recent', new Date(T0.getTime() + 10_000));
+        await repo.outbox.markFailed('dead', 'poisoned', T0);
+        expect(await repo.outbox.purgeDispatched(new Date(T0.getTime() + 5_000))).toBe(1);
+        expect((await repo.transaction((tx) => tx.outbox.lockPending(10))).map((p) => p.event.eventId)).toEqual(['pending']);
+        expect((await repo.outbox.listDead(10)).map((d) => d.event.eventId)).toEqual(['dead']);
+        expect(await repo.outbox.purgeDispatched(new Date(T0.getTime() + 20_000))).toBe(1);
       });
 
       it('discards events of a transaction that fails', async () => {

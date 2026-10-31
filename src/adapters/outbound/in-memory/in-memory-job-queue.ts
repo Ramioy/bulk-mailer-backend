@@ -9,6 +9,7 @@ interface Entry {
   status: Status;
   error?: string;
   seq: number;
+  updatedAt: Date;
 }
 
 /**
@@ -21,7 +22,7 @@ export class InMemoryJobTable {
 
   insert(job: NewJob, now: Date): string {
     const jobId = randomUUID();
-    this.entries.set(jobId, { job: { ...job, jobId, runAt: job.runAt ?? now, attempts: 0 }, status: 'READY', seq: this.seq++ });
+    this.entries.set(jobId, { job: { ...job, jobId, runAt: job.runAt ?? now, attempts: 0 }, status: 'READY', seq: this.seq++, updatedAt: now });
     return jobId;
   }
 
@@ -53,18 +54,33 @@ export class InMemoryJobQueue implements JobQueue {
       .sort((a, b) => a.job.runAt.getTime() - b.job.runAt.getTime() || a.seq - b.seq)[0];
     if (!next) return undefined;
     next.status = 'CLAIMED';
+    next.updatedAt = this.now();
     next.job = { ...next.job, attempts: next.job.attempts + 1 };
     return next.job;
   }
 
   async complete(jobId: string): Promise<void> {
-    this.entry(jobId).status = 'DONE';
+    const entry = this.entry(jobId);
+    entry.status = 'DONE';
+    entry.updatedAt = this.now();
   }
 
   async fail(jobId: string, error: string): Promise<void> {
     const entry = this.entry(jobId);
     entry.status = 'FAILED';
     entry.error = error;
+    entry.updatedAt = this.now();
+  }
+
+  async purgeFinished(before: Date): Promise<number> {
+    let purged = 0;
+    for (const [id, entry] of this.table().entries) {
+      if ((entry.status === 'DONE' || entry.status === 'FAILED') && entry.updatedAt < before) {
+        this.table().entries.delete(id);
+        purged += 1;
+      }
+    }
+    return purged;
   }
 
   async hasPending(type: JobType): Promise<boolean> {

@@ -59,6 +59,11 @@ export interface ReceiptStore {
   save(receipt: Receipt): Promise<Receipt>;
   listByBatch(period: Period, block: Block): Promise<Receipt[]>;
   listByState(state: ReceiptState): Promise<Receipt[]>;
+  /**
+   * D50: receipts whose delivery can still change (SENT with UNCONFIRMED or SOFT_BOUNCE delivery, and UNCERTAIN)
+   * updated at or after `since`, so the hourly sweep does not read the whole permanent history.
+   */
+  listPendingDeliveriesSince(since: Date): Promise<Receipt[]>;
   appendHistory(entry: ReceiptHistoryEntry): Promise<void>;
   history(sha256: Sha256): Promise<ReceiptHistoryEntry[]>;
 }
@@ -171,6 +176,8 @@ export interface OutboxStore {
   listDead(limit: number): Promise<DeadEvent[]>;
   /** Makes a dead event pending again with its attempts reset; false when there is no dead event with that id. */
   revive(eventId: string): Promise<boolean>;
+  /** D50: deletes events dispatched before `before`; returns how many. Pending and dead events are kept. */
+  purgeDispatched(before: Date): Promise<number>;
 }
 
 /**
