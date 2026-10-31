@@ -13,10 +13,12 @@ import { err, ok, type Result } from '../../domain/shared/result';
 import type { FileErrorType, ReceiptErrorType } from '../../domain/shared/error-types';
 import { raiseAlert } from '../alerts/raise-alert';
 import { domainEvent } from '../events/domain-events';
+import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import {
-  cachedResolver,
+  cachedLookup,
   publishNextManifest,
   refuseBatchCommand,
+  withSuppression,
   type BatchCommandError,
   type ReceiptDependencies,
   type RecipientResolution,
@@ -77,6 +79,7 @@ export interface UploadSummary {
   readonly results: readonly UploadResult[];
 }
 
+/** A file as phase (a) leaves it: hashed, its name parsed, inspected and its contract looked up. */
 interface Evaluated {
   readonly file: UploadedFile;
   readonly sha256: Sha256;
@@ -85,25 +88,47 @@ interface Evaluated {
   readonly contract?: string;
   readonly fileError?: FileErrorType;
   readonly errorDetail?: string;
+  /** What the contract source said; the suppression list is checked in phase (b). */
   readonly recipient?: RecipientResolution;
 }
 
+type Prepared = Evaluated | { readonly file: UploadedFile; readonly tooLarge: true };
+
 const sha256Of = (content: Uint8Array) => toSha256(createHash('sha256').update(content).digest('hex'));
 
+/**
+ * Upload (§8.1) in two phases (D36). (a) Outside the serial executor: hashing, name parsing, the PDF inspector and the
+ * contract lookups, which may take seconds. (b) Inside it, in one transaction: the refusals, the existing receipt of
+ * each hash, the suppression list and every decision (A1, D8, D31) are taken again on the current state, then written
+ * with their manifest. Another command that registered the same content in between is seen in (b).
+ */
 export class UploadReceipts {
   constructor(private readonly deps: ReceiptDependencies) {}
 
-  execute(operator: string, period: Period, block: Block, files: readonly UploadedFile[]): Promise<Result<UploadSummary, BatchCommandError>> {
-    return this.deps.serial.run(() => this.run(operator, period, block, files));
+  async execute(operator: string, period: Period, block: Block, files: readonly UploadedFile[]): Promise<Result<UploadSummary, BatchCommandError>> {
+    // Refused at once when it is already clear, without querying anyone; checked again in phase (b).
+    const early = await refuseBatchCommand(this.deps, period);
+    if (early) return err(early);
+
+    const catalog = new ConceptCatalog(await this.deps.repository.concepts.list());
+    const lookup = cachedLookup(this.deps, block);
+    const prepared: Prepared[] = [];
+    for (const file of files) prepared.push(file.tooLarge ? { file, tooLarge: true } : await this.evaluate(file, catalog, lookup));
+
+    return this.deps.serial.run(() => this.deps.repository.transaction((tx) => this.decide(tx, operator, period, block, prepared)));
   }
 
-  private async run(operator: string, period: Period, block: Block, files: readonly UploadedFile[]): Promise<Result<UploadSummary, BatchCommandError>> {
-    const refusal = await refuseBatchCommand(this.deps, period);
+  private async decide(
+    tx: BulkMailerStores,
+    operator: string,
+    period: Period,
+    block: Block,
+    prepared: readonly Prepared[],
+  ): Promise<Result<UploadSummary, BatchCommandError>> {
+    const refusal = await refuseBatchCommand(this.deps, period, tx);
     if (refusal) return err(refusal);
 
-    const { repository, fileStore, clock } = this.deps;
-    const catalog = new ConceptCatalog(await repository.concepts.list());
-    const resolve = cachedResolver(this.deps, block);
+    const { fileStore, clock } = this.deps;
     const now = clock.now();
 
     const results: UploadResult[] = [];
@@ -112,13 +137,15 @@ export class UploadReceipts {
     const seen = new Map<Sha256, Receipt>();
     const alerts: Alert[] = [];
 
-    for (const file of files) {
-      if (file.tooLarge) {
+    for (const item of prepared) {
+      const { file } = item;
+      if ('tooLarge' in item) {
         results.push({ fileName: file.name.normalize('NFC'), outcome: 'REJECTED', errorType: 'ATTACHMENT_TOO_LARGE' });
         continue;
       }
-      const evaluated = await this.evaluate(file, catalog, resolve);
-      const existing = seen.get(evaluated.sha256) ?? (await repository.receipts.get(evaluated.sha256));
+      const recipient = item.recipient && (await withSuppression(tx, item.recipient));
+      const evaluated: Evaluated = { ...item, recipient };
+      const existing = seen.get(evaluated.sha256) ?? (await tx.receipts.get(evaluated.sha256));
       const decision = decideUpload(existing, period, block);
 
       // D31: the same content under another valid name is a conflict: nothing of it is sent until the operator chooses.
@@ -238,50 +265,44 @@ export class UploadReceipts {
       this.track(receipt, event, detail, changed, history, seen, results);
     }
 
-    if (changed.length === 0 && alerts.length > 0) {
-      // Only conflicts with receipts already sent: recorded and warned, the manifest does not change.
-      await repository.transaction(async (tx) => {
-        for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
-        for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
-      });
-    }
     if (changed.length === 0) {
-      const batch = await repository.batches.get(period, block);
+      // Only conflicts with receipts already sent are recorded and warned; the manifest does not change.
+      for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
+      for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
+      const batch = await tx.batches.get(period, block);
       return ok({ manifestVersion: batch?.manifestVersion ?? 0, results });
     }
 
-    const manifest = await repository.transaction(async (tx) => {
-      for (const receipt of changed) await tx.receipts.save(receipt);
-      for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
-      for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
-      // D31: a conflict can block a receipt of another batch: its manifest changes too.
-      const others = new Map<string, Receipt>();
-      for (const r of changed) if (!(r.period.equals(period) && r.block === block)) others.set(`${r.period.toString()}/${r.block}`, r);
-      for (const r of others.values()) await publishNextManifest(tx, r.period, r.block, now);
-      const published = await publishNextManifest(tx, period, block, now);
-      await tx.audit.append({
-        auditId: this.deps.newId(),
-        actor: operator,
-        action: 'RECEIPTS_UPLOADED',
-        at: now,
-        subject: `${period.toString()}/${block}`,
-        newValue: `manifest v${published.version}`,
-        note: `${changed.length} registered, ${results.length - changed.length} not registered`,
-      });
-      await tx.outbox.add(
-        domainEvent(this.deps.newId, 'RECEIPTS_UPLOADED', now, {
-          period: period.toString(),
-          block,
-          manifestVersion: published.version,
-          registered: changed.map((r) => r.sha256),
-        }),
-      );
-      return published;
+    for (const receipt of changed) await tx.receipts.save(receipt);
+    for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
+    for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
+    // D31: a conflict can block a receipt of another batch: its manifest changes too.
+    const others = new Map<string, Receipt>();
+    for (const r of changed) if (!(r.period.equals(period) && r.block === block)) others.set(`${r.period.toString()}/${r.block}`, r);
+    for (const r of others.values()) await publishNextManifest(tx, r.period, r.block, now);
+    const published = await publishNextManifest(tx, period, block, now);
+    await tx.audit.append({
+      auditId: this.deps.newId(),
+      actor: operator,
+      action: 'RECEIPTS_UPLOADED',
+      at: now,
+      subject: `${period.toString()}/${block}`,
+      newValue: `manifest v${published.version}`,
+      note: `${changed.length} registered, ${results.length - changed.length} not registered`,
     });
-    return ok({ manifestVersion: manifest.version, results });
+    await tx.outbox.add(
+      domainEvent(this.deps.newId, 'RECEIPTS_UPLOADED', now, {
+        period: period.toString(),
+        block,
+        manifestVersion: published.version,
+        registered: changed.map((r) => r.sha256),
+      }),
+    );
+    return ok({ manifestVersion: published.version, results });
   }
 
-  private async evaluate(file: UploadedFile, catalog: ConceptCatalog, resolve: (contract: string) => Promise<RecipientResolution>): Promise<Evaluated> {
+  /** Phase (a): nothing here reads or writes the state the decision depends on. */
+  private async evaluate(file: UploadedFile, catalog: ConceptCatalog, lookup: (contract: string) => Promise<RecipientResolution>): Promise<Evaluated> {
     const sha256 = sha256Of(file.content);
     const name = parseReceiptFileName(file.name, catalog, this.deps.fileNameOptions);
     const fileName = name.ok ? name.value.name : file.name.normalize('NFC');
@@ -291,7 +312,7 @@ export class UploadReceipts {
     const verdict = await this.deps.inspector.inspect(file.content);
     if (!verdict.ok) return { file, sha256, fileName, ...parsed, fileError: verdict.error, errorDetail: verdict.detail };
 
-    return { file, sha256, fileName, ...parsed, recipient: await resolve(name.value.contract) };
+    return { file, sha256, fileName, ...parsed, recipient: await lookup(name.value.contract) };
   }
 
   /**
