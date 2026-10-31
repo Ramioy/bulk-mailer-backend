@@ -4,16 +4,19 @@ export const DeliveryState = {
   ACCEPTED: 'ACCEPTED',
   HARD_BOUNCE: 'HARD_BOUNCE',
   COMPLAINT: 'COMPLAINT',
+  /** Accepted by the provider and then not processed (only its logs show it, M2): not delivered, can be resent. */
+  PROCESS_FAILED: 'PROCESS_FAILED',
 } as const;
 export type DeliveryState = (typeof DeliveryState)[keyof typeof DeliveryState];
 
 const NEXT: Readonly<Record<DeliveryState, readonly DeliveryState[]>> = {
   // a complaint implies the message arrived, even if the acceptance event was not received (P5)
-  UNCONFIRMED: ['SOFT_BOUNCE', 'ACCEPTED', 'HARD_BOUNCE', 'COMPLAINT'],
-  SOFT_BOUNCE: ['ACCEPTED', 'HARD_BOUNCE'],
+  UNCONFIRMED: ['SOFT_BOUNCE', 'ACCEPTED', 'HARD_BOUNCE', 'COMPLAINT', 'PROCESS_FAILED'],
+  SOFT_BOUNCE: ['ACCEPTED', 'HARD_BOUNCE', 'PROCESS_FAILED'],
   ACCEPTED: ['COMPLAINT'],
   HARD_BOUNCE: [],
   COMPLAINT: [],
+  PROCESS_FAILED: [],
 };
 
 const LEVEL: Readonly<Record<DeliveryState, number>> = {
@@ -21,6 +24,7 @@ const LEVEL: Readonly<Record<DeliveryState, number>> = {
   SOFT_BOUNCE: 1,
   ACCEPTED: 2,
   HARD_BOUNCE: 2,
+  PROCESS_FAILED: 2,
   COMPLAINT: 3,
 };
 

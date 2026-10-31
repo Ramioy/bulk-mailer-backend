@@ -1,4 +1,5 @@
 import type { Alert } from '../../domain/alert/alert';
+import type { Receipt } from '../../domain/receipt/receipt';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import { domainEvent } from '../events/domain-events';
 
@@ -15,4 +16,15 @@ export async function raiseAlert(stores: Pick<BulkMailerStores, 'alerts' | 'outb
 export function alertFromEvent(payload: Readonly<Record<string, unknown>>): Alert {
   const raw = payload.alert as Omit<Alert, 'raisedAt'> & { raisedAt: string };
   return { ...raw, raisedAt: new Date(raw.raisedAt) };
+}
+
+/** M1: a rejection with a code we do not know is reported, so the code can be reviewed and classified. */
+export async function unknownRejectionAlert(tx: Pick<BulkMailerStores, 'alerts' | 'outbox'>, newId: () => string, now: Date, receipt: Receipt, detail: string): Promise<void> {
+  await raiseAlert(tx, newId, {
+    alertId: newId(),
+    type: 'PROVIDER_UNKNOWN_ERROR',
+    subject: receipt.sha256,
+    detail: `${receipt.fileName}: ${detail}`,
+    raisedAt: now,
+  });
 }

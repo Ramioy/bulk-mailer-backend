@@ -197,12 +197,12 @@ stateDiagram-v2
     PENDING --> SENDING: execution
     FAILED --> SENDING: new execution
     SENDING --> SENT: ZeptoMail accepts (EM_104)
-    SENDING --> FAILED: error with certainty of no send
+    SENDING --> FAILED: error with certainty of no send (also a 400 with an unknown code, D28)
     SENDING --> PENDING: batch stopped before calling the provider, or provider account rejection
-    SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented response, crash
+    SENDING --> UNCERTAIN: timeout, 429, 5xx, undocumented non-400 response, crash
     UNCERTAIN --> SENT: provider confirms (logs or webhook)
     UNCERTAIN --> FAILED: not found at the provider
-    SENT --> SENDING: Resend (manual, after HARD_BOUNCE or COMPLAINT, new email)
+    SENT --> SENDING: Resend (manual, after HARD_BOUNCE, COMPLAINT or PROCESS_FAILED, new email)
 ```
 
 - `SENT` and `UNCERTAIN` never go to `REMOVED`.
@@ -220,6 +220,8 @@ stateDiagram-v2
     SOFT_BOUNCE --> ACCEPTED: provider retried successfully
     SOFT_BOUNCE --> HARD_BOUNCE: provider retries exhausted
     ACCEPTED --> COMPLAINT: recipient marked it as spam
+    UNCONFIRMED --> PROCESS_FAILED: accepted, then not processed (logs only, D29)
+    SOFT_BOUNCE --> PROCESS_FAILED: accepted, then not processed (logs only, D29)
 ```
 
 The delivery state only advances. `ACCEPTED` = the recipient's server accepted it; not a guarantee of reaching the inbox.

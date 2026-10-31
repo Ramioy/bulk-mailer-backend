@@ -29,6 +29,7 @@ export type IncidentDecision =
  */
 export class ProviderIncidentTracker {
   private consecutive = 0;
+  private unknownRejections = 0;
 
   constructor(private readonly policy: ProviderIncidentPolicy = DEFAULT_PROVIDER_INCIDENT_POLICY) {}
 
@@ -37,6 +38,16 @@ export class ProviderIncidentTracker {
   }
 
   register(outcome: SendOutcome): IncidentDecision {
+    // A rejection with an unknown code is a definitive answer (no wait), but three in a row stop the batch (M1).
+    if (outcome.kind === 'UNKNOWN_REJECTION') {
+      this.consecutive = 0;
+      this.unknownRejections += 1;
+      if (this.unknownRejections >= this.policy.stopAfter) {
+        return { action: 'STOP', reason: BatchStopReason.PROVIDER_UNKNOWN_ERROR, consecutiveIncidents: this.unknownRejections };
+      }
+      return { action: 'CONTINUE' };
+    }
+    this.unknownRejections = 0;
     if (outcome.kind !== 'CONNECTION_FAILED' && outcome.kind !== 'UNCERTAIN') {
       this.consecutive = 0;
       return { action: 'CONTINUE' };

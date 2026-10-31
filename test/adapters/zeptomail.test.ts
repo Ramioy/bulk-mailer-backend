@@ -120,7 +120,7 @@ describe('ZeptoMailEmailProvider without a server', () => {
     expect((await answer('to').send(email())).kind).toBe('RECEIPT_REJECTED');
   });
 
-  it('treats an unknown 400 code as UNCERTAIN (undocumented)', async () => {
+  it('treats an unknown 400 code as a rejection with an unknown code (M1): not sent, no uncertainty', async () => {
     const provider = new ZeptoMailEmailProvider({
       baseUrl: 'http://x',
       apiKey: 'k',
@@ -128,7 +128,7 @@ describe('ZeptoMailEmailProvider without a server', () => {
       timeoutMs: 500,
       fetch: async () => new Response(JSON.stringify({ data: { error_code: 'TM_3004', message: 'Invalid request' }, message: 'error' }), { status: 400 }),
     });
-    expect(await provider.send(email())).toMatchObject({ kind: 'UNCERTAIN', detail: expect.stringContaining('TM_3004') });
+    expect(await provider.send(email())).toMatchObject({ kind: 'UNKNOWN_REJECTION', detail: expect.stringContaining('TM_3004') });
   });
 });
 

@@ -46,6 +46,7 @@ describe('receipt send state', () => {
   it('offers Resend only after a hard bounce or a complaint', () => {
     expect(canResend('SENT', 'HARD_BOUNCE')).toBe(true);
     expect(canResend('SENT', 'COMPLAINT')).toBe(true);
+    expect(canResend('SENT', 'PROCESS_FAILED')).toBe(true);
     expect(canResend('SENT', 'ACCEPTED')).toBe(false);
     expect(canResend('SENT', 'SOFT_BOUNCE')).toBe(false);
     expect(canResend('FAILED', 'HARD_BOUNCE')).toBe(false);

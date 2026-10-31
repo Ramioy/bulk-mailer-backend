@@ -22,6 +22,12 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect(await repo.receipts.get(hashOf('f'))).toBeUndefined();
       });
 
+      it('keeps the PROCESS_FAILED delivery state (M2)', async () => {
+        const receipt = aReceipt({ state: 'SENT', deliveryState: 'PROCESS_FAILED' });
+        await repo.receipts.save(receipt);
+        expect((await repo.receipts.get(receipt.sha256))?.deliveryState).toBe('PROCESS_FAILED');
+      });
+
       it('lists by batch ordered by file name, and by state', async () => {
         await repo.receipts.save(aReceipt({ sha256: hashOf('a'), fileName: 'b.pdf' }));
         await repo.receipts.save(aReceipt({ sha256: hashOf('b'), fileName: 'a.pdf', state: 'INVALID' }));
@@ -137,7 +143,9 @@ export function bulkMailerRepositoryContract(name: string, create: () => Promise
         expect(await repo.deliveryEvents.record(event)).toBe(false);
         const fromLogs = { ...event, eventId: 'logs:r1', state: 'HARD_BOUNCE' as const, source: 'LOGS' as const, providerRequestId: 'r1', emailReference: 'e1' };
         await repo.deliveryEvents.record(fromLogs);
-        expect(await repo.deliveryEvents.listByAttempt('a1')).toEqual([event, fromLogs]);
+        const processFailed = { ...fromLogs, eventId: 'logs:r2', state: 'PROCESS_FAILED' as const };
+        await repo.deliveryEvents.record(processFailed);
+        expect(await repo.deliveryEvents.listByAttempt('a1')).toEqual([event, fromLogs, processFailed]);
       });
     });
 

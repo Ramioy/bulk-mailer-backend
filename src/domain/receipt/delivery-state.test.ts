@@ -11,12 +11,19 @@ describe('applyDeliveryEvent', () => {
     ['SOFT_BOUNCE', 'HARD_BOUNCE'],
     ['ACCEPTED', 'COMPLAINT'],
     ['UNCONFIRMED', 'COMPLAINT'],
+    ['UNCONFIRMED', 'PROCESS_FAILED'],
+    ['SOFT_BOUNCE', 'PROCESS_FAILED'],
   ] as const)('advances %s → %s', (current, incoming) => {
     expect(applyDeliveryEvent(current, incoming)).toEqual({ kind: 'ADVANCED', state: incoming });
   });
 
   it('ignores a late soft bounce after accepted', () => {
     expect(applyDeliveryEvent('ACCEPTED', 'SOFT_BOUNCE')).toEqual({ kind: 'IGNORED', state: 'ACCEPTED' });
+  });
+
+  it('M2: PROCESS_FAILED is final; a later event is an anomaly', () => {
+    expect(applyDeliveryEvent('PROCESS_FAILED', 'ACCEPTED')).toEqual({ kind: 'ANOMALY', state: 'PROCESS_FAILED' });
+    expect(applyDeliveryEvent('ACCEPTED', 'PROCESS_FAILED')).toEqual({ kind: 'ANOMALY', state: 'ACCEPTED' });
   });
 
   it('ignores a repeated event', () => {

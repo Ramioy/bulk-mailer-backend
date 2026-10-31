@@ -15,6 +15,7 @@ import { applyPendingEvents } from './apply-delivery-event';
 import { publishNextManifest } from '../receipts/receipt-dependencies';
 import { renderEmail } from '../sending/email-template';
 import type { DeliveryDependencies } from './delivery-dependencies';
+import { unknownRejectionAlert } from '../alerts/raise-alert';
 
 export type ResendError =
   | 'EXECUTION_IN_PROGRESS'
@@ -136,6 +137,7 @@ export class ResendReceipt {
       await tx.outbox.add(
         domainEvent(newId, type, now, { sha256, attemptId: attempt.attemptId, attemptKind: 'RESEND', state, outcome: outcome.kind, errorType: resolution.errorType, providerCalled: true }),
       );
+      if (outcome.kind === 'UNKNOWN_REJECTION') await unknownRejectionAlert(tx, newId, now, updated, outcome.detail);
       if (state === 'SENT' || state === 'UNCERTAIN') await applyPendingEvents(tx, newId, now, attempt.attemptId);
     });
     // Files are kept only until the receipt is processed (D4).

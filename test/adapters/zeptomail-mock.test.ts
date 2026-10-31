@@ -100,6 +100,12 @@ describe('ZeptoMail simulator: logs API', () => {
     expect((await env.logs('/email/email-reference/nope')).status).toBe(404);
   });
 
+  it('reads the scenario in any case: a lower-cased address still gets the documented code (the app lower-cases addresses)', async () => {
+    expect(await env.provider.send(email('attempt-sm113-lower', 'admin+zm-sm_113@altos.com'))).toMatchObject({ kind: 'RECEIPT_REJECTED' });
+    expect(await env.provider.send(email('attempt-sm113-upper', 'admin+zm-SM_113@altos.com'))).toMatchObject({ kind: 'RECEIPT_REJECTED' });
+    expect(await env.provider.send(email('attempt-le102-lower', 'admin+zm-le_102@altos.com'))).toMatchObject({ kind: 'ACCOUNT_ERROR' });
+  });
+
   it('shows the email of a timed-out send (the response was lost, the email went out)', async () => {
     const slow = await startMock({ timeoutMs: 700 });
     try {

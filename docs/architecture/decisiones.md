@@ -201,7 +201,7 @@ Lectura de las páginas de `docs/context/19-references.md` (logs, autenticación
 - **Fuera de producción**, el buzón de prueba no identifica al destinatario de un webhook: sin copia el evento cuenta como del principal; con copia queda registrado sin cambiar el soporte.
 - **Reenvío (A2)**: volver a subir el PDF de un `SENT` con `HARD_BOUNCE` o `COMPLAINT` y sin archivo, en el mismo lote, le devuelve el archivo sin cambiar su estado (decisión de carga `RESTORE_FILE`). `ResendReceipt` vuelve a consultar la fuente; la dirección suprimida (la misma que falló, salvo liberada, o una nueva también suprimida) se bloquea como `EMAIL_SUPPRESSED`. Un reenvío exitoso descarta el archivo; uno fallido queda `FAILED` y genera una versión de manifiesto nueva (D7c). El reenvío no exige que el periodo sea operable (los rebotes llegan días después), pero sí que no haya una ejecución en curso.
 - **Resolución manual**: `ResolveUncertain` con `SENT` deja la entrega en `UNCONFIRMED`; con `NOT_SENT` deja `FAILED / NOT_FOUND_AT_PROVIDER`.
-- **Límite conocido**: si el barrido encuentra un `SENT` como `Process failed` en los logs (por ejemplo, una dirección suprimida descartada en silencio, §12.7), solo se anota en el historial (`PROVIDER_PROCESS_FAILED`): el diagrama no tiene transición `SENT → FAILED`.
+- ~~**Límite conocido**: si el barrido encuentra un `SENT` como `Process failed` en los logs (por ejemplo, una dirección suprimida descartada en silencio, §12.7), solo se anota en el historial (`PROVIDER_PROCESS_FAILED`): el diagrama no tiene transición `SENT → FAILED`.~~ Resuelto por D29.
 
 Eventos nuevos: `WEBHOOK_RECEIVED`, `DELIVERY_UPDATED`, `RECEIPT_RESOLVED`, `ADDRESS_SUPPRESSED`, `ADDRESS_RELEASED`.
 
@@ -287,3 +287,17 @@ JSON real de cada evento (en especial *Delivered* y el campo del destinatario), 
 | # | Decisión |
 |---|---|
 | D27 | ✅ **Toda dirección de correo se normaliza a minúsculas, incluida la parte local**, y se le quitan los espacios de los bordes (`normaliseEmail`). Se aplica al correo que devuelven Tayrona y SAP, a la lista local de supresiones y su liberación, y a la comparación con el destinatario de los webhooks y de los logs de ZeptoMail. Así, `Admin@Altos.com` y `admin@altos.com` son la misma dirección para el manifiesto, la supresión y la detección de cambio de destinatario. Riesgo aceptado: el estándar permite que un servidor distinga mayúsculas en la parte local, pero en la práctica los proveedores no lo hacen. Surgió de la simulación de la rama `simulacion`, donde el simulador de ZeptoMail sí las distinguía |
+
+## Ajustes aprendidos de la simulación (2026-10-31)
+
+Propuestos tras el mes simulado de la rama `simulacion` (M1, M2, M3) y aprobados por el usuario.
+
+| # | Decisión |
+|---|---|
+| D28 | ✅ **(M1) Un HTTP 400 con un código que no conocemos es un rechazo, no una incertidumbre.** Un 400 dice que ZeptoMail no aceptó la petición, así que el correo no salió. El soporte queda `FAILED / PROVIDER_REJECTED` en el acto, **sin pausa** y sin esperar a la conciliación (antes: `UNCERTAIN`, pausa de 30 s, cuenta para la detención y 60 min hasta `NOT_FOUND_AT_PROVIDER`). Se genera la alerta `PROVIDER_UNKNOWN_ERROR` con el código, para revisarlo y clasificarlo. Como un código desconocido puede ser un problema de la cuenta, **tres seguidos detienen el lote** (`STOPPED / PROVIDER_UNKNOWN_ERROR`); cualquier otra respuesta reinicia esa cuenta, y no se mezcla con la de incidentes inciertos. Cambia §12.4. Riesgo aceptado: si ZeptoMail respondiera 400 habiendo enviado el correo (no documentado, muy improbable), un reenvío lo duplicaría. Las demás respuestas no documentadas (200 sin `EM_104`, 429, 5xx, *timeout*, red) siguen siendo `UNCERTAIN` |
+| D29 | ✅ **(M2) Un correo aceptado que ZeptoMail no procesa** (`Process failed` en los logs) pasa al **estado de entrega `PROCESS_FAILED`** (final; desde `UNCONFIRMED` o `SOFT_BOUNCE`), con la alerta `PROCESS_FAILED`, y **se puede reenviar** como tras un rebote duro o una queja (§10.4; el archivo se vuelve a subir, A2). La dirección **no** se suprime: no es culpa del destinatario. ZeptoMail no manda webhook para este caso, así que no cuenta como pérdida de webhooks ni para el silencio total de `WEBHOOKS_NOT_RECEIVED`. Un `UNCERTAIN` con `Process failed` sigue quedando `FAILED / PROVIDER_REJECTED`. Migración `ProcessFailed1761890400000` (amplía las restricciones de `receipts.delivery_state` y `delivery_events.state`) |
+| D30 | ✅ **(M3) El simulador de ZeptoMail lee el escenario sin distinguir mayúsculas** (`+zm-sm_113` = `+zm-SM_113`) y responde los códigos en mayúsculas, como ZeptoMail. La app pasa los correos a minúsculas (D27), así que antes el simulador respondía un código inexistente |
+
+### Por qué una respuesta incierta tarda hasta 60 min (sin cambios)
+
+La conciliación busca un `UNCERTAIN` en los logs a los 5, 15 y 60 min (`RECONCILE_DELAYS_MINUTES`). Si lo encuentra, queda `SENT`; si no, solo se marca `FAILED / NOT_FOUND_AT_PROVIDER` en la última consulta, porque ZeptoMail no documenta cuánto tarda un correo en aparecer en sus logs (§12.7) y marcarlo antes invitaría a reenviar un correo que sí salió. Con D28 ese plazo ya no aplica a los 400. El valor se calibra con la cuenta real en el paso 12.

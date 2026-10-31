@@ -11,7 +11,7 @@ import type { Attempt } from '../../domain/sending/attempt';
 import { ProviderIncidentTracker, SourceIncidentTracker } from '../../domain/sending/incident-policy';
 import { resolveSendOutcome, type SendOutcome } from '../../domain/sending/send-outcome';
 import { BatchStopReason, SendErrorType, type ReceiptErrorType } from '../../domain/shared/error-types';
-import { raiseAlert } from '../alerts/raise-alert';
+import { raiseAlert, unknownRejectionAlert } from '../alerts/raise-alert';
 import { applyPendingEvents } from '../delivery/apply-delivery-event';
 import { domainEvent } from '../events/domain-events';
 import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
@@ -204,6 +204,7 @@ export class RunExecution {
       await tx.receipts.appendHistory({ sha256: updated.sha256, at: now, event: state, detail: detail ?? outcome.kind });
       const type: DomainEventType = state === 'SENT' ? 'RECEIPT_SENT' : state === 'UNCERTAIN' ? 'RECEIPT_UNCERTAIN' : 'RECEIPT_SEND_FAILED';
       await tx.outbox.add(this.receiptEvent(type, now, execution, attempt, { state, outcome: outcome.kind, errorType, providerCalled: true }));
+      if (outcome.kind === 'UNKNOWN_REJECTION') await unknownRejectionAlert(tx, this.deps.newId, now, updated, outcome.detail);
       // Delivery events that arrived while it was SENDING (D21).
       if (state === 'SENT' || state === 'UNCERTAIN') await applyPendingEvents(tx, this.deps.newId, now, attempt.attemptId);
     });

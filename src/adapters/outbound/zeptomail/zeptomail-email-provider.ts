@@ -36,7 +36,8 @@ interface ErrorDetail {
 
 /**
  * ZeptoMail send API (`POST /email`). Classifies every response into a provider-neutral SendOutcome
- * (docs/context/12-email-provider-zeptomail.md §12.4); anything undocumented is UNCERTAIN. Never throws.
+ * (docs/context/12-email-provider-zeptomail.md §12.4); an undocumented 400 is UNKNOWN_REJECTION (M1), anything else
+ * undocumented is UNCERTAIN. Never throws.
  */
 export class ZeptoMailEmailProvider implements EmailProvider {
   private readonly fetch: typeof fetch;
@@ -109,7 +110,8 @@ function classify(details: ErrorDetail[], raw: string): SendOutcome {
     return CONFIGURATION_TARGETS.has(invalidAddress.target ?? '') ? { kind: 'ACCOUNT_ERROR', detail } : { kind: 'RECEIPT_REJECTED', detail };
   }
   if (codes.some((c) => RECEIPT_CODES.has(c))) return { kind: 'RECEIPT_REJECTED', detail };
-  return { kind: 'UNCERTAIN', detail: `undocumented HTTP 400: ${detail}` };
+  // A 400 is a rejection: the email was not sent, whatever the code (M1).
+  return { kind: 'UNKNOWN_REJECTION', detail: `undocumented HTTP 400: ${detail}` };
 }
 
 /** Sub-codes from either known body: `{ error: { details: [{ code, target }] } }` or `{ data: { error_code } }`. */

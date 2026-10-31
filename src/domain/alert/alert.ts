@@ -4,6 +4,10 @@ export const AlertType = {
   HARD_BOUNCE: 'HARD_BOUNCE',
   COMPLAINT: 'COMPLAINT',
   WEBHOOKS_NOT_RECEIVED: 'WEBHOOKS_NOT_RECEIVED',
+  /** The provider rejected a send with a code we do not know (M1): to be reviewed and added to the classification. */
+  PROVIDER_UNKNOWN_ERROR: 'PROVIDER_UNKNOWN_ERROR',
+  /** The provider accepted a send and then failed to process it (M2): the receipt can be resent. */
+  PROCESS_FAILED: 'PROCESS_FAILED',
   /** The archive copy mailbox bounced; it does not affect the receipt. */
   COPY_BOUNCED: 'COPY_BOUNCED',
 } as const;

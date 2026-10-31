@@ -11,7 +11,7 @@
  * while ZeptoMail is known to answer `{ "error": { "code", "details": [{ "code", "message", "target", "target_value" }], … } }`.
  * Both are produced here (`errorFormat`) so the adapter is tested against both; confirm with the real account (§12.7).
  *
- * Forced scenarios: put `+zm-<scenario>` in the recipient's local part, e.g. `admin+zm-LE_102@altos.com`:
+ * Forced scenarios: put `+zm-<scenario>` in the recipient's local part (any case), e.g. `admin+zm-LE_102@altos.com`:
  *   timeout · reset · 429 · 500 · 503 · empty200 · LE_101 · LE_102 · SERR_156 · SERR_157 · SM_111 · SM_128 · SM_133 · SMI_115 · AE_101 · SM_113
  *
  * Logs API (https://www.zoho.com/cpaas/help/api/get-email-logs.html and get-specific-email-log.html, read 2026-10-31):
@@ -529,8 +529,14 @@ export function signWebhook(decodedParameter: string, authenticationKey: string,
   return `ts=${ts};s=${encodeURIComponent(s)};s-algorithm=HmacSHA256`;
 }
 
+/**
+ * Scenario in the local part, case-insensitive: the application lower-cases addresses (§6), so `+zm-sm_113` must
+ * still answer the documented code `SM_113`. Error codes are canonical in upper case; the other scenarios in lower case.
+ */
 function scenarioOf(address: string): string | undefined {
-  return /\+zm-([A-Za-z0-9_]+)@/.exec(address)?.[1];
+  const raw = /\+zm-([A-Za-z0-9_]+)@/.exec(address)?.[1];
+  if (raw === undefined) return undefined;
+  return raw.toUpperCase() in MESSAGES ? raw.toUpperCase() : raw.toLowerCase();
 }
 
 function parseJson(text: string): unknown {

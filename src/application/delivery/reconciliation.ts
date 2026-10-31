@@ -80,11 +80,9 @@ export async function checkAttempt(deps: CheckDependencies, attemptId: string, f
           await fail(tx, newId, now, current, withIds, SendErrorType.PROVIDER_REJECTED, found.detail ?? 'process failed at the provider');
           return { result: 'UPDATED', providerStatus: status };
         }
-        // SENT and then not processed: there is no SENT → FAILED transition; left visible in the history once.
-        if (!(await tx.receipts.history(current.sha256)).some((h) => h.event === 'PROVIDER_PROCESS_FAILED')) {
-          await tx.receipts.appendHistory({ sha256: current.sha256, at: now, event: 'PROVIDER_PROCESS_FAILED', detail: found.detail ?? 'process failed after acceptance' });
-        }
-        return { result: 'NO_CHANGE', providerStatus: status };
+        // SENT and then not processed (M2): delivery PROCESS_FAILED, with an alert; the receipt can be resent.
+        const applied = await applyIncomingEvent(tx, newId, now, logsEvent(withIds, 'PROCESS_FAILED', now, found.detail ?? 'process failed after acceptance'));
+        return { result: applied === 'APPLIED' ? 'UPDATED' : 'NO_CHANGE', providerStatus: status };
       }
       const delivery = DELIVERY_BY_STATUS[status];
       if (delivery) {
@@ -187,8 +185,8 @@ export class SweepUnconfirmed {
       const { result, providerStatus } = await checkAttempt(this.deps, attempt.attemptId, false);
       if (result !== 'UPDATED') continue;
       updated += 1;
-      // A resend has no execution: its proven loss is judged here.
-      if (!attempt.executionId && !(await webhookArrived(attempt.attemptId))) {
+      // A resend has no execution: its proven loss is judged here. ZeptoMail has no webhook for a process failure.
+      if (!attempt.executionId && providerStatus !== 'PROCESS_FAILED' && !(await webhookArrived(attempt.attemptId))) {
         await raise(attempt.attemptId, `the provider logs show ${providerStatus ?? 'a delivery state'} for ${receipt.fileName} but no webhook arrived`);
       }
     }
@@ -198,14 +196,18 @@ export class SweepUnconfirmed {
       if (sent.length === 0) continue;
       let withWebhook = 0;
       let provenLoss = 0;
+      let expectingWebhook = 0;
       for (const attempt of sent) {
         const events = await repository.deliveryEvents.listByAttempt(attempt.attemptId);
+        // A process failure is only in the logs: ZeptoMail sends no webhook for it, so it proves nothing (M2).
+        if (events.some((e) => e.state === 'PROCESS_FAILED')) continue;
+        expectingWebhook += 1;
         if (events.some((e) => e.source === 'WEBHOOK')) withWebhook += 1;
         else if (events.some((e) => e.source === 'LOGS')) provenLoss += 1;
       }
       const where = `${execution.period.toString()}/${execution.block}`;
       if (provenLoss > 0) await raise(execution.executionId, `the provider logs show a delivery state for ${provenLoss} receipt(s) of ${where} but no webhook arrived`);
-      else if (withWebhook === 0) await raise(execution.executionId, `${sent.length} receipt(s) sent by ${where} and no webhook in ${reconciliation.sweepAfterHours} h`);
+      else if (expectingWebhook > 0 && withWebhook === 0) await raise(execution.executionId, `${expectingWebhook} receipt(s) sent by ${where} and no webhook in ${reconciliation.sweepAfterHours} h`);
     }
     return { lookedUp, updated, alerts };
   }

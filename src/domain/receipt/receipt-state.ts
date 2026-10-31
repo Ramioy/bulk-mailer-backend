@@ -36,5 +36,5 @@ export function assertTransition(from: ReceiptState, to: ReceiptState): void {
 
 /** Resend is only offered for a SENT receipt whose delivery ended in a hard bounce or a complaint. */
 export function canResend(state: ReceiptState, delivery: DeliveryState): boolean {
-  return state === 'SENT' && (delivery === 'HARD_BOUNCE' || delivery === 'COMPLAINT');
+  return state === 'SENT' && (delivery === 'HARD_BOUNCE' || delivery === 'COMPLAINT' || delivery === 'PROCESS_FAILED');
 }

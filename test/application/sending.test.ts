@@ -120,6 +120,25 @@ describe('RunExecution', () => {
     expect(await fx.repository.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'STOPPED', stopReason: 'PROVIDER_ACCOUNT' });
   });
 
+  it('M1: a rejection with an unknown code fails the receipt at once, with an alert and no wait; three in a row stop the batch', async () => {
+    const fx = executionFixture();
+    await fx.uploadValid(5);
+    const unknown = { kind: 'UNKNOWN_REJECTION', detail: 'undocumented HTTP 400: TM_3004' } as const;
+    fx.email.respondWith(unknown, unknown, unknown);
+    await fx.startAndRun();
+    expect((await fx.repository.receipts.listByBatch(OCT_2026, 'CASH')).map((r) => [r.state, r.errorType])).toEqual([
+      ['FAILED', 'PROVIDER_REJECTED'],
+      ['FAILED', 'PROVIDER_REJECTED'],
+      ['FAILED', 'PROVIDER_REJECTED'],
+      ['PENDING', undefined],
+      ['PENDING', undefined],
+    ]);
+    expect(fx.clock.sleeps).toEqual([1000, 1000]);
+    expect(fx.progress.events.filter((e) => e.event.type === 'WAITING')).toEqual([]);
+    expect(await fx.repository.batches.get(OCT_2026, 'CASH')).toMatchObject({ state: 'STOPPED', stopReason: 'PROVIDER_UNKNOWN_ERROR' });
+    expect((await fx.repository.alerts.list()).map((a) => a.type)).toEqual(['PROVIDER_UNKNOWN_ERROR', 'PROVIDER_UNKNOWN_ERROR', 'PROVIDER_UNKNOWN_ERROR', 'BATCH_STOPPED']);
+  });
+
   it('continues after a receipt-level rejection; the FAILED receipt is retried by a later execution', async () => {
     const fx = executionFixture();
     await fx.uploadValid(2);

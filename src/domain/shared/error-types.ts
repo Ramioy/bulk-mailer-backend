@@ -41,6 +41,8 @@ export type ReceiptErrorType = FileErrorType | RecipientErrorType | SendErrorTyp
 export const BatchStopReason = {
   PROVIDER_ACCOUNT: 'PROVIDER_ACCOUNT',
   PROVIDER_UNAVAILABLE: 'PROVIDER_UNAVAILABLE',
+  /** Three rejections in a row with codes we do not know (M1): probably the account or the configuration. */
+  PROVIDER_UNKNOWN_ERROR: 'PROVIDER_UNKNOWN_ERROR',
   SOURCE_UNAVAILABLE: 'SOURCE_UNAVAILABLE',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   INTERRUPTED: 'INTERRUPTED',

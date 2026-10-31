@@ -134,5 +134,15 @@ async function applyToReceipt(tx: BulkMailerStores, newId: () => string, now: Da
       raisedAt: now,
     });
   }
+  // M2: the provider did not process it; the address is not at fault, so it is not suppressed.
+  if (outcome.state === 'PROCESS_FAILED') {
+    await raiseAlert(tx, newId, {
+      alertId: newId(),
+      type: 'PROCESS_FAILED',
+      subject: receipt.sha256,
+      detail: `${receipt.fileName}: ${attempt.to} accepted but not processed by the provider${event.reason ? ` (${event.reason})` : ''}; it can be resent`,
+      raisedAt: now,
+    });
+  }
   return 'APPLIED';
 }
