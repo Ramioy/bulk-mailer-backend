@@ -80,3 +80,14 @@ pnpm test:db        # same tests plus PostgreSQL integration (reads TEST_DATABAS
 ```
 
 `pnpm test` skips the PostgreSQL integration tests when `TEST_DATABASE_URL` is not set; CI always sets it.
+
+## Simulated month (branch `simulacion` only)
+
+Runs the whole application in production mode against the Tayrona, SAP and ZeptoMail simulators, in Docker, with 300
+generated receipts in the 6 batches of the month, and writes a report per batch (`sim/out/report.md`).
+
+```bash
+pnpm install && pnpm sim:up   # data, secrets, TLS, image and containers (empty database)
+pnpm sim:run                  # the month: about 1 hour; report and logs in sim/out/
+pnpm sim:down                 # stop and delete the simulated database
+```

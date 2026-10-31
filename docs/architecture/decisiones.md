@@ -281,3 +281,23 @@ JSON real de cada evento (en especial *Delivered* y el campo del destinatario), 
 | `PATCH` | `/concepts/{key}` | `{ "subject"?, "active"? }`. Errores: `CONCEPT_NOT_FOUND` (404), `NOTHING_TO_CHANGE` (400), `INVALID_CONCEPT_SUBJECT` (422) |
 | `GET` | `/settings/archive-copy` | `{ "enabled", "address" }` (`address` es `null` si no está configurada) |
 | `PUT` | `/settings/archive-copy` | `{ "enabled": bool }`. Error: `ARCHIVE_COPY_NOT_CONFIGURED` (409) |
+
+## Rama `simulacion`: mes simulado con servicios simulados (2026-10-31)
+
+Solo en la rama `simulacion`, que **nunca se fusiona con `main`**. Prefijo `S` para no chocar con la numeración de `main`.
+
+| # | Decisión |
+|---|---|
+| S1 | ✅ **Ejecución de punta a punta con servicios simulados**, en Docker: PostgreSQL, simuladores de Tayrona, SAP y ZeptoMail (`mocks/`) y la app. Un guion (`pnpm sim:run`) opera por HTTPS como el operador y cierra cada lote con un informe. El guion **no corrige nada**: lista cada diferencia con lo esperado según el diseño |
+| S2 | ✅ **300 soportes en los 6 lotes del mes** (50 por lote, días 7, 12, 18, 23, 26 y último), generados por un bucle con semilla fija (`sim/generate.ts`), uno tras otro en el periodo actual |
+| S3 | ✅ **El siguiente envío espera la entrega confirmada del anterior** (cambia §8 solo en esta rama; `SEND_WAIT_FOR_DELIVERY=true`). Cuenta como resuelto el primer resultado: entregado, rebote blando, rebote duro, queja o `process failed` en los logs. Sin resultado, se consultan los logs cada 30 s y a los 120 s (`DELIVERY_WAIT_MAX_SECONDS`) el soporte queda `UNCONFIRMED` y el lote sigue. La espera corre fuera del `SerialExecutor`. Una respuesta perdida o un rechazo no esperan entrega. Se mantiene la pausa de 1 s |
+| S4 | ✅ **Cierre acelerado** solo por configuración: conciliación a 1, 2 y 3 min (`RECONCILE_DELAYS_MINUTES=1,2,3`) y seguimiento 3 min después del lote (`DELIVERY_CHECK_TAIL_MINUTES=3`). El informe del lote se escribe cuando no queda nada pendiente o 5 min después del envío |
+| S5 | ✅ **App en modo producción contra los simuladores**: TLS autofirmado, rol restringido de BD (`deploy/db/roles.sql`), sin buzón de prueba, para que cada destinatario lleve su escenario y la copia `bcc` se pueda atribuir |
+
+### Supuestos de la simulación
+
+- Las APIs de contratos se llaman por HTTP dentro de la red de Docker (en producción, HTTPS).
+- El simulador de ZeptoMail entrega cada correo entre 1 y 5 s después de aceptarlo (`MOCK_EVENT_DELAY_MS` / `MOCK_EVENT_DELAY_MAX_MS`); ZeptoMail no publica tiempos de entrega.
+- El informe lee de PostgreSQL, en modo solo lectura, lo que la API no muestra (historial, eventos de progreso, alertas).
+- Escenarios por lote: 33 normales; 8 de entrega (`softbounce`, `softhard`, `softdelivered`, `hardbounce`, `complaint`, `processfailed`, `nowebhook`, `nolog`); `SM_113` y una respuesta perdida (`timeout`) o un `503`/`429`; contrato inexistente, inactivo y sin correo; nombre inválido, concepto desconocido, archivo que no es PDF y duplicado. En `AVVILLAS`, la fuente responde 503 para un contrato.
+- Administración durante el mes: se agrega `SANCIÓN` antes del lote 3 y se retira antes del lote 5; se cambia el asunto de `MULTA` y se activa la copia antes del lote 4, y se desactiva antes del lote 6; después del lote 1, reenvío bloqueado por supresión, liberación y reenvío.
