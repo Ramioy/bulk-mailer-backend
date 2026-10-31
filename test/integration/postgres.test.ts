@@ -1,6 +1,10 @@
 import type { DataSource } from 'typeorm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { LocalJwtAuthenticator } from '../../src/adapters/outbound/auth/local-jwt-authenticator';
+import { hashPassword } from '../../src/adapters/outbound/auth/password-hasher';
+import { PostgresOperatorAccountStore } from '../../src/adapters/outbound/auth/postgres-operator-account-store';
+import { FixedClock } from '../../src/adapters/outbound/fakes/fixed-clock';
 import { PostgresBulkMailerRepository } from '../../src/adapters/outbound/postgres/postgres-bulk-mailer-repository';
 import { PostgresJobQueue } from '../../src/adapters/outbound/postgres/postgres-job-queue';
 import { bulkMailerRepositoryContract } from '../contracts/bulk-mailer-repository.contract';
@@ -55,6 +59,35 @@ describe.skipIf(!TEST_DATABASE_URL)('PostgreSQL 18', () => {
         ['e1', 'e2', 'e3', 'e4'].map((executionId) => repo.executions.tryStart(anExecution({ executionId }))),
       );
       expect(started.filter(Boolean)).toHaveLength(1);
+    });
+
+    it('authenticates against operator accounts and sessions stored in PostgreSQL', async () => {
+      await dataSource.query('INSERT INTO operator_accounts (operator_id, username, password_hash) VALUES ($1, $2, $3)', [
+        'op-1', 'operador', await hashPassword('correct horse battery staple'),
+      ]);
+      const clock = new FixedClock();
+      const auth = new LocalJwtAuthenticator(new PostgresOperatorAccountStore(dataSource), clock, {
+        signingKey: Buffer.alloc(32, 3), accessTokenMinutes: 15, sessionHours: 8,
+      });
+      expect(await auth.signIn('nadie', 'x')).toEqual({ ok: false, error: 'UNKNOWN_USER' });
+      const signedIn = await auth.signIn('operador', 'correct horse battery staple');
+      if (!signedIn.ok) throw new Error('sign-in failed');
+      const { accessToken, refreshToken } = signedIn.value.tokens;
+      expect((await auth.verify(accessToken)).ok).toBe(true);
+
+      const renewed = await auth.refresh(refreshToken);
+      expect(renewed.ok).toBe(true);
+      expect((await auth.refresh(refreshToken)).ok).toBe(false);
+
+      if (!renewed.ok) throw new Error('refresh failed');
+      expect(await auth.signOut(renewed.value.tokens.refreshToken)).toEqual({ operatorId: 'op-1', username: 'operador' });
+      expect((await auth.verify(accessToken)).ok).toBe(false);
+    });
+
+    it('refuses an account whose password is not an argon2id hash', async () => {
+      await expect(
+        dataSource.query(`INSERT INTO operator_accounts (operator_id, username, password_hash) VALUES ('x', 'x', 'plain')`),
+      ).rejects.toThrow('operator_accounts_password_hash_check');
     });
 
     it('never hands the same job to two concurrent runners (SKIP LOCKED)', async () => {

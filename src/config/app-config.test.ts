@@ -13,17 +13,25 @@ describe('loadConfig', () => {
       timeZone: 'America/Bogota',
       dataDir: './data',
       databaseUrl: 'postgres://localhost/bulk_mailer',
+      accessTokenMinutes: 15,
+      sessionHours: 8,
     });
+  });
+
+  it('requires TLS in production, with both files', () => {
+    expect(() => loadConfig({ ...REQUIRED, NODE_ENV: 'production' })).toThrow('required in production');
+    expect(() => loadConfig({ ...REQUIRED, TLS_CERT_FILE: 'cert.pem' })).toThrow('go together');
+    expect(loadConfig({ ...REQUIRED, NODE_ENV: 'production', TLS_CERT_FILE: 'c', TLS_KEY_FILE: 'k' }).tls).toEqual({ certFile: 'c', keyFile: 'k' });
   });
 
   it('lists every problem at once', () => {
     let caught: unknown;
     try {
-      loadConfig({ NODE_ENV: 'staging', PORT: '0', TIME_ZONE: 'Mars/Olympus' });
+      loadConfig({ NODE_ENV: 'staging', PORT: '0', TIME_ZONE: 'Mars/Olympus', SESSION_HOURS: '0' });
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(ConfigError);
-    expect((caught as ConfigError).problems).toHaveLength(5);
+    expect((caught as ConfigError).problems).toHaveLength(6);
   });
 });

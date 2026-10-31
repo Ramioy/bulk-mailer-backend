@@ -1,3 +1,8 @@
+export interface TlsConfig {
+  readonly certFile: string;
+  readonly keyFile: string;
+}
+
 export interface AppConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly host: string;
@@ -7,6 +12,11 @@ export interface AppConfig {
   /** Root of the volume where receipts are kept until their batch is processed. */
   readonly dataDir: string;
   readonly databaseUrl: string;
+  /** Required in production. */
+  readonly tls?: TlsConfig;
+  readonly accessTokenMinutes: number;
+  /** Absolute lifetime of a session (refresh credential). */
+  readonly sessionHours: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -39,6 +49,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL ?? '';
   if (databaseUrl === '') problems.push('DATABASE_URL is required');
 
+  const certFile = env.TLS_CERT_FILE ?? '';
+  const keyFile = env.TLS_KEY_FILE ?? '';
+  if ((certFile === '') !== (keyFile === '')) problems.push('TLS_CERT_FILE and TLS_KEY_FILE go together');
+  if (nodeEnv === 'production' && certFile === '') problems.push('TLS_CERT_FILE and TLS_KEY_FILE are required in production');
+
+  const accessTokenMinutes = positiveInteger(env.ACCESS_TOKEN_MINUTES ?? '15', 'ACCESS_TOKEN_MINUTES', problems);
+  const sessionHours = positiveInteger(env.SESSION_HOURS ?? '8', 'SESSION_HOURS', problems);
+
   if (problems.length > 0) throw new ConfigError(problems);
 
   return {
@@ -48,7 +66,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     timeZone,
     dataDir,
     databaseUrl,
+    ...(certFile === '' ? {} : { tls: { certFile, keyFile } }),
+    accessTokenMinutes,
+    sessionHours,
   };
+}
+
+function positiveInteger(text: string, name: string, problems: string[]): number {
+  const value = Number(text);
+  if (!Number.isInteger(value) || value < 1) problems.push(`${name} must be a positive integer`);
+  return value;
 }
 
 function isNodeEnv(value: string): value is AppConfig['nodeEnv'] {

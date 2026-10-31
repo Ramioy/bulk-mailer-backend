@@ -19,7 +19,7 @@ export async function migratedDataSource(url: string): Promise<DataSource> {
 export async function resetData(dataSource: DataSource): Promise<void> {
   await dataSource.query(`
     ALTER TABLE audit_entries DISABLE TRIGGER USER;
-    TRUNCATE jobs, settings, concepts, audit_entries, alerts, delivery_events, suppressions,
+    TRUNCATE operator_sessions, operator_accounts, jobs, settings, concepts, audit_entries, alerts, delivery_events, suppressions,
       attempts, executions, manifests, batches, receipt_history, receipts RESTART IDENTITY;
     ALTER TABLE audit_entries ENABLE TRIGGER USER;
     INSERT INTO concepts (key, subject, active) VALUES

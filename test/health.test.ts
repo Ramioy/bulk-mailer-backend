@@ -1,24 +1,20 @@
-import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { createApp } from '../src/bootstrap';
-import { loadConfig } from '../src/config/app-config';
+import { startTestApp, type TestContext } from './support/test-app';
 
 describe('GET /health', () => {
-  let app: NestFastifyApplication;
+  let ctx: TestContext;
 
   beforeAll(async () => {
-    app = await createApp(loadConfig({ NODE_ENV: 'test', DATA_DIR: '/tmp/bulk-mailer-test', DATABASE_URL: 'postgres://unused' }));
-    await app.init();
-    await app.getHttpAdapter().getInstance().ready();
+    ctx = await startTestApp();
   });
 
   afterAll(async () => {
-    await app.close();
+    await ctx.app.close();
   });
 
-  it('answers ok', async () => {
-    const response = await app.inject({ method: 'GET', url: '/health' });
+  it('answers ok without authentication', async () => {
+    const response = await ctx.app.inject({ method: 'GET', url: '/health' });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: 'ok' });
   });

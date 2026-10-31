@@ -46,6 +46,20 @@ pnpm db:migrate     # applies pending migrations to DATABASE_URL
 
 Production roles (application user with insert-only audit): [`deploy/db/roles.sql`](deploy/db/roles.sql).
 
+## Operator accounts
+
+Bulk Mailer does not administer accounts and never ships default credentials. The deployment team provisions each one:
+
+```bash
+pnpm hash-password   # asks for the password (hidden), prints its argon2id hash
+```
+
+```sql
+INSERT INTO operator_accounts (operator_id, username, password_hash) VALUES ('op-1', 'operador', '<hash>');
+```
+
+Secrets: `JWT_SIGNING_KEY` (base64, ≥ 32 bytes). TLS: `TLS_CERT_FILE` and `TLS_KEY_FILE`, required in production.
+
 ## Checks
 
 ```bash

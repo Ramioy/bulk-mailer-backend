@@ -13,3 +13,5 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO bulk_mailer_app;
 
 REVOKE UPDATE, DELETE, TRUNCATE ON audit_entries FROM bulk_mailer_app;
 REVOKE ALL ON migrations FROM bulk_mailer_app;
+-- Accounts are provisioned by the deployment team; the application only reads them.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON operator_accounts FROM bulk_mailer_app;

@@ -1,8 +1,9 @@
 import { DataSource } from 'typeorm';
 
 import { InitialSchema1761868800000 } from './migrations/1761868800000-initial-schema';
+import { OperatorAccounts1761872400000 } from './migrations/1761872400000-operator-accounts';
 
-export const MIGRATIONS = [InitialSchema1761868800000];
+export const MIGRATIONS = [InitialSchema1761868800000, OperatorAccounts1761872400000];
 
 /** TypeORM is used for connections, transactions and migrations; queries are explicit SQL. */
 export function createDataSource(url: string): DataSource {

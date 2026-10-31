@@ -175,6 +175,9 @@ importers:
       '@nestjs/platform-fastify':
         specifier: ^12.3.2
         version: 12.3.2(@nestjs/common@12.3.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.3.2(@nestjs/common@12.3.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))
+      fastify:
+        specifier: 5.12.7
+        version: 5.12.7
       pg:
         specifier: ^8.23.1
         version: 8.23.1

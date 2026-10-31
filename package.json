@@ -20,12 +20,14 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "test:db": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run",
-    "db:migrate": "pnpm build && node --env-file-if-exists=.env dist/adapters/outbound/postgres/migrate.js"
+    "db:migrate": "pnpm build && node --env-file-if-exists=.env dist/adapters/outbound/postgres/migrate.js",
+    "hash-password": "pnpm -s build && node dist/adapters/outbound/auth/hash-password.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.3.2",
     "@nestjs/core": "^12.3.2",
     "@nestjs/platform-fastify": "^12.3.2",
+    "fastify": "5.12.7",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",

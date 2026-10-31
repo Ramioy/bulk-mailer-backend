@@ -70,7 +70,7 @@ describe('FakeAuthenticator', () => {
     const signedIn = await auth.signIn('op', 'secret');
     if (!signedIn.ok) throw new Error('sign-in failed');
     const { accessToken, refreshToken, refreshExpiresAt } = signedIn.value.tokens;
-    expect(await auth.verify(accessToken)).toEqual({ ok: true, value: { operatorId: 'op', username: 'op' } });
+    expect(await auth.verify(accessToken)).toMatchObject({ ok: true, value: { operatorId: 'op', username: 'op' } });
 
     clock.advance(15 * 60_000);
     expect(await auth.verify(accessToken)).toEqual({ ok: false, error: 'INVALID_ACCESS_TOKEN' });
