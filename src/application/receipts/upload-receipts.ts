@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import type { Block } from '../../domain/block/block';
 import { ConceptCatalog } from '../../domain/concept/concept';
 import type { Period } from '../../domain/period/period';
@@ -7,27 +5,33 @@ import type { Alert } from '../../domain/alert/alert';
 import { inConflict, type ConflictingName, type Receipt } from '../../domain/receipt/receipt';
 import { parseReceiptFileName } from '../../domain/receipt/receipt-file-name';
 import { assertTransition, type ReceiptState } from '../../domain/receipt/receipt-state';
-import { toSha256, type Sha256 } from '../../domain/receipt/sha256';
+import type { Sha256 } from '../../domain/receipt/sha256';
+import type { StagedFile, StoredFileKey } from '../../ports/receipt-file-store';
 import { decideUpload } from '../../domain/receipt/upload-rule';
 import { err, ok, type Result } from '../../domain/shared/result';
 import type { FileErrorType, ReceiptErrorType } from '../../domain/shared/error-types';
 import { raiseAlert } from '../alerts/raise-alert';
 import { domainEvent } from '../events/domain-events';
+import type { BulkMailerStores } from '../../ports/bulk-mailer-repository';
 import {
-  cachedResolver,
+  cachedLookup,
   publishNextManifest,
   refuseBatchCommand,
+  withSuppression,
   type BatchCommandError,
   type ReceiptDependencies,
   type RecipientResolution,
 } from './receipt-dependencies';
 
-export interface UploadedFile {
+/**
+ * A file of an upload. The HTTP adapter stages it while receiving it (D48), so only its hash and size travel and no
+ * request keeps every file in memory; internal callers and tests may pass the bytes, which are staged first.
+ */
+export type UploadedFile = {
   readonly name: string;
-  readonly content: Uint8Array;
   /** The transport stopped reading at the size limit; the content is incomplete. */
   readonly tooLarge?: boolean;
-}
+} & ({ readonly staged: StagedFile } | { readonly content: Uint8Array });
 
 export type UploadOutcome =
   /** Registered or re-evaluated; see `state` and `errorType`. */
@@ -77,33 +81,88 @@ export interface UploadSummary {
   readonly results: readonly UploadResult[];
 }
 
+/** A file as phase (a) leaves it: hashed, its name parsed, inspected and its contract looked up. */
 interface Evaluated {
   readonly file: UploadedFile;
+  readonly staged: StagedFile;
   readonly sha256: Sha256;
   readonly fileName: string;
   readonly conceptKey?: string;
   readonly contract?: string;
   readonly fileError?: FileErrorType;
   readonly errorDetail?: string;
+  /** What the contract source said; the suppression list is checked in phase (b). */
   readonly recipient?: RecipientResolution;
 }
 
-const sha256Of = (content: Uint8Array) => toSha256(createHash('sha256').update(content).digest('hex'));
+type Prepared = Evaluated | { readonly file: UploadedFile; readonly tooLarge: true };
 
+/**
+ * Upload (§8.1) in two phases (D36). (a) Outside the serial executor: hashing, name parsing, the PDF inspector and the
+ * contract lookups, which may take seconds. (b) Inside it, in one transaction: the refusals, the existing receipt of
+ * each hash, the suppression list and every decision (A1, D8, D31) are taken again on the current state, then written
+ * with their manifest. Another command that registered the same content in between is seen in (b).
+ */
 export class UploadReceipts {
   constructor(private readonly deps: ReceiptDependencies) {}
 
-  execute(operator: string, period: Period, block: Block, files: readonly UploadedFile[]): Promise<Result<UploadSummary, BatchCommandError>> {
-    return this.deps.serial.run(() => this.run(operator, period, block, files));
+  /** D48: the HTTP adapter stages each part as it arrives, through the file store, without holding it in memory. */
+  stage(content: AsyncIterable<Uint8Array>): Promise<StagedFile> {
+    return this.deps.fileStore.stage(content);
   }
 
-  private async run(operator: string, period: Period, block: Block, files: readonly UploadedFile[]): Promise<Result<UploadSummary, BatchCommandError>> {
-    const refusal = await refuseBatchCommand(this.deps, period);
+  /** D48: staged files of an upload that will not be executed (refused while it was being received). */
+  async discard(files: readonly UploadedFile[]): Promise<void> {
+    for (const file of files) if ('staged' in file) await this.deps.fileStore.discardStaged(file.staged);
+  }
+
+  async execute(operator: string, period: Period, block: Block, files: readonly UploadedFile[]): Promise<Result<UploadSummary, BatchCommandError>> {
+    const staged: StagedFile[] = files.flatMap((f) => ('staged' in f ? [f.staged] : []));
+    const committed = new Set<string>();
+    try {
+      // Refused at once when it is already clear, without querying anyone; checked again in phase (b).
+      const early = await refuseBatchCommand(this.deps, period);
+      if (early) return err(early);
+
+      const catalog = new ConceptCatalog(await this.deps.repository.concepts.list());
+      const lookup = cachedLookup(this.deps, block);
+      const prepared: Prepared[] = [];
+      // One file at a time: only one file's bytes are in memory, for the inspector (D48).
+      for (const file of files) {
+        if (file.tooLarge) {
+          prepared.push({ file, tooLarge: true });
+          continue;
+        }
+        const own = 'staged' in file ? file.staged : await this.deps.fileStore.stage(once(file.content));
+        if (!('staged' in file)) staged.push(own);
+        prepared.push(await this.evaluate(file, own, catalog, lookup));
+      }
+
+      return await this.deps.serial.run(() => this.deps.repository.transaction((tx) => this.decide(tx, operator, period, block, prepared, committed)));
+    } finally {
+      // Whatever was not moved into place (rejected, invalid, duplicate, refused, or a failed transaction) is dropped.
+      for (const file of staged) if (!committed.has(file.stagingId)) await this.deps.fileStore.discardStaged(file);
+    }
+  }
+
+  /** Phase (b): the staged file goes into place by a rename, just before the row that points to it (D36, D48). */
+  private async commit(key: StoredFileKey, staged: StagedFile, committed: Set<string>): Promise<void> {
+    await this.deps.fileStore.commitStaged(key, staged);
+    committed.add(staged.stagingId);
+  }
+
+  private async decide(
+    tx: BulkMailerStores,
+    operator: string,
+    period: Period,
+    block: Block,
+    prepared: readonly Prepared[],
+    committed: Set<string>,
+  ): Promise<Result<UploadSummary, BatchCommandError>> {
+    const refusal = await refuseBatchCommand(this.deps, period, tx);
     if (refusal) return err(refusal);
 
-    const { repository, fileStore, clock } = this.deps;
-    const catalog = new ConceptCatalog(await repository.concepts.list());
-    const resolve = cachedResolver(this.deps, block);
+    const { clock } = this.deps;
     const now = clock.now();
 
     const results: UploadResult[] = [];
@@ -112,13 +171,15 @@ export class UploadReceipts {
     const seen = new Map<Sha256, Receipt>();
     const alerts: Alert[] = [];
 
-    for (const file of files) {
-      if (file.tooLarge) {
+    for (const item of prepared) {
+      const { file } = item;
+      if ('tooLarge' in item) {
         results.push({ fileName: file.name.normalize('NFC'), outcome: 'REJECTED', errorType: 'ATTACHMENT_TOO_LARGE' });
         continue;
       }
-      const evaluated = await this.evaluate(file, catalog, resolve);
-      const existing = seen.get(evaluated.sha256) ?? (await repository.receipts.get(evaluated.sha256));
+      const recipient = item.recipient && (await withSuppression(tx, item.recipient));
+      const evaluated: Evaluated = { ...item, recipient };
+      const existing = seen.get(evaluated.sha256) ?? (await tx.receipts.get(evaluated.sha256));
       const decision = decideUpload(existing, period, block);
 
       // D31: the same content under another valid name is a conflict: nothing of it is sent until the operator chooses.
@@ -153,7 +214,7 @@ export class UploadReceipts {
           updatedAt: now,
         };
         // A FAILED receipt whose file was purged gets it back, so the chosen name can be sent.
-        if (!existing.fileAvailable) await fileStore.save({ period: existing.period, block: existing.block, sha256: existing.sha256 }, file.content);
+        if (!existing.fileAvailable) await this.commit({ period: existing.period, block: existing.block, sha256: existing.sha256 }, evaluated.staged, committed);
         const at = changed.findIndex((r) => r.sha256 === blocked.sha256);
         if (at >= 0) changed[at] = blocked;
         else changed.push(blocked);
@@ -184,13 +245,14 @@ export class UploadReceipts {
           continue;
         }
         const receipt: Receipt = { ...existing, fileAvailable: true, updatedAt: now };
-        await fileStore.save({ period, block, sha256: receipt.sha256 }, file.content);
+        await this.commit({ period, block, sha256: receipt.sha256 }, evaluated.staged, committed);
         this.track(receipt, 'FILE_UPLOADED_FOR_RESEND', undefined, changed, history, seen, results);
         continue;
       }
 
-      if (existing?.state === 'FAILED') {
-        // A FAILED receipt whose file was purged gets its file back; it stays FAILED until the next execution.
+      if (existing && (existing.state === 'FAILED' || (existing.state === 'PENDING' && decision === 'RE_EVALUATE'))) {
+        // A FAILED receipt whose file was purged gets its file back; it stays FAILED until the next execution. A PENDING
+        // one whose file was released (D51) gets it back too, keeping its conflict if it has one.
         if (evaluated.fileError) {
           results.push({ fileName: evaluated.fileName, outcome: 'REJECTED', sha256: evaluated.sha256, errorType: evaluated.fileError, errorDetail: evaluated.errorDetail });
           continue;
@@ -200,13 +262,16 @@ export class UploadReceipts {
           fileName: evaluated.fileName,
           conceptKey: evaluated.conceptKey,
           contract: evaluated.contract,
-          sizeBytes: file.content.length,
+          sizeBytes: evaluated.staged.size,
           recipient: evaluated.recipient?.recipient,
-          errorType: inConflict(existing) ? 'DUPLICATE_CONFLICT' : (evaluated.recipient?.errorType ?? existing.errorType),
+          // A FAILED receipt keeps its send error unless a recipient error replaces it; a PENDING one has no send error.
+          errorType: inConflict(existing)
+            ? 'DUPLICATE_CONFLICT'
+            : (evaluated.recipient?.errorType ?? (existing.state === 'FAILED' ? existing.errorType : undefined)),
           fileAvailable: true,
           updatedAt: now,
         };
-        await fileStore.save({ period, block, sha256: receipt.sha256 }, file.content);
+        await this.commit({ period, block, sha256: receipt.sha256 }, evaluated.staged, committed);
         this.track(receipt, 'FILE_UPLOADED_AGAIN', undefined, changed, history, seen, results);
         continue;
       }
@@ -221,7 +286,7 @@ export class UploadReceipts {
         fileName: evaluated.fileName,
         conceptKey: evaluated.conceptKey,
         contract: evaluated.contract,
-        sizeBytes: file.content.length,
+        sizeBytes: evaluated.staged.size,
         errorType: evaluated.fileError ?? evaluated.recipient?.errorType,
         errorDetail: evaluated.errorDetail,
         recipient: evaluated.recipient?.recipient,
@@ -231,67 +296,68 @@ export class UploadReceipts {
         deliveryState: existing?.deliveryState,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
+        version: existing?.version ?? 1,
       };
-      if (receipt.fileAvailable) await fileStore.save({ period, block, sha256: receipt.sha256 }, file.content);
+      if (receipt.fileAvailable) await this.commit({ period, block, sha256: receipt.sha256 }, evaluated.staged, committed);
       const event = decision === 'NEW' ? 'UPLOADED' : decision === 'MOVE' ? 'MOVED' : 'UPLOADED_AGAIN';
       const detail = decision === 'MOVE' && existing ? `from ${existing.period.toString()}/${existing.block}` : undefined;
       this.track(receipt, event, detail, changed, history, seen, results);
     }
 
-    if (changed.length === 0 && alerts.length > 0) {
-      // Only conflicts with receipts already sent: recorded and warned, the manifest does not change.
-      await repository.transaction(async (tx) => {
-        for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
-        for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
-      });
-    }
     if (changed.length === 0) {
-      const batch = await repository.batches.get(period, block);
+      // Only conflicts with receipts already sent are recorded and warned; the manifest does not change.
+      for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
+      for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
+      const batch = await tx.batches.get(period, block);
       return ok({ manifestVersion: batch?.manifestVersion ?? 0, results });
     }
 
-    const manifest = await repository.transaction(async (tx) => {
-      for (const receipt of changed) await tx.receipts.save(receipt);
-      for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
-      for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
-      // D31: a conflict can block a receipt of another batch: its manifest changes too.
-      const others = new Map<string, Receipt>();
-      for (const r of changed) if (!(r.period.equals(period) && r.block === block)) others.set(`${r.period.toString()}/${r.block}`, r);
-      for (const r of others.values()) await publishNextManifest(tx, r.period, r.block, now);
-      const published = await publishNextManifest(tx, period, block, now);
-      await tx.audit.append({
-        auditId: this.deps.newId(),
-        actor: operator,
-        action: 'RECEIPTS_UPLOADED',
-        at: now,
-        subject: `${period.toString()}/${block}`,
-        newValue: `manifest v${published.version}`,
-        note: `${changed.length} registered, ${results.length - changed.length} not registered`,
-      });
-      await tx.outbox.add(
-        domainEvent(this.deps.newId, 'RECEIPTS_UPLOADED', now, {
-          period: period.toString(),
-          block,
-          manifestVersion: published.version,
-          registered: changed.map((r) => r.sha256),
-        }),
-      );
-      return published;
+    for (const receipt of changed) await tx.receipts.save(receipt);
+    for (const entry of history) await tx.receipts.appendHistory({ ...entry, at: now });
+    for (const alert of alerts) await raiseAlert(tx, this.deps.newId, alert);
+    // D31: a conflict can block a receipt of another batch: its manifest changes too.
+    const others = new Map<string, Receipt>();
+    for (const r of changed) if (!(r.period.equals(period) && r.block === block)) others.set(`${r.period.toString()}/${r.block}`, r);
+    for (const r of others.values()) await publishNextManifest(tx, r.period, r.block, now);
+    const published = await publishNextManifest(tx, period, block, now);
+    await tx.audit.append({
+      auditId: this.deps.newId(),
+      actor: operator,
+      action: 'RECEIPTS_UPLOADED',
+      at: now,
+      subject: `${period.toString()}/${block}`,
+      newValue: `manifest v${published.version}`,
+      note: `${changed.length} registered, ${results.length - changed.length} not registered`,
     });
-    return ok({ manifestVersion: manifest.version, results });
+    await tx.outbox.add(
+      domainEvent(this.deps.newId, 'RECEIPTS_UPLOADED', now, {
+        period: period.toString(),
+        block,
+        manifestVersion: published.version,
+        registered: changed.map((r) => r.sha256),
+      }),
+    );
+    return ok({ manifestVersion: published.version, results });
   }
 
-  private async evaluate(file: UploadedFile, catalog: ConceptCatalog, resolve: (contract: string) => Promise<RecipientResolution>): Promise<Evaluated> {
-    const sha256 = sha256Of(file.content);
+  /** Phase (a): nothing here reads or writes the state the decision depends on. */
+  private async evaluate(
+    file: UploadedFile,
+    staged: StagedFile,
+    catalog: ConceptCatalog,
+    lookup: (contract: string) => Promise<RecipientResolution>,
+  ): Promise<Evaluated> {
+    const { sha256 } = staged;
     const name = parseReceiptFileName(file.name, catalog, this.deps.fileNameOptions);
     const fileName = name.ok ? name.value.name : file.name.normalize('NFC');
     const parsed = name.ok ? { conceptKey: name.value.concept.key, contract: name.value.contract } : {};
-    if (!name.ok) return { file, sha256, fileName, fileError: name.error };
+    if (!name.ok) return { file, staged, sha256, fileName, fileError: name.error };
 
-    const verdict = await this.deps.inspector.inspect(file.content);
-    if (!verdict.ok) return { file, sha256, fileName, ...parsed, fileError: verdict.error, errorDetail: verdict.detail };
+    // The bytes of this file only, released once inspected.
+    const verdict = await this.deps.inspector.inspect(await this.deps.fileStore.readStaged(staged));
+    if (!verdict.ok) return { file, staged, sha256, fileName, ...parsed, fileError: verdict.error, errorDetail: verdict.detail };
 
-    return { file, sha256, fileName, ...parsed, recipient: await resolve(name.value.contract) };
+    return { file, staged, sha256, fileName, ...parsed, recipient: await lookup(name.value.contract) };
   }
 
   /**
@@ -315,7 +381,10 @@ export class UploadReceipts {
     seen: Map<Sha256, Receipt>,
     results: UploadResult[],
   ): void {
-    changed.push(receipt);
+    // The same content twice in one upload: the last decision is the one saved, once (D37: one save per read).
+    const at = changed.findIndex((r) => r.sha256 === receipt.sha256);
+    if (at >= 0) changed[at] = receipt;
+    else changed.push(receipt);
     history.push({ sha256: receipt.sha256, event, detail });
     seen.set(receipt.sha256, receipt);
     results.push({
@@ -327,4 +396,8 @@ export class UploadReceipts {
       errorDetail: receipt.errorDetail,
     });
   }
+}
+
+async function* once(content: Uint8Array): AsyncIterable<Uint8Array> {
+  yield content;
 }

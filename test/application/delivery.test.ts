@@ -206,7 +206,8 @@ describe('SweepUnconfirmed and WEBHOOKS_NOT_RECEIVED (§9.4)', () => {
     const { attempt } = await fx.sendOne();
     await fx.deliver('w1', { attemptId: attempt.attemptId, recipient: 'admin@altos.com', state: 'SOFT_BOUNCE' });
     fx.clock.advance(7 * HOUR);
-    expect(await fx.sweep.execute()).toEqual({ lookedUp: 0, updated: 0, alerts: 0 });
+    // D44 (M3): a SOFT_BOUNCE is looked up too (it may have become a hard bounce); a webhook arrived, so no alert.
+    expect(await fx.sweep.execute()).toEqual({ lookedUp: 1, updated: 0, alerts: 0 });
 
     const other = deliveryFixture();
     await other.sendOne();
@@ -369,6 +370,9 @@ describe('ResendReceipt (§10.4)', () => {
     expect(await fx.repository.attempts.get(resent?.attemptId as string)).toMatchObject({ kind: 'RESEND', outcome: 'ACCEPTED' });
     expect(await fx.receipt(receipt.sha256)).toMatchObject({ state: 'SENT', deliveryState: 'UNCONFIRMED', fileAvailable: false, attempts: 2, recipient: { email: 'nuevo@altos.com' } });
     expect((await fx.repository.audit.list()).at(-1)).toMatchObject({ action: 'RECEIPT_RESENT', previousValue: 'admin@altos.com', newValue: 'nuevo@altos.com' });
+    // D41: deleted by the job queued with the outcome, once the file lane runs it.
+    expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: receipt.sha256 })).toBeDefined();
+    expect(await fx.runFileJobs()).toBe(1);
     expect(await fx.files.read({ period: OCT_2026, block: 'CASH', sha256: receipt.sha256 })).toBeUndefined();
 
     // A late event of the first attempt no longer changes the receipt.

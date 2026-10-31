@@ -118,6 +118,57 @@ describe('delivery over HTTP', () => {
     expect((await call('GET', '/webhooks/zeptomail/events/nope', token)).statusCode).toBe(404);
   });
 
+  it('D45: an authenticated webhook that yields nothing usable is stored, processed and alerted once; a normal one is not', async () => {
+    ctx = await startTestApp({ SEND_PAUSE_MS: '0' });
+    const token = await signIn();
+    const receipt = await sendOne(token);
+    const attemptId = (await ctx.repository.attempts.listByReceipt(receipt?.sha256 as never))[0]?.attemptId as string;
+    const unparsed = async () => ctx.repository.alerts.list({ type: 'WEBHOOK_UNPARSED' });
+
+    // No client_reference: nothing can be correlated.
+    const noReference = JSON.stringify({ event_name: ['hardbounce'], event_message: [{ email_info: {}, event_data: [{ object: 'hardbounce' }] }], webhook_request_id: 'w-noref' });
+    expect((await postWebhook(noReference)).statusCode).toBe(200);
+    await settle();
+    expect((await ctx.repository.webhooks.get('w-noref'))?.processedAt).toBeDefined();
+    const [first] = await unparsed();
+    expect(first).toMatchObject({ subject: 'w-noref' });
+    expect(first?.detail).toContain('[0] no email_info.client_reference');
+    expect(first?.detail).toContain('GET /webhooks/zeptomail/events/w-noref');
+    // The operator sees why in the stored webhook too.
+    expect((await call('GET', '/webhooks/zeptomail/events/w-noref', token)).json().parseNotes).toMatchObject({ dropped: [{ reason: 'no email_info.client_reference' }] });
+
+    // An event name the parser does not know.
+    const unknownObject = JSON.stringify({ event_name: ['mail_queued'], event_message: [{ email_info: { client_reference: attemptId }, event_data: [{ object: 'mail_queued' }] }], webhook_request_id: 'w-unknown' });
+    await postWebhook(unknownObject);
+    await settle();
+    expect((await unparsed()).find((a) => a.subject === 'w-unknown')?.detail).toContain('event names seen: mail_queued');
+
+    // An attempt that is not ours.
+    await postWebhook(hardBounce('not-ours', 'w-foreign'));
+    await settle();
+    expect((await unparsed()).find((a) => a.subject === 'w-foreign')?.detail).toContain('none for an attempt of ours (client_reference unknown: not-ours)');
+
+    // Only an open: deliberately not a delivery event, no alert. A normal webhook: no alert either.
+    await postWebhook(JSON.stringify({ event_name: ['email_open'], event_message: [{ email_info: { client_reference: attemptId }, event_data: [{ object: 'email_open' }] }], webhook_request_id: 'w-open' }));
+    await postWebhook(hardBounce(attemptId, 'w-ok'));
+    await settle();
+    expect((await unparsed()).map((a) => a.subject).sort()).toEqual(['w-foreign', 'w-noref', 'w-unknown']);
+
+    // The silence alert says webhooks arrived but could not be read.
+    const other = await startTestApp({ SEND_PAUSE_MS: '0' });
+    await ctx.app.close();
+    ctx = other;
+    const token2 = await signIn();
+    await sendOne(token2);
+    await postWebhook(noReference);
+    await settle();
+    ctx.clock.advance(7 * HOUR);
+    await ctx.adapters.jobQueue.enqueue({ type: 'SWEEP_UNCONFIRMED', payload: {} });
+    await settle();
+    const [silence] = await ctx.repository.alerts.list({ type: 'WEBHOOKS_NOT_RECEIVED' });
+    expect(silence?.detail).toContain('1 webhook(s) arrived that could not be read (WEBHOOK_UNPARSED)');
+  });
+
   it('manual verification over HTTP (D22)', async () => {
     ctx = await startTestApp({ SEND_PAUSE_MS: '0' });
     const token = await signIn();

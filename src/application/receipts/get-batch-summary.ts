@@ -18,9 +18,15 @@ export interface ReceiptView {
   readonly complexName?: string;
   readonly email?: string;
   readonly state: ReceiptState;
+  /** The receipt's own error, also when its file is missing (D42). */
   readonly errorType?: ReceiptErrorType;
   readonly errorDetail?: string;
   readonly fileAvailable: boolean;
+  /**
+   * D42: a PENDING or FAILED receipt without its file (purged after being processed): it must be uploaded again before
+   * it can be sent, whatever `errorType` says.
+   */
+  readonly fileError?: 'FILE_NOT_AVAILABLE';
   readonly attempts: number;
   readonly deliveryState?: DeliveryState;
   /** D31: the other names the same content arrived under; the operator must choose one or remove the receipt. */
@@ -54,10 +60,11 @@ const view = (r: Receipt): ReceiptView => ({
   complexName: r.recipient?.complexName,
   email: r.recipient?.email,
   state: r.state,
-  // A FAILED receipt whose file was purged needs it uploaded again before it can be retried.
-  errorType: r.state === 'FAILED' && !r.fileAvailable ? 'FILE_NOT_AVAILABLE' : r.errorType,
+  errorType: r.errorType,
   errorDetail: r.errorDetail,
   fileAvailable: r.fileAvailable,
+  // A PENDING or FAILED receipt whose file was purged needs it uploaded again before it can be sent (D42).
+  ...((r.state === 'PENDING' || r.state === 'FAILED') && !r.fileAvailable ? { fileError: 'FILE_NOT_AVAILABLE' as const } : {}),
   attempts: r.attempts,
   deliveryState: r.deliveryState,
   ...(r.conflictingNames?.length

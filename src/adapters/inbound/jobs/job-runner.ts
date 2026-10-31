@@ -1,7 +1,17 @@
 import type { Clock } from '../../../ports/clock';
 import type { Job, JobQueue, JobType } from '../../../ports/job-queue';
 
-export type JobHandler = (job: Job) => Promise<void>;
+/** `signal` is aborted on shutdown: a long job (a batch execution) stops cooperatively; short ones may ignore it (D33). */
+export type JobHandler = (job: Job, signal: AbortSignal) => Promise<void>;
+
+export interface JobRunnerOptions {
+  /** Job types of this lane; every handler's type by default. */
+  readonly types?: readonly JobType[];
+  /** On `stop()`, how long to wait for the job in progress; default 25 s (D33). */
+  readonly stopTimeoutMs?: number;
+}
+
+const DEFAULT_STOP_TIMEOUT_MS = 25_000;
 
 export interface JobRunnerLogger {
   error(message: string): void;
@@ -15,6 +25,10 @@ export class JobRunner {
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> | undefined;
   private stopped = true;
+  /** Aborted by `stop()`: the job in progress sees it and no further job is claimed. */
+  private controller = new AbortController();
+  private readonly types: readonly JobType[];
+  private readonly stopTimeoutMs: number;
 
   constructor(
     private readonly queue: JobQueue,
@@ -22,14 +36,16 @@ export class JobRunner {
     private readonly clock: Clock,
     private readonly pollMs: number,
     private readonly logger: JobRunnerLogger,
-    /** Job types of this lane; every handler's type by default. */
-    private readonly types: readonly JobType[] = Object.keys(handlers) as JobType[],
-  ) {}
+    options: JobRunnerOptions = {},
+  ) {
+    this.types = options.types ?? (Object.keys(handlers) as JobType[]);
+    this.stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+  }
 
-  /** Processes every due job; returns how many were processed. Tests call it directly. */
+  /** Processes every due job until stopped; returns how many were processed. Tests call it directly. */
   async drain(): Promise<number> {
     let processed = 0;
-    while (await this.tick()) processed += 1;
+    while (!this.controller.signal.aborted && (await this.tick())) processed += 1;
     return processed;
   }
 
@@ -40,7 +56,7 @@ export class JobRunner {
     const handler = this.handlers[job.type];
     try {
       if (!handler) throw new Error(`No handler for job type ${job.type}`);
-      await handler(job);
+      await handler(job, this.controller.signal);
       await this.queue.complete(job.jobId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -51,14 +67,28 @@ export class JobRunner {
   }
 
   start(): void {
+    if (this.controller.signal.aborted) this.controller = new AbortController();
     this.stopped = false;
     this.schedule();
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Asks the job in progress to stop and waits for it, at most `stopTimeoutMs` (D33). Returns false when it did not
+   * finish in time: the process goes on shutting down and the recovery at the next start covers what it left.
+   */
+  async stop(): Promise<boolean> {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    await this.running;
+    this.controller.abort();
+    if (!this.running) return true;
+    let timeout: NodeJS.Timeout | undefined;
+    const expired = new Promise<false>((resolve) => {
+      timeout = setTimeout(() => resolve(false), this.stopTimeoutMs);
+    });
+    const finished = await Promise.race([this.running.then(() => true as const), expired]);
+    clearTimeout(timeout);
+    if (!finished) this.logger.error(`Job runner: the job in progress did not finish within ${this.stopTimeoutMs} ms of the shutdown; left to the recovery at the next start`);
+    return finished;
   }
 
   private schedule(): void {
@@ -94,7 +124,8 @@ export class JobLanes {
     for (const lane of this.lanes) lane.start();
   }
 
-  async stop(): Promise<void> {
-    await Promise.all(this.lanes.map((lane) => lane.stop()));
+  /** Stops every lane at the same time; false when some job did not finish in time. */
+  async stop(): Promise<boolean> {
+    return (await Promise.all(this.lanes.map((lane) => lane.stop()))).every(Boolean);
   }
 }

@@ -62,7 +62,9 @@ export class StartExecution {
         ...(copyEnabled ? { copyAddress: this.deps.archiveCopyAddress } : {}),
       };
       if (!(await tx.executions.tryStart(execution))) return false;
-      await tx.batches.save({ ...batch, state: 'RUNNING', stopReason: undefined, updatedAt: now });
+      // Saved from what this transaction reads (D37).
+      const stored = (await tx.batches.get(period, block)) ?? batch;
+      await tx.batches.save({ ...stored, state: 'RUNNING', stopReason: undefined, updatedAt: now });
       await tx.audit.append({
         auditId: newId(),
         actor: operator,
@@ -75,11 +77,11 @@ export class StartExecution {
       await tx.outbox.add(
         domainEvent(newId, 'EXECUTION_STARTED', now, { executionId, period: period.toString(), block, manifestVersion: batch.manifestVersion, startedBy: operator }),
       );
+      // D40: queued in the same transaction: an execution RUNNING without its job cannot exist.
+      await tx.jobs.enqueue({ type: 'EXECUTE_BATCH', payload: { executionId }, runAt: now });
       return true;
     });
     if (!started) return err({ code: 'EXECUTION_IN_PROGRESS' });
-
-    await this.deps.jobQueue.enqueue({ type: 'EXECUTE_BATCH', payload: { executionId }, runAt: now });
     return ok({ executionId });
   }
 }

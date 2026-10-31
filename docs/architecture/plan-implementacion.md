@@ -36,6 +36,7 @@ simulados, y al final los sistemas externos, que dependen de terceros.
 |---|---|---|
 | 11 | Administración: catálogo de conceptos y copia `bcc`, auditados (D23–D26) | ✅ |
 | 12 | Preparación del piloto: validaciones de §12.7 con la cuenta real, respaldos de PostgreSQL, registros de operación, despliegue | ⏸ **En espera** (2026-10-31): se inicia cuando estén la cuenta de ZeptoMail y las APIs de Tayrona y SAP |
+| — | Auditoría 2026-10-31 (`docs/audit/auditoria-2026-10-31.md`): bloques 1–9 (D32–D53) | ✅ en la rama `audita`, **pendiente de fusión a `main`**. Preguntas al usuario respondidas: (a) retención de PDF → D51 (indefinida, liberación manual por lote); (b) alertas → D52 (resolución automática, reconocimiento del operador); (c) B2 → D53 (cerrado por decisión) |
 
 ## En paralelo
 

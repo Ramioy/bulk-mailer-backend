@@ -1,4 +1,5 @@
 import { DeliveryFollowUps } from '../application/delivery/delivery-follow-ups';
+import { GetWebhook, ListSuppressions, ListWebhooks } from '../application/delivery/delivery-queries';
 import type { DeliveryDependencies } from '../application/delivery/delivery-dependencies';
 import { ProcessDeliveryEvent, RecordDeliveryWebhook } from '../application/delivery/delivery-webhooks';
 import { CheckRecentSends, ReconcileAttempt, SweepUnconfirmed } from '../application/delivery/reconciliation';
@@ -18,6 +19,9 @@ export interface DeliveryUseCases {
   readonly resend: ResendReceipt;
   readonly verify: VerifyDelivery;
   readonly followUps: DeliveryFollowUps;
+  readonly suppressions: ListSuppressions;
+  readonly webhooks: ListWebhooks;
+  readonly webhook: GetWebhook;
 }
 
 export function deliveryUseCases(deps: DeliveryDependencies): DeliveryUseCases {
@@ -32,5 +36,8 @@ export function deliveryUseCases(deps: DeliveryDependencies): DeliveryUseCases {
     resend: new ResendReceipt(deps),
     verify: new VerifyDelivery(deps),
     followUps: new DeliveryFollowUps(deps),
+    suppressions: new ListSuppressions(deps),
+    webhooks: new ListWebhooks(deps),
+    webhook: new GetWebhook(deps),
   };
 }

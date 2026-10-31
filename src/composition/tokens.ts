@@ -9,3 +9,9 @@ export const JOB_RUNNER = Symbol('JobRunner');
 export const OUTBOX_RELAY = Symbol('OutboxRelay');
 export const DELIVERY_USE_CASES = Symbol('DeliveryUseCases');
 export const ADMIN_USE_CASES = Symbol('AdminUseCases');
+export const FILE_USE_CASES = Symbol('FileUseCases');
+export const INSTANCE_ID = Symbol('InstanceId');
+/** D50 (B4): ports and adapter configuration the inbound adapters may receive, instead of the whole adapter set. */
+export const CLOCK = Symbol('Clock');
+export const WEBHOOK_SECRETS = Symbol('WebhookSecrets');
+export const READINESS = Symbol('ReadinessProbe');

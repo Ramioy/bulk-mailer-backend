@@ -39,6 +39,10 @@ import type { ReceiptFileStore } from '../ports/receipt-file-store';
 import { MissingSecretError, type SecretStore } from '../ports/secret-store';
 import type { SendLookup } from '../ports/send-lookup';
 import type { SuppressionManager } from '../ports/suppression-manager';
+import type { InstanceLease } from '../ports/instance-lease';
+import type { ReadinessProbe } from '../ports/readiness-probe';
+import { SystemReadinessProbe } from '../adapters/outbound/system/readiness';
+import { PostgresInstanceLease } from '../adapters/outbound/postgres/postgres-instance-lease';
 
 /** Every adapter the application uses. Tests build their own set; production uses `buildAdapters`. */
 export interface Adapters {
@@ -55,6 +59,10 @@ export interface Adapters {
   /** Webhook authentication; without it the webhook endpoint answers 404. */
   readonly webhookSecrets?: ZeptoMailWebhookSecrets;
   readonly jobQueue: JobQueue;
+  /** D50 (B8): what GET /health checks. */
+  readonly readiness: ReadinessProbe;
+  /** D47: only the holder runs the background work. */
+  readonly instanceLease: InstanceLease;
   /** Progress fan-out to SSE streams; also the ProgressNotifier adapter. */
   readonly progressHub: SseProgressHub;
   /** Delivery side of the outbox; in-process for now, Kafka in the future. */
@@ -177,12 +185,14 @@ export async function buildAdapters(config: AppConfig, secrets: SecretStore = ne
     clock,
     newId: randomUUID,
     fileStore: new LocalVolumeFileStore(config.dataDir),
-    fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates }),
+    fileInspector: new BasicPdfInspector({ maxIncrementalUpdates: config.pdfMaxIncrementalUpdates, maxAttachmentBytes: config.maxAttachmentBytes }),
     contractSources: sources,
     emailProvider: await emailProvider(config, secrets),
     ...(await deliveryTracking(config, secrets)),
     webhookSecrets: await webhookSecrets(config, secrets),
     jobQueue: new PostgresJobQueue(dataSource, () => clock.now()),
+    instanceLease: new PostgresInstanceLease(dataSource),
+    readiness: new SystemReadinessProbe(dataSource, config.dataDir),
     progressHub: new SseProgressHub(),
     eventBus: new InProcessEventBus(),
     alertNotifiers: [new UiAlertNotifier()],

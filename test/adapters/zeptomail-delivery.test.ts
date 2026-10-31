@@ -311,9 +311,14 @@ describe('ZeptoMail webhooks: verification and parsing', () => {
     });
     const open = { event_name: ['email_open'], event_message: [{ email_info: { client_reference: 'a' }, event_data: [{ object: 'email_open' }] }], webhook_request_id: 'w' };
     expect(parseZeptoMailWebhook(JSON.stringify(open), at).events).toEqual([]);
+    // D45: why each message was dropped; opens and clicks only are not worth an alert.
+    expect(parseZeptoMailWebhook(JSON.stringify(open), at).notes).toEqual({ eventNames: ['email_open'], dropped: [{ index: '0.0', reason: 'not a delivery event: "email_open"' }], onlyIgnorable: true });
     const anonymous = { event_message: [{ email_info: {}, event_data: [{ object: 'hardbounce' }] }], webhook_request_id: 'w' };
     expect(parseZeptoMailWebhook(JSON.stringify(anonymous), at).events).toEqual([]);
-    expect(parseZeptoMailWebhook('not json', at)).toEqual({ events: [] });
+    expect(parseZeptoMailWebhook(JSON.stringify(anonymous), at).notes).toEqual({ eventNames: [], dropped: [{ index: '0', reason: 'no email_info.client_reference' }], onlyIgnorable: false });
+    expect(parseZeptoMailWebhook('not json', at)).toEqual({ events: [], notes: { eventNames: [], dropped: [{ index: 'body', reason: 'not JSON' }], onlyIgnorable: false } });
+    const unknown = { event_name: ['mystery'], event_message: [{ email_info: { client_reference: 'a' }, event_data: [{ object: 'mail_queued' }] }], webhook_request_id: 'w' };
+    expect(parseZeptoMailWebhook(JSON.stringify(unknown), at).notes).toEqual({ eventNames: ['mystery', 'mail_queued'], dropped: [{ index: '0.0', reason: 'unknown event "mail_queued"' }], onlyIgnorable: false });
   });
 
   it('outside production, the test mailbox does not identify the recipient', () => {

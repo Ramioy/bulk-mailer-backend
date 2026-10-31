@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { FakeEmailProvider } from '../../src/adapters/outbound/fakes/fake-email-provider';
+import type { EmailProvider } from '../../src/ports/email-provider';
 import { RunExecution } from '../../src/application/sending/run-execution';
 import type { SendOutcome } from '../../src/domain/sending/send-outcome';
 import { OCT_2026 } from '../support/builders';
@@ -238,17 +238,26 @@ describe('RecoverAfterCrash', () => {
   it('turns SENDING receipts into UNCERTAIN and stops the running execution as INTERRUPTED', async () => {
     const fx = executionFixture();
     await fx.uploadValid(3);
-    // The process dies while the provider holds the second email.
-    let crash = false;
-    const dying = new FakeEmailProvider().respondWith({ kind: 'ACCEPTED', providerRequestId: 'r1' }, () => {
-      crash = true;
-      throw new Error('process killed');
+    // The process dies while the provider holds the second email: the run never gets an answer. (A thrown error is
+    // no longer a crash: since D32 the run handles it itself, see "unexpected exceptions" below.)
+    let crash: () => void = () => undefined;
+    const crashed = new Promise<void>((resolve) => {
+      crash = resolve;
     });
+    let calls = 0;
+    const dying: EmailProvider = {
+      send: async () => {
+        calls += 1;
+        if (calls === 1) return { kind: 'ACCEPTED', providerRequestId: 'r1' };
+        crash();
+        return new Promise<never>(() => undefined);
+      },
+    };
     const run = new RunExecution({ ...fx.execDeps, emailProvider: dying });
     const started = await fx.start.execute('operador', OCT_2026, 'CASH', 1);
     if (!started.ok) throw new Error('not started');
-    await expect(run.execute(started.value.executionId)).rejects.toThrow('process killed');
-    expect(crash).toBe(true);
+    void run.execute(started.value.executionId);
+    await crashed;
     expect(await states(fx)).toEqual(['SENT', 'SENDING', 'PENDING']);
 
     expect(await fx.recover.execute()).toEqual({ uncertain: 1, interrupted: started.value.executionId });

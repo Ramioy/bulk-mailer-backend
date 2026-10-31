@@ -1,8 +1,9 @@
-import type { Alert } from '../domain/alert/alert';
+import type { Alert, AlertFilter, AlertMatch } from '../domain/alert/alert';
 import type { AuditEntry } from '../domain/audit/audit';
 import type { Batch, Execution } from '../domain/batch/batch';
 import type { Manifest } from '../domain/batch/manifest';
 import type { DomainEvent } from './event-bus';
+import type { NewJob } from './job-queue';
 import type { ProgressEvent, StoredProgressEvent } from './progress-notifier';
 import type { Block } from '../domain/block/block';
 import type { Concept } from '../domain/concept/concept';
@@ -22,19 +23,56 @@ export class DuplicateAttemptError extends Error {
   }
 }
 
+/**
+ * D37: a save based on a version that is no longer the stored one (someone else saved it meanwhile). Within this
+ * single-instance service every change goes through the serial executor, so this is a bug in our own serialisation:
+ * it is not caught and retried, it surfaces.
+ */
+export class ConcurrentModificationError extends Error {
+  constructor(
+    readonly entity: 'receipt' | 'batch',
+    readonly key: string,
+    readonly expectedVersion: number,
+  ) {
+    super(`The ${entity} ${key} changed since version ${expectedVersion} was read`);
+    this.name = 'ConcurrentModificationError';
+  }
+}
+
+/** D37: a manifest version of a batch is never written twice; a second write is a bug, not an update. */
+export class DuplicateManifestVersionError extends Error {
+  constructor(
+    readonly batch: string,
+    readonly version: number,
+  ) {
+    super(`Manifest v${version} of ${batch} already exists`);
+    this.name = 'DuplicateManifestVersionError';
+  }
+}
+
 export interface ReceiptStore {
   get(sha256: Sha256): Promise<Receipt | undefined>;
-  /** Insert or replace. */
-  save(receipt: Receipt): Promise<void>;
+  /**
+   * Inserts a new receipt as given, or updates the stored one if its version is still `receipt.version` (D37);
+   * returns it as stored (with its new version). Throws ConcurrentModificationError otherwise.
+   */
+  save(receipt: Receipt): Promise<Receipt>;
   listByBatch(period: Period, block: Block): Promise<Receipt[]>;
   listByState(state: ReceiptState): Promise<Receipt[]>;
+  /**
+   * D50: receipts whose delivery can still change (SENT with UNCONFIRMED or SOFT_BOUNCE delivery, and UNCERTAIN)
+   * updated at or after `since`, so the hourly sweep does not read the whole permanent history.
+   */
+  listPendingDeliveriesSince(since: Date): Promise<Receipt[]>;
   appendHistory(entry: ReceiptHistoryEntry): Promise<void>;
   history(sha256: Sha256): Promise<ReceiptHistoryEntry[]>;
 }
 
 export interface BatchStore {
   get(period: Period, block: Block): Promise<Batch | undefined>;
-  save(batch: Batch): Promise<void>;
+  /** Same optimistic rule as ReceiptStore.save (D37). */
+  save(batch: Batch): Promise<Batch>;
+  /** Insert only: throws DuplicateManifestVersionError if that version of the batch already exists (D37). */
   saveManifest(period: Period, block: Block, manifest: Manifest): Promise<void>;
   getManifest(period: Period, block: Block, version: number): Promise<Manifest | undefined>;
 }
@@ -94,7 +132,13 @@ export interface WebhookInbox {
 
 export interface AlertStore {
   insert(alert: Alert): Promise<void>;
-  list(): Promise<Alert[]>;
+  get(alertId: string): Promise<Alert | undefined>;
+  /** Filtered in the store (SQL in PostgreSQL), so deduplication does not read the whole history (D46). */
+  list(filter?: AlertFilter): Promise<Alert[]>;
+  /** False when the alert does not exist or was already acknowledged. */
+  acknowledge(alertId: string, by: string, at: Date): Promise<boolean>;
+  /** D52: marks resolved every matching alert not resolved yet (acknowledged or not); returns how many. */
+  resolve(match: AlertMatch, at: Date, resolution: string): Promise<number>;
 }
 
 export interface AuditLog {
@@ -114,13 +158,36 @@ export interface PendingEvent {
   readonly attempts: number;
 }
 
+/** An event the relay gave up on (D39): kept, with why, until the operator asks to try again. */
+export interface DeadEvent {
+  readonly event: DomainEvent;
+  readonly attempts: number;
+  readonly lastError?: string;
+  readonly deadAt: Date;
+}
+
 /** Outbox: domain events written in the same transaction as the changes they describe. */
 export interface OutboxStore {
   add(event: DomainEvent): Promise<void>;
-  /** Oldest undelivered events, locked for this transaction (other relays skip them). */
+  /** Oldest undelivered events that are not dead, locked for this transaction (other relays skip them). */
   lockPending(limit: number): Promise<PendingEvent[]>;
   markDispatched(eventId: string, at: Date): Promise<void>;
-  markFailed(eventId: string, error: string): Promise<void>;
+  /** One more failed delivery; with `deadAt`, the event is dead and no longer pending (D39). */
+  markFailed(eventId: string, error: string, deadAt?: Date): Promise<void>;
+  /** Dead events, most recently dead first. */
+  listDead(limit: number): Promise<DeadEvent[]>;
+  /** Makes a dead event pending again with its attempts reset; false when there is no dead event with that id. */
+  revive(eventId: string): Promise<boolean>;
+  /** D50: deletes events dispatched before `before`; returns how many. Pending and dead events are kept. */
+  purgeDispatched(before: Date): Promise<number>;
+}
+
+/**
+ * D40: queueing a job as part of a transaction, in the same table the `JobQueue` claims from. The job exists if and
+ * only if the transaction commits: it is never lost after the commit and never visible before it.
+ */
+export interface JobStore {
+  enqueue(job: NewJob): Promise<string>;
 }
 
 export interface SettingsStore {
@@ -142,6 +209,7 @@ export interface BulkMailerStores {
   readonly concepts: ConceptStore;
   readonly settings: SettingsStore;
   readonly outbox: OutboxStore;
+  readonly jobs: JobStore;
 }
 
 /** Persistence of everything Bulk Mailer records. Records are permanent. */

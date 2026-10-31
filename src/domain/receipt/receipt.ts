@@ -33,6 +33,11 @@ export interface Receipt {
   readonly conflictingNames?: readonly ConflictingName[];
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /**
+   * Row version for optimistic concurrency (D37): 1 when first stored, +1 on every save. A save based on another
+   * version than the stored one fails instead of overwriting what someone else wrote.
+   */
+  readonly version: number;
 }
 
 /** A valid name the same content arrived under, with the batch it was uploaded to (D31). */

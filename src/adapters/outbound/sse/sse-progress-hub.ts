@@ -1,6 +1,4 @@
-import type { ProgressNotifier, StoredProgressEvent } from '../../../ports/progress-notifier';
-
-export type ProgressListener = (event: StoredProgressEvent) => void;
+import type { ProgressListener, ProgressNotifier, StoredProgressEvent } from '../../../ports/progress-notifier';
 
 /** In-process fan-out of stored progress events to the open SSE streams of each execution. */
 export class SseProgressHub implements ProgressNotifier {

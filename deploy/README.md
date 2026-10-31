@@ -1,0 +1,51 @@
+# Despliegue
+
+Notas de operación para el despliegue del paso 12. El `docker-compose.yml` de la raíz es solo para desarrollo y pruebas (PostgreSQL).
+
+## Una sola instancia activa (C5, D47)
+
+- La estrategia de despliegue debe ser **recreate** (detener la instancia vieja y luego arrancar la nueva), **no rolling**.
+- Si por error arranca una segunda réplica contra la misma base, **no corrompe nada**: solo la instancia que tiene el *lease* (`instance_lease`) ejecuta la recuperación tras una caída, los carriles de trabajos y los ciclos periódicos. La otra sirve HTTP y queda en espera; toma el relevo sola si la primera muere (a más tardar `INSTANCE_LEASE_TTL_SECONDS` después de su última renovación). `GET /instance` (con JWT) dice qué rol tiene la instancia que respondió.
+- Los comandos del operador sobre lotes se serializan dentro de un proceso (`SerialExecutor`); con dos instancias atendiendo HTTP, las versiones optimistas (D37) y el manifiesto de solo inserción impiden que se pisen, pero el diseño sigue siendo de **una** instancia: la segunda solo se tolera.
+
+## Apagado (D33)
+
+El proceso espera hasta `SHUTDOWN_TIMEOUT_SECONDS` (25 s) a que el lote en curso termine el soporte que está enviando y se detenga como `INTERRUPTED`. El periodo de gracia del contenedor debe ser mayor (Docker da 10 s por defecto):
+
+```yaml
+services:
+  bulk-mailer:
+    image: bulk-mailer-backend:latest
+    env_file: .env
+    volumes:
+      - receipts:/data
+    stop_grace_period: 40s
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first   # recreate: never two instances at once on purpose
+```
+
+## CORS (D49)
+
+En producción `CORS_ALLOWED_ORIGINS` es obligatorio: el origen exacto del cliente web (`https://host[:puerto]`), nunca `*`.
+
+## Volumen de soportes (D41, D51)
+
+Los PDF se guardan en el volumen (`DATA_DIR`, `/data` en el contenedor) con la estructura `<DATA_DIR>/<YYYY-MM>/<BLOCK>/<sha256>.pdf`, nombrados por su contenido. **No** copia la estructura del servidor de archivos (`OCTUBRE_2026/EFECTIVO/<nombre original>.pdf`), por decisión del usuario (D51); el nombre original queda en la base. Equivalencia:
+
+| Servidor de archivos | Volumen |
+|---|---|
+| `OCTUBRE_2026` (mes en español, `MES_AÑO`) | `2026-10` (`YYYY-MM`) |
+| `EFECTIVO` | `CASH` |
+| `AVVILLAS` | `AVVILLAS` |
+| `BANCOLOMBIA` | `BANCOLOMBIA` |
+| `DAVIVIENDA` | `DAVIVIENDA` |
+| `ANGLO` | `ANGLO` |
+| `OTROS` | `OTHERS` |
+| `<nombre original>.pdf` | `<sha256>.pdf` (el nombre está en `receipts.file_name`) |
+
+- `<DATA_DIR>/.staging/` guarda las cargas mientras se reciben (D48); lo que queda ahí más de `FILE_ORPHAN_MIN_AGE_MINUTES` lo borra el barrido.
+- Los archivos de soportes ya procesados se borran solos (D41/D42). Los de soportes que siguen "necesarios" (un `FAILED` no reenviado, un `PENDING` no corregido, un conflicto) se conservan **sin plazo** hasta que el operador libera los del lote: `POST /batches/{period}/{block}/release-files` con nota (D51). Los registros se conservan; el archivo se puede volver a subir.
+- No borrar archivos del volumen a mano: el barrido de huérfanos y los trabajos de borrado lo hacen comprobando la base.
+

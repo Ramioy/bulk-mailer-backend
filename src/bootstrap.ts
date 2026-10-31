@@ -2,11 +2,12 @@ import 'reflect-metadata';
 
 import { readFileSync } from 'node:fs';
 
+import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 
-import { MAX_ATTACHMENT_BYTES } from './adapters/outbound/pdf/basic-pdf-inspector';
+import { registerAuthRateLimit } from './adapters/inbound/http/auth/auth-rate-limit';
 import { AppModule } from './app.module';
 import { type Adapters, buildAdapters } from './composition/adapters';
 import type { AppConfig } from './config/app-config';
@@ -25,10 +26,24 @@ export async function createApp(config: AppConfig, adapters?: Adapters): Promise
   // One byte above the limit is enough to know a file is too large.
   await app.register(multipart, {
     throwFileSizeLimit: false,
-    limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: 300, fields: 10 },
+    // D48: per file; the total per request is counted by the receipts controller while it streams.
+    limits: { fileSize: config.maxAttachmentBytes + 1, files: config.uploadMaxFiles, fields: 10 },
   });
   // ZeptoMail posts the event as a single form-encoded parameter; the signature is checked over the raw body.
+  // D49: the web client runs on another origin; tokens travel in the Authorization header, never in cookies.
+  // A request without Origin (ZeptoMail's webhook, curl) is not a CORS request and is not affected.
+  if (config.corsAllowedOrigins.length > 0) {
+    await app.register(cors, {
+      origin: config.corsAllowedOrigins.includes('*') ? true : [...config.corsAllowedOrigins],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      allowedHeaders: ['authorization', 'content-type', 'last-event-id'],
+      credentials: false,
+      maxAge: 600,
+    });
+  }
   app.useBodyParser('application/x-www-form-urlencoded', { bodyLimit: 1024 * 1024 }, (_request, body, done) => done(null, body.toString('utf8')));
+  // D50 (B5): the public auth routes are rate limited per client IP.
+  registerAuthRateLimit(app.getHttpAdapter().getInstance(), config.authRateLimitPerMinute);
   app.enableShutdownHooks();
   app.getHttpAdapter().getInstance().addHook('onClose', async () => resolved.close());
   return app;

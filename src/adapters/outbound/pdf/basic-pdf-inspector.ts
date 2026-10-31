@@ -5,6 +5,11 @@ export const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 export interface BasicPdfInspectorOptions {
   /** Incremental revisions allowed after the original; default 0 (calibrated in the pilot). */
   readonly maxIncrementalUpdates: number;
+  /**
+   * D50: largest file accepted; default 15 MB. Base64 makes the message about a third larger: what ZeptoMail accepts
+   * for the encoded message is still to be confirmed with the account (§12.7).
+   */
+  readonly maxAttachmentBytes?: number;
 }
 
 const SIGNATURE = /^%PDF-(1\.[0-7]|2\.0)/;
@@ -23,7 +28,7 @@ export class BasicPdfInspector implements FileInspector {
   constructor(private readonly options: BasicPdfInspectorOptions = { maxIncrementalUpdates: 0 }) {}
 
   async inspect(content: Uint8Array): Promise<FileVerdict> {
-    if (content.length > MAX_ATTACHMENT_BYTES) return { ok: false, error: 'ATTACHMENT_TOO_LARGE' };
+    if (content.length > (this.options.maxAttachmentBytes ?? MAX_ATTACHMENT_BYTES)) return { ok: false, error: 'ATTACHMENT_TOO_LARGE' };
 
     // latin1 maps every byte to one character, so offsets and binary content are preserved.
     const text = Buffer.from(content.buffer, content.byteOffset, content.byteLength).toString('latin1');

@@ -5,7 +5,7 @@ import { acceptsChanges, assertBatchTransition, BatchState, canExecute, canTrans
 
 describe('batch state', () => {
   it('allows exactly the transitions of the state diagram', () => {
-    const allowed = ['OPEN>OPEN', 'OPEN>RUNNING', 'RUNNING>COMPLETED', 'RUNNING>STOPPED', 'STOPPED>RUNNING', 'STOPPED>OPEN', 'COMPLETED>OPEN'];
+    const allowed = ['OPEN>OPEN', 'OPEN>RUNNING', 'RUNNING>COMPLETED', 'RUNNING>STOPPED', 'STOPPED>RUNNING', 'STOPPED>OPEN', 'STOPPED>COMPLETED', 'COMPLETED>OPEN'];
     for (const from of Object.values(BatchState)) {
       for (const to of Object.values(BatchState)) {
         expect(canTransitionBatch(from, to), `${from} → ${to}`).toBe(allowed.includes(`${from}>${to}`));
