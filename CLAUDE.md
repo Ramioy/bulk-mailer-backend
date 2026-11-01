@@ -44,6 +44,13 @@ Preguntas abiertas de la auditoría: **ninguna**. Pendiente: fusión de `audita`
 
 Por decisión del usuario (2026-10-31) el cliente web vive en un repositorio propio (`bulk-mailer-frontend`, hermano de este), con pruebas e2e (Playwright) contra este backend corriendo en local con adaptadores `fake`. Este repositorio no cambia por el cliente; si el cliente necesita algo del backend, se propone aquí como decisión. Así nacieron **D56–D59** (CORS en el SSE, `since` en alertas, `INVALID_CREDENTIALS` único en el inicio de sesión, `GET /receipts/{sha256}/history`), aprobadas y hechas el 2026-10-31. El cliente aún no consume D59 ni el código único del 401.
 
+### ⏭ PENDIENTE para la sesión siguiente (2026-11-01)
+
+1. **Confirmar la demo local** del cliente en la máquina del usuario: `bulk-mailer-client/demo/up.sh` falló por el DNS de Docker Desktop (no por la demo); al correr, confirmar `demo/nginx.conf` (proxy `/api` y SSE), que aquí no pudo ejecutarse.
+2. **Cliente web**: mostrar el historial por soporte (`GET /receipts/{sha256}/history`, D59) y usar el código único `INVALID_CREDENTIALS` del 401 (D58). Trabajo en `Ramioy/bulk-mailer-client`, delegable a Opus 5.5.
+3. **Rama `simulacion`**: decidir si se rebasa con la autoría nueva de `main` (hoy conserva los dos commits viejos en su historia); el próximo `merge main → simulacion` traerá los mismos cambios con otro hash.
+4. Propuestas de arquitectura entregadas en el chat, sin implementar y sin decisión: separación en dos contextos (correo transaccional y soportes) y núcleo multicliente con cola. Si se aprueban, van como D60… y después del piloto.
+
 ### ⏸ EN ESPERA: paso 12
 
 **El paso 12 (preparación del piloto) está en espera por decisión del usuario (2026-10-31).** No empezarlo, ni siquiera las partes que no dependen de terceros, hasta que el usuario avise que tiene:
